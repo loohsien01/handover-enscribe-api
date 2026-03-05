@@ -19,9 +19,9 @@ import patientEncountersRoutes from './routes/patientEncounters.js';
 import { registerRecordingsRoutes } from './routes/recordings.js';
 import { registerTranscriptsRoutes } from './routes/transcripts.js';
 import { registerSoapNotesRoutes } from './routes/soapNotes.js';
-import { registerMaskPhiRoutes } from './routes/maskPhi.routes.js';
-import { registerTranscribeRoutes } from './routes/transcribe.routes.js';
-import { registerPromptLlmJobsRoutes } from './routes/promptLlmJobs.routes.js';
+import { registerMaskPhiRoutes } from './routes/maskPhi.js';
+import { registerTranscribeRoutes } from './routes/transcribe.js';
+import { registerPromptLlmJobsRoutes } from './routes/promptLlmJobs.js';
 
 /**
  * Create and configure Fastify application

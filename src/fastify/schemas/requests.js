@@ -225,10 +225,10 @@ export const dotPhraseUpdateRequestSchema = z.object({
 );
 
 /**
- * POST request for GCP expand endpoint (test dot phrase expansion without transcription)
- * Endpoint: POST /api/gcp/expand
+ * POST request for transcript expand endpoint (test dot phrase expansion without transcription)
+ * Endpoint: POST /api/transcripts/expand
  */
-export const gcpExpandRequestSchema = z.object({
+export const transcriptExpandRequestSchema = z.object({
   transcript: z.string().min(1, 'Transcript is required'),
   dotPhrases: z.array(z.object({
     trigger: z.string(),
@@ -236,6 +236,9 @@ export const gcpExpandRequestSchema = z.object({
   })).default([]),
   enableDotPhraseExpansion: z.boolean().default(true).optional(),
 });
+
+// Legacy alias for backward compatibility
+export const gcpExpandRequestSchema = transcriptExpandRequestSchema;
 
 /**
  * POST request for AWS mask-phi endpoint
@@ -266,8 +269,8 @@ export const UnmaskPhiRequestBodySchema = z.object({
 }).strict();
 
 /**
- * POST request for GCP transcribe/complete endpoint
- * Endpoint: POST /api/gcp/transcribe/complete
+ * POST request for Deepgram transcribe/complete endpoint
+ * Endpoint: POST /api/deepgram/transcribe/complete
  */
 export const TranscribeRequestBodySchema = z.object({
   recording_file_signed_url: z.string()

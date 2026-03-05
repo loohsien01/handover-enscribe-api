@@ -60,6 +60,7 @@ jobs:
           AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
           CLOUD_RUN_TRANSCRIBE_URL: ${{ secrets.CLOUD_RUN_TRANSCRIBE_URL }}
           CPU_THRESHOLD: ${{ secrets.CPU_THRESHOLD }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           FASTIFY_PORT: ${{ secrets.FASTIFY_PORT }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
@@ -94,6 +95,7 @@ jobs:
             "AZURE_OPENAI_KEY"
             "CLOUD_RUN_TRANSCRIBE_URL"
             "CPU_THRESHOLD"
+            "DEEPGRAM_API_KEY"
             "FASTIFY_PORT"
             "GCP_PROJECT_ID"
             "GCP_SERVICE_ACCOUNT_KEY"
@@ -198,10 +200,12 @@ jobs:
           GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
           GEMINI_API_URL=${{ secrets.GEMINI_API_URL }}
           GCP_ZONE=${{ secrets.GCP_ZONE }}
+          DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}
           GCP_VM_INSTANCE_NAME=${{ secrets.GCP_VM_INSTANCE_NAME }}
           GCP_VM_RATE_LIMIT_MAX_CALLS=${{ secrets.GCP_VM_RATE_LIMIT_MAX_CALLS }}
           GCP_VM_RATE_LIMIT_WINDOW_SEC=${{ secrets.GCP_VM_RATE_LIMIT_WINDOW_SEC }}
           CLOUD_RUN_TRANSCRIBE_URL=${{ secrets.CLOUD_RUN_TRANSCRIBE_URL }}
+          DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}
           AWS_REGION=${{ secrets.AWS_REGION }}
           RSA_PRIVATE_KEY=${{ secrets.RSA_PRIVATE_KEY }}
           RSA_PUBLIC_KEY=${{ secrets.RSA_PUBLIC_KEY }}

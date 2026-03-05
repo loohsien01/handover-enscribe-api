@@ -1,17 +1,16 @@
 /**
- * GCP Transcription Routes
+ * Deepgram Transcription Routes
  * 
  * Defines Fastify routes for transcription pipeline operations
  */
 
-import { handler, expandHandler } from '../controllers/transcribeController.js';
+import { handler } from '../controllers/transcribeController.js';
 import {
   transcribeRequestSchema,
   transcribeResponseSchema,
 } from '../schemas/responses.js';
 import {
   TranscribeRequestBodySchema,
-  gcpExpandRequestSchema,
 } from '../schemas/requests.js';
 
 /**
@@ -20,12 +19,12 @@ import {
  * @param {Object} fastify - Fastify instance
  */
 export async function registerTranscribeRoutes(fastify) {
-  // POST /gcp/transcribe/complete (prefix /api applied in server.js)
-  fastify.post('/gcp/transcribe/complete', {
+  // POST /deepgram/transcribe/complete (prefix /api applied in server.js)
+  fastify.post('/deepgram/transcribe/complete', {
     onRequest: [fastify.authenticate],
     schema: {
       description: 'Complete transcription pipeline: transcribe audio, expand dot phrases, mask PHI',
-      tags: ['GCP', 'Transcription'],
+      tags: ['Deepgram', 'Transcription'],
       response: {
         200: {
           description: 'Successful transcription, expansion, and masking',
@@ -64,7 +63,7 @@ export async function registerTranscribeRoutes(fastify) {
           properties: { error: { type: 'string' } },
         },
         408: {
-          description: 'Request timeout (Cloud Run took too long)',
+          description: 'Request timeout (Deepgram transcription took too long)',
           type: 'object',
           required: ['error'],
           properties: { error: { type: 'string' } },
@@ -95,29 +94,6 @@ export async function registerTranscribeRoutes(fastify) {
         return handler(request, reply);
       } catch (error) {
         console.error('Error in transcribe complete route:', error);
-        return reply.status(500).send({ error: 'Internal server error' });
-      }
-    },
-  });
-
-  // POST /gcp/expand (prefix /api applied in server.js)
-  // Unit test endpoint for dot phrase expansion without transcription
-  fastify.post('/gcp/expand', {
-    onRequest: [fastify.authenticate],
-    handler: async (request, reply) => {
-      try {
-        // Validate request body schema
-        const validation = gcpExpandRequestSchema.safeParse(request.body);
-        if (!validation.success) {
-          return reply.status(400).send({ error: validation.error });
-        }
-
-        // Set validated body on request for controller
-        request.body = validation.data;
-
-        return expandHandler(request, reply);
-      } catch (error) {
-        console.error('Error in expand route:', error);
         return reply.status(500).send({ error: 'Internal server error' });
       }
     },

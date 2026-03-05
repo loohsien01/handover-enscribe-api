@@ -9,8 +9,9 @@ import {
   createTranscript,
   updateTranscript,
   deleteTranscript,
+  expandHandler,
 } from '../controllers/transcriptsController.js';
-import { transcriptCreateRequestSchema, transcriptUpdateRequestSchema } from '../schemas/requests.js';
+import { transcriptCreateRequestSchema, transcriptUpdateRequestSchema, transcriptExpandRequestSchema } from '../schemas/requests.js';
 
 export async function registerTranscriptsRoutes(fastify) {
   // GET all transcripts
@@ -73,5 +74,28 @@ export async function registerTranscriptsRoutes(fastify) {
   fastify.delete('/transcripts/:id', {
     preHandler: [fastify.authenticate],
     handler: deleteTranscript,
+  });
+
+  // POST /transcripts/expand
+  // Unit test endpoint for dot phrase expansion without transcription
+  fastify.post('/transcripts/expand', {
+    preHandler: [fastify.authenticate],
+    handler: async (request, reply) => {
+      try {
+        // Validate request body schema
+        const validation = transcriptExpandRequestSchema.safeParse(request.body);
+        if (!validation.success) {
+          return reply.status(400).send({ error: validation.error });
+        }
+
+        // Set validated body on request for controller
+        request.body = validation.data;
+
+        return expandHandler(request, reply);
+      } catch (error) {
+        console.error('Error in transcripts expand route:', error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
   });
 }

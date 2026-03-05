@@ -11,7 +11,7 @@
  * Architecture: POST /api/jobs/prompt-llm (202) → GET /api/jobs/prompt-llm/:jobId (poll)
  * Polling: 10s initial, exponential backoff to 45s on HTTP error, 10min timeout
  * 
- * Note: Transcription and PHI masking are tested separately in GCP and AWS tests.
+ * Note: Transcription and PHI masking are tested separately in Deepgram and AWS tests.
  * This test focuses only on the OpenAI LLM functionality.
  */
 import dotenv from 'dotenv';
@@ -394,7 +394,7 @@ async function runAllPromptLlmTests() {
 
   // Test 4: REAL OpenAI call - Generate SOAP note via job-based polling (PRIMARY TEST)
   console.log('\n⏳ Test 4 will create a job and poll until complete (max 10 minutes)...\n');
-  console.log('   Process: Audio → Transcribe (GCP) → Expand dot phrases → Mask PHI (AWS) → Generate SOAP (OpenAI o3)\n');
+  console.log('   Process: Audio → Transcribe (Deepgram) → Expand dot phrases → Mask PHI (AWS) → Generate SOAP (OpenAI o3)\n');
   
   // Create job
   const createResponse = await makeRequest('POST', '/api/jobs/prompt-llm',

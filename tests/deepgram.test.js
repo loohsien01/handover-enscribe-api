@@ -1,9 +1,9 @@
 /**
- * GCP Migration Test Suite
+ * Deepgram Transcription Test Suite
  * 
- * Tests the GCP transcription pipeline migration from pages/api to Fastify.
- * GCP handles:
- * - Audio transcription via Cloud Run
+ * Tests the Deepgram transcription pipeline migration from pages/api to Fastify.
+ * Deepgram handles:
+ * - Audio transcription via Deepgram (Nova-3 model)
  * - Dot phrase expansion
  * - PHI masking (calls AWS)
  * - SOAP note generation pipeline
@@ -28,7 +28,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.resolve(__dirname, '../.env.local');
 dotenv.config({ path: envPath });
 
-const runner = new TestRunner('GCP Transcription Pipeline Tests');
+const runner = new TestRunner('Deepgram Transcription Pipeline Tests');
 const RECORDINGS_BUCKET = 'audio-files';
 const TEST_DATA_FILE = path.resolve(__dirname, 'testData.json');
 
@@ -106,7 +106,7 @@ async function testTranscribeRecording(accessToken, testAccount, testData) {
       recordingUrl = 'https://[placeholder-url]';
     } else {
       recordingUrl = data.signedUrl;
-      console.log(`  ✓ Got signed URL: ${recordingUrl.substring(0, 100)}...`);
+      console.log(`  ✓ Got signed URL: ${recordingUrl}`);
     }
   } catch (error) {
     console.warn(`  ⚠️  Exception getting signed URL: ${error.message}`);
@@ -347,10 +347,10 @@ async function testErrorHandling(accessToken, testData) {
     },
   });
   
-  // Test 8: Missing required body field - signed URL from /gcp/transcribe/complete
+  // Test 8: Missing required body field - signed URL from /deepgram/transcribe/complete
   await runner.test('Reject request without signed URL', {
     method: 'POST',
-    endpoint: '/api/gcp/transcribe/complete',
+    endpoint: '/api/deepgram/transcribe/complete',
     body: {},
     headers,
     expectedStatus: 400,
@@ -366,7 +366,7 @@ async function testErrorHandling(accessToken, testData) {
   // Test 9: Malformed signed URL
   await runner.test('Handle malformed signed URL', {
     method: 'POST',
-    endpoint: '/api/gcp/transcribe/complete',
+    endpoint: '/api/deepgram/transcribe/complete',
     body: {
       recording_file_signed_url: 'not-a-valid-url',
     },
@@ -410,10 +410,11 @@ async function testErrorHandling(accessToken, testData) {
 }
 
 /**
- * Run all GCP tests
+ * Run all Deepgram tests
+ * Note: Endpoints use /deepgram/ prefix for Deepgram transcription service
  */
-export async function runGcpTests() {
-  console.log('Starting GCP Transcription Pipeline tests...');
+export async function runDeepgramTests() {
+  console.log('Starting Deepgram Transcription Pipeline tests...');
   console.log(`Server: ${runner.baseUrl}\n`);
 
   // Load test data first
@@ -474,7 +475,7 @@ export async function runGcpTests() {
 // Run tests if this is the main module
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
-    await runGcpTests();
+    await runDeepgramTests();
     process.exit(0);
   } catch (error) {
     console.error('Test execution failed:', error);

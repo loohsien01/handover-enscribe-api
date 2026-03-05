@@ -80,6 +80,7 @@ export function getSoapNoteAndBillingRequestBody(transcript) {
                         soap_note: {
                             type: SchemaType.OBJECT,
                             additionalProperties: false,
+                            description: "SOAP note with subjective, objective, assessment and plan sections.",
                             properties: {
                                 subjective: {
                                     type: SchemaType.OBJECT,

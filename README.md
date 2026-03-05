@@ -76,7 +76,7 @@ Key API routes available in `/src/pages/api/`:
 - `recordings.js` - Recording upload/download
 - `transcripts.js` - Transcript management
 - `dot-phrases.js` - Dot phrase operations
-- `gcp/transcribe.js` - GCP transcription service
+- `gcp/transcribe.js` - Deepgram transcription service
 - `aws/mask-phi.js` - AWS PHI masking service
 
 ## Database
@@ -99,6 +99,9 @@ SUPABASE_SERVICE_ROLE_KEY=
 GOOGLE_CLOUD_PROJECT_ID=
 GOOGLE_CLOUD_PRIVATE_KEY=
 GOOGLE_CLOUD_CLIENT_EMAIL=
+# Deepgram API Configuration
+# Required for audio transcription via Deepgram Nova-3 model
+DEEPGRAM_API_KEY=
 # AWS Comprehend Medical Configuration
 # Required for LOCAL development only to test maskPhiHelper
 # Not needed on EC2 - the EC2 instance IAM role provides access automatically

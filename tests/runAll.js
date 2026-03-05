@@ -12,7 +12,6 @@ import { runRecordingsTests } from './recordings.test.js';
 import { runTranscriptsTests } from './transcripts.test.js';
 import { runSoapNotesTests } from './soap-notes.test.js';
 import { runAwsTests } from './aws.test.js';
-import { runGcpTests } from './gcp.test.js';
 import { runPromptLlmTests } from './prompt-llm.test.js';
 
 /**
@@ -152,29 +151,10 @@ async function runAllTests() {
     results.push({ suite: 'AWS PHI Masking', status: 'failed', error: error.message });
   }
 
-  // Run GCP Tests
-  try {
-    console.log('\n' + '-'.repeat(70));
-    console.log('TEST SUITE 7: GCP TRANSCRIPTION PIPELINE');
-    console.log('-'.repeat(70) + '\n');
-    const gcpResult = await runGcpTests();
-    results.push({ 
-      suite: 'GCP Transcription', 
-      status: 'completed',
-      tests: gcpResult?.total || 0,
-      passed: gcpResult?.passed || 0,
-      failed: gcpResult?.failed || 0,
-      passRate: gcpResult?.passRate || '0%'
-    });
-  } catch (error) {
-    console.error('❌ GCP tests failed:', error.message);
-    results.push({ suite: 'GCP Transcription', status: 'failed', error: error.message });
-  }
-
   // Run OpenAI Prompt-LLM Tests
   try {
     console.log('\n' + '-'.repeat(70));
-    console.log('TEST SUITE 8: OPENAI PROMPT-LLM (SOAP NOTE GENERATION)');
+    console.log('TEST SUITE 7: OPENAI PROMPT-LLM (SOAP NOTE GENERATION)');
     console.log('-'.repeat(70) + '\n');
     const promptLlmResult = await runPromptLlmTests();
     results.push({ 
@@ -193,7 +173,7 @@ async function runAllTests() {
   // Run Recordings Tests
   try {
     console.log('\n' + '-'.repeat(70));
-    console.log('TEST SUITE 9: RECORDINGS API');
+    console.log('TEST SUITE 8: RECORDINGS API');
     console.log('-'.repeat(70) + '\n');
     const recResult = await runRecordingsTests();
     results.push({ 

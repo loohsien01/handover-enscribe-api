@@ -20,6 +20,7 @@
     "test:transcripts": "node tests/transcripts.test.js",
     "test:soap-notes": "node tests/soap-notes.test.js",
     "test:gcp": "node tests/gcp.test.js",
+    "test:deepgram": "node tests/deepgram.test.js",
     "test:teardown": "node tests/teardown.test.js",
     "test:prompt-llm": "node tests/prompt-llm.test.js"
   },

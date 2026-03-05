@@ -50,9 +50,9 @@ Complete API documentation for the Enscribe Fastify backend. All endpoints requi
 - `POST` `/api/aws/mask-phi` - Mask PHI in text using AWS Comprehend Medical
 - `POST` `/api/aws/unmask-phi` - Unmask PHI tokens using entity data
 
-### GCP Transcription (2 endpoints)
-- `POST` `/api/gcp/transcribe/complete` - Complete transcription pipeline (transcribe, expand, mask)
-- `POST` `/api/gcp/expand` - Test dot phrase expansion without transcription
+### Deepgram Transcription (2 endpoints)
+- `POST` `/api/deepgram/transcribe/complete` - Complete transcription pipeline (transcribe, expand, mask)
+- `POST` `/api/transcripts/expand` - Test dot phrase expansion without transcription
 
 ### Health (1 endpoint)
 - `GET` `/health` - Health check endpoint
