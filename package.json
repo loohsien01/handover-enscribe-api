@@ -25,6 +25,7 @@
     "test:prompt-llm": "node tests/prompt-llm.test.js"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1009.0",
     "@aws-sdk/client-comprehendmedical": "^3.876.0",
     "@fastify/cookie": "^9.4.0",
     "@fastify/cors": "^9.0.1",

@@ -13,11 +13,11 @@
 
 import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
 import { getSupabaseClient } from '../../utils/supabase.js';
-import * as gptRequestBodies from '../../utils/gptRequestBodies.js';
+import * as claudeRequestBody from '../../utils/claudeRequestBody.js';
 import { unmask_phi } from '../../utils/maskPhiHelper.js';
 import { transcribe_expand_mask } from '../controllers/transcribeController.js';
-import { getAzureOpenAIConfig } from '../../utils/azureOpenaiConfig.js';
 import parseSoapNotes from '../../utils/parseSoapNotes.js';
+import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 
 /**
  * Helper: Clean raw text from LLMs to normalize problematic characters for EHR systems
@@ -86,76 +86,63 @@ async function updateJobStatus(jobId, status, updates = {}) {
   }
 }
 
+
+
 /**
- * Helper: OpenAI API request
+ * Helper: Claude via AWS Bedrock API request
  */
-async function gptAPIReq(reqBody) {
-  const openaiApiKey = process.env.OPENAI_API_KEY;
-  const openaiApiUrl = process.env.OPENAI_API_URL || 'https://api.openai.com/v1/chat/completions';
+async function claudeAPIReq(reqBody) {
+  const accessKeyId = process.env.AWS_ACTIONS_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.AWS_ACTIONS_SECRET_ACCESS_KEY;
+  const region = process.env.AWS_REGION || 'us-east-1';
   
-  if (!openaiApiKey) {
-    throw new Error('OpenAI API key not configured');
+  if (!accessKeyId || !secretAccessKey) {
+    throw new Error('Missing AWS credentials. Configure AWS_ACTIONS_ACCESS_KEY_ID and AWS_ACTIONS_SECRET_ACCESS_KEY to use Claude Bedrock.');
   }
 
-  console.log(`[gptAPIReq] Using OpenAI model: ${reqBody.model}`);
-  const response = await fetch(openaiApiUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${openaiApiKey}`,
+  const client = new BedrockRuntimeClient({
+    region,
+    credentials: {
+      accessKeyId,
+      secretAccessKey,
     },
-    body: JSON.stringify(reqBody),
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenAI API error: ${errorText}`);
-  }
+  console.log(`[claudeAPIReq] Using Claude model: ${reqBody.modelId}`);
 
-  const openaiData = await response.json();
-  if (!openaiData.choices || !openaiData.choices[0]?.message) {
-    throw new Error('Invalid response from OpenAI API');
-  }
-
-  return openaiData.choices[0].message.content;
-}
-
-/**
- * Helper: Azure OpenAI API request
- */
-async function azureGptAPIReq(reqBody) {
-  const azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
-  const azureApiKey = process.env.AZURE_OPENAI_KEY;
-  
-  if (!azureEndpoint || !azureApiKey) {
-    throw new Error('Missing Azure OpenAI environment variables');
-  }
-
-  const { AzureOpenAI } = await import('openai');
-  const azureConfig = getAzureOpenAIConfig();
-  
-  const client = new AzureOpenAI({
-    apiVersion: azureConfig.apiVersion,
-    apiKey: azureApiKey,
-    baseURL: `${azureEndpoint}/openai/deployments/${azureConfig.deploymentName}`,
-    defaultQuery: { 'api-version': azureConfig.apiVersion },
-    defaultHeaders: { 'api-key': azureApiKey },
-  });
-
-  const response = await client.chat.completions.create({
+  const requestBody = {
+    anthropic_version: 'bedrock-2023-05-31',
     messages: reqBody.messages,
-    model: azureConfig.deploymentName,
-    max_completion_tokens: reqBody.max_completion_tokens || reqBody.max_tokens,
-    temperature: reqBody.temperature,
-    top_p: reqBody.top_p,
-    response_format: reqBody.response_format,
+    max_tokens: reqBody.max_tokens,
+  };
+
+  const command = new InvokeModelCommand({
+    modelId: reqBody.modelId,
+    body: JSON.stringify(requestBody),
+    contentType: 'application/json',
   });
 
-  if (!response.choices || !response.choices[0]?.message) {
-    throw new Error('Invalid response from Azure OpenAI API');
+  const response = await client.send(command);
+
+  const responseBody = JSON.parse(
+    Buffer.from(response.body).toString('utf-8')
+  );
+
+  if (!responseBody.content || !Array.isArray(responseBody.content) || responseBody.content.length === 0) {
+    throw new Error('Invalid response from Claude Bedrock API');
   }
 
-  return response.choices[0].message.content;
+  const firstContent = responseBody.content[0];
+  if (firstContent.type !== 'text' || !firstContent.text) {
+    throw new Error('Invalid response format from Claude Bedrock API');
+  }
+
+  if (responseBody.usage) {
+    console.log(`[claudeAPIReq] Input tokens: ${responseBody.usage.input_tokens}`);
+    console.log(`[claudeAPIReq] Output tokens: ${responseBody.usage.output_tokens}`);
+  }
+
+  return firstContent.text;
 }
 
 /**
@@ -239,20 +226,21 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader) {
 
     // Step 3: Generate SOAP note and billing suggestion
     const soapStartTime = Date.now();
-    const soapNoteAndBillingReqBody = gptRequestBodies.getSoapNoteAndBillingRequestBody(maskedTranscript);
+    let soapNoteAndBillingReqBody;
     let soapNoteAndBillingResultRaw;
 
     try {
-      soapNoteAndBillingResultRaw = await gptAPIReq(soapNoteAndBillingReqBody);
+      soapNoteAndBillingReqBody = claudeRequestBody.getSoapNoteAndBillingRequestBody(maskedTranscript);
+      soapNoteAndBillingResultRaw = await claudeAPIReq(soapNoteAndBillingReqBody);
     } catch (error) {
-      throw new Error(`OpenAI API request failed: ${error.message}`);
+      throw new Error(`Claude API request failed: ${error.message}`);
     }
 
     if (!soapNoteAndBillingResultRaw) {
-      throw new Error('Empty response from OpenAI API');
+      throw new Error('Empty response from Claude API');
     }
 
-    console.log(`[promptLlmProcessor] ${jobId}: OpenAI response received`);
+    console.log(`[promptLlmProcessor] ${jobId}: Claude response received`);
 
     // Parse LLM response
     let rawString;
@@ -262,10 +250,20 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader) {
       rawString = JSON.stringify(soapNoteAndBillingResultRaw);
     }
 
+    // Strip markdown code block if present (Claude wraps in ```json ... ```)
+    if (rawString.includes('```json')) {
+      rawString = rawString.replace(/^```json\n?/, '').replace(/\n?```$/, '');
+      console.log(`[promptLlmProcessor] ${jobId}: Stripped markdown wrapper`);
+    }
+
+    // console.log(`[promptLlmProcessor] ${jobId}: Parsed response length: ${rawString.length}`);
+
     // Validate format
-    const looksLikeJson = rawString.trim().startsWith('{');
+    const trimmed = rawString.trim();
+    const looksLikeJson = trimmed.startsWith('{');
     const hasSoapNote = rawString.includes('soap_note');
     if (!looksLikeJson || !hasSoapNote) {
+      console.error(`[promptLlmProcessor] ${jobId}: Invalid response, first 500 chars:`, rawString.substring(0, 500));
       throw new Error('LLM response does not appear to be valid JSON structure');
     }
 

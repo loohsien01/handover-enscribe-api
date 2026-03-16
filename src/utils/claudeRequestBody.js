@@ -1,0 +1,77 @@
+/**
+ * Claude Bedrock SOAP Note Request Body Generator
+ * 
+ * Generates request bodies optimized for Claude via AWS Bedrock.
+ * Claude doesn't support response_format parameter, so JSON schema 
+ * requirements are embedded directly in the system message.
+ */
+
+const SchemaType = {
+    OBJECT: "object",
+    STRING: "string"
+};
+
+/**
+ * Generates Claude Bedrock request body for SOAP note and billing generation.
+ * Uses claude-sonnet-4-6 model via AWS Bedrock.
+ * 
+ * Note: Claude doesn't support response_format parameter like OpenAI,
+ * so the JSON schema is specified in the system prompt and we trust
+ * Claude to follow the format requirements.
+ * 
+ * @param {string} transcript - The masked medical transcript
+ * @returns {object} Claude Bedrock request body for SOAP note generation
+ */
+export function getSoapNoteAndBillingRequestBody(transcript) {
+    const jsonSchemaDescription = `
+You MUST return a valid JSON object with this exact structure:
+{
+  "soap_note": {
+    "subjective": {
+      "Chief complaint": "string",
+      "HPI": "string",
+      "History": "string",
+      "ROS": "string",
+      "Medications": "string",
+      "Allergies": "string"
+    },
+    "objective": {
+      "HEENT": "string",
+      "General": "string",
+      "Cardiovascular": "string",
+      "Musculoskeletal": "string",
+      "Other": "string"
+    },
+    "assessment": "string",
+    "plan": "string"
+  },
+  "billing": {
+    "icd10_codes": ["string"],
+    "billing_code": "string",
+    "additional_inquiries": "string"
+  }
+}`;
+
+    return {
+        modelId: "us.anthropic.claude-sonnet-4-6",
+        // modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        messages: [
+            {
+                role: "user",
+                content: `You are a clinical documentation assistant trained to generate SOAP notes from detailed patient encounters. Your output must be accurate and avoid omitting important clinical details. Only output data if present in the transcript, otherwise leave it blank. Never use '•' symbol - use '-' for bullet points instead.
+
+${jsonSchemaDescription}
+
+Here is a patient encounter transcript:
+
+${transcript}
+
+Generate SOAP note and billing suggestions. PHI information has been masked for privacy. Example (for reference only): Evan is 105 years old --> {{NAME_1}} is {{AGE_2}} years old.
+Use bullet points (marked by '-' symbols, '•' is invalid symbol) and markdown formatting and "\\n" for clarity.
+
+IMPORTANT: Return ONLY valid JSON matching the structure above. Do not include any text before or after the JSON.`
+            }
+        ],
+        max_tokens: 10000,
+    };
+}
