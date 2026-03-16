@@ -185,18 +185,30 @@ function splitIntoChunks(text, maxChars) {
  * @returns {Promise<Object>} - { masked_transcript, phi_entities, skipped_entities, mask_threshold }
  */
 async function processSingleChunk(transcript, mask_threshold = 0.15) {
-  // AWS Comprehend Medical client configuration
-  const clientConfig = {
-    region: process.env.AWS_REGION || "us-east-1",
-  };
+  const isDev = process.env.NODE_ENV !== 'production';
+  const region = process.env.AWS_REGION || "us-east-1";
+  const clientConfig = { region };
 
-  // Only set explicit credentials if they exist (for local development)
-  // On EC2, the SDK will automatically use IAM role from default credential chain
-  if (process.env.AWS_COMPREHEND_ACCESS_KEY_ID && process.env.AWS_COMPREHEND_SECRET_ACCESS_KEY) {
+  if (isDev) {
+    // Development: Require explicit AWS Comprehend credentials from env vars
+    const accessKeyId = process.env.AWS_COMPREHEND_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.AWS_COMPREHEND_SECRET_ACCESS_KEY;
+    
+    if (!accessKeyId || !secretAccessKey) {
+      throw new Error(
+        '[Development Mode] Missing AWS Comprehend credentials. Configure AWS_COMPREHEND_ACCESS_KEY_ID and AWS_COMPREHEND_SECRET_ACCESS_KEY in .env to mask PHI locally.'
+      );
+    }
+    
     clientConfig.credentials = {
-      accessKeyId: process.env.AWS_COMPREHEND_ACCESS_KEY_ID,
-      secretAccessKey: process.env.AWS_COMPREHEND_SECRET_ACCESS_KEY,
+      accessKeyId,
+      secretAccessKey,
     };
+    
+    console.log('[processSingleChunk] Development mode: Using explicit AWS Comprehend credentials from env vars');
+  } else {
+    // Production: SDK will auto-detect IAM role from EC2 instance
+    console.log('[processSingleChunk] Production mode: Using IAM role attached to EC2 instance');
   }
 
   const client = new ComprehendMedicalClient(clientConfig);

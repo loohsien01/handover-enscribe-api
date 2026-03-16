@@ -90,23 +90,39 @@ async function updateJobStatus(jobId, status, updates = {}) {
 
 /**
  * Helper: Claude via AWS Bedrock API request
+ * 
+ * Supports two authentication modes:
+ * 1. Production (EC2): Uses IAM role attached to instance (no env vars needed)
+ * 2. Development (local): Requires AWS_ACTIONS_ACCESS_KEY_ID and AWS_ACTIONS_SECRET_ACCESS_KEY from .env
  */
 async function claudeAPIReq(reqBody) {
-  const accessKeyId = process.env.AWS_ACTIONS_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.AWS_ACTIONS_SECRET_ACCESS_KEY;
+  const isDev = process.env.NODE_ENV !== 'production';
   const region = process.env.AWS_REGION || 'us-east-1';
+  const clientConfig = { region };
   
-  if (!accessKeyId || !secretAccessKey) {
-    throw new Error('Missing AWS credentials. Configure AWS_ACTIONS_ACCESS_KEY_ID and AWS_ACTIONS_SECRET_ACCESS_KEY to use Claude Bedrock.');
-  }
-
-  const client = new BedrockRuntimeClient({
-    region,
-    credentials: {
+  if (isDev) {
+    // Development: Require explicit AWS Bedrock credentials from env vars
+    const accessKeyId = process.env.AWS_ACTIONS_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.AWS_ACTIONS_SECRET_ACCESS_KEY;
+    
+    if (!accessKeyId || !secretAccessKey) {
+      throw new Error(
+        '[Development Mode] Missing AWS Bedrock credentials. Configure AWS_ACTIONS_ACCESS_KEY_ID and AWS_ACTIONS_SECRET_ACCESS_KEY in .env to use Claude Bedrock locally.'
+      );
+    }
+    
+    clientConfig.credentials = {
       accessKeyId,
       secretAccessKey,
-    },
-  });
+    };
+    
+    console.log('[claudeAPIReq] Development mode: Using explicit AWS Bedrock credentials from env vars');
+  } else {
+    // Production: SDK will auto-detect IAM role from EC2 instance
+    console.log('[claudeAPIReq] Production mode: Using IAM role attached to EC2 instance');
+  }
+
+  const client = new BedrockRuntimeClient(clientConfig);
 
   console.log(`[claudeAPIReq] Using Claude model: ${reqBody.modelId}`);
 
