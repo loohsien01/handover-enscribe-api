@@ -55,14 +55,22 @@ You MUST return a valid JSON object with this exact structure:
     return {
         modelId: "us.anthropic.claude-sonnet-4-6",
         // modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        system: [
+            {
+                type: "text",
+                text: "You are a clinical documentation assistant trained to generate SOAP notes from detailed patient encounters. Your output must be accurate and avoid omitting important clinical details. Only output data if present in the transcript, otherwise leave it blank. Never use '•' symbol - use '-' for bullet points instead.",
+                cache_control: { type: "ephemeral" }
+            },
+            {
+                type: "text",
+                text: jsonSchemaDescription,
+                cache_control: { type: "ephemeral" }
+            }
+        ],
         messages: [
             {
                 role: "user",
-                content: `You are a clinical documentation assistant trained to generate SOAP notes from detailed patient encounters. Your output must be accurate and avoid omitting important clinical details. Only output data if present in the transcript, otherwise leave it blank. Never use '•' symbol - use '-' for bullet points instead.
-
-${jsonSchemaDescription}
-
-Here is a patient encounter transcript:
+                content: `Here is a patient encounter transcript:
 
 ${transcript}
 

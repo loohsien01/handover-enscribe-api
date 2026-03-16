@@ -60,7 +60,8 @@ export function getSoapNoteAndBillingRequestBody(transcript) {
         messages: [
             {
                 role: "system",
-                content: "You are a clinical documentation assistant trained to generate SOAP notes from detailed patient encounters. Your output must be accurate and avoid omitting important clinical details. But only output data if present in the transcript, otherwise leave it blank. '•' is invalid symbol never use it."
+                content: "You are a clinical documentation assistant trained to generate SOAP notes from detailed patient encounters. Your output must be accurate and avoid omitting important clinical details. But only output data if present in the transcript, otherwise leave it blank. '•' is invalid symbol never use it.",
+                cache_control: { type: "ephemeral" }
             },
             {
                 role: "user",

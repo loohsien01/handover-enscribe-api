@@ -112,6 +112,7 @@ async function claudeAPIReq(reqBody) {
 
   const requestBody = {
     anthropic_version: 'bedrock-2023-05-31',
+    system: reqBody.system,
     messages: reqBody.messages,
     max_tokens: reqBody.max_tokens,
   };
@@ -258,11 +259,10 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader) {
 
     // console.log(`[promptLlmProcessor] ${jobId}: Parsed response length: ${rawString.length}`);
 
-    // Validate format
+    // Validate format - just check it's valid JSON
     const trimmed = rawString.trim();
-    const looksLikeJson = trimmed.startsWith('{');
-    const hasSoapNote = rawString.includes('soap_note');
-    if (!looksLikeJson || !hasSoapNote) {
+    const looksLikeJson = trimmed.startsWith('{') && trimmed.endsWith('}');
+    if (!looksLikeJson) {
       console.error(`[promptLlmProcessor] ${jobId}: Invalid response, first 500 chars:`, rawString.substring(0, 500));
       throw new Error('LLM response does not appear to be valid JSON structure');
     }
@@ -286,6 +286,35 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader) {
       soapNoteAndBillingResult = JSON.parse(unmaskedString);
     } catch (error) {
       throw new Error(`Failed to parse SOAP note JSON: ${error.message}`);
+    }
+
+    // Normalize field names to lowercase (soap_note, subjective, objective, assessment, plan)
+    if (soapNoteAndBillingResult && typeof soapNoteAndBillingResult === 'object') {
+      // Find and normalize soap_note key (case-insensitive)
+      const soapNoteKey = Object.keys(soapNoteAndBillingResult).find(
+        key => key.toLowerCase() === 'soap_note'
+      );
+      
+      if (soapNoteKey && soapNoteKey !== 'soap_note') {
+        soapNoteAndBillingResult.soap_note = soapNoteAndBillingResult[soapNoteKey];
+        delete soapNoteAndBillingResult[soapNoteKey];
+      }
+      
+      // Normalize inner keys in soap_note (subjective, objective, assessment, plan)
+      if (soapNoteAndBillingResult.soap_note && typeof soapNoteAndBillingResult.soap_note === 'object') {
+        const innerObj = soapNoteAndBillingResult.soap_note;
+        const keysToNormalize = ['subjective', 'objective', 'assessment', 'plan'];
+        
+        keysToNormalize.forEach(normalKey => {
+          const foundKey = Object.keys(innerObj).find(
+            key => key.toLowerCase() === normalKey
+          );
+          if (foundKey && foundKey !== normalKey) {
+            innerObj[normalKey] = innerObj[foundKey];
+            delete innerObj[foundKey];
+          }
+        });
+      }
     }
 
     // Store raw SOAP note string (parsing will be done on demand via parseSoapNotes utility)
