@@ -28,27 +28,27 @@ You MUST return a valid JSON object with this exact structure:
 {
   "soap_note": {
     "subjective": {
-      "Chief complaint": "string",
-      "HPI": "string",
-      "History": "string",
-      "ROS": "string",
-      "Medications": "string",
-      "Allergies": "string"
+      "Chief complaint": "string - Chief complaint of the patient",
+      "HPI": "string - History of Present Illnesses",
+      "History": "string - Past medical, surgical, family, and social history",
+      "ROS": "string - Review of Systems",
+      "Medications": "string - Current medications",
+      "Allergies": "string - Known allergies"
     },
     "objective": {
-      "HEENT": "string",
-      "General": "string",
-      "Cardiovascular": "string",
-      "Musculoskeletal": "string",
-      "Other": "string"
+      "HEENT": "string - HEENT (Head, Eyes, Ears, Nose, Throat) exam findings. If not mentioned, assume normal.",
+      "General": "string - General exam findings",
+      "Cardiovascular": "string - Cardiovascular exam findings",
+      "Musculoskeletal": "string - Musculoskeletal exam findings",
+      "Other": "string - Other objective findings (vitals, physical exam, lab results)"
     },
-    "assessment": "string",
-    "plan": "string"
+    "assessment": "string - Clinical assessment and diagnosis based on subjective and objective findings",
+    "plan": "string - Treatment plan, medications, follow-up instructions and next steps. Base solely on transcript - do not include assumptions. Only output data if present in transcript."
   },
   "billing": {
-    "icd10_codes": ["string"],
-    "billing_code": "string",
-    "additional_inquiries": "string"
+    "icd10_codes": "array of strings - ICD-10 codes with description (format: 'CODE - Description'). Max 4, can have additional supporting codes. Example: 'M79.3 - Panniculitis, unspecified'",
+    "billing_code": "string - CPT codes for services provided. Use 99202–99205 for new patients / 99211–99215 for established patients with justification",
+    "additional_inquiries": "string - Doctor's additional areas of investigation for the patient to increase doctor's billing level"
   }
 }`;
 
