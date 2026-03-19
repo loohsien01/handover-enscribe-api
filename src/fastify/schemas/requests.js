@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isoDatetimeRegex, uuidRegex } from '../../app/schemas/regex.js';
+import { isoDatetimeRegex, uuidRegex } from './regex.js';
 
 // Request schemas - what the API client sends
 // These are separate from database schemas to decouple API contracts from DB schema
@@ -281,6 +281,91 @@ export const TranscribeRequestBodySchema = z.object({
     .default(true)
     .describe('Whether to enable dot phrase expansion (default: true)'),
 });
+
+// ============================================================================
+// Note Template Sections Schemas
+// ============================================================================
+
+/**
+ * POST request for creating a note template section
+ * Endpoint: POST /api/note-template-sections
+ * Details field is encrypted server-side
+ * Layout must be a valid section_layout enum: 'paragraph' or 'bullet points'
+ */
+export const noteTemplateSectionCreateRequestSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+  layout: z.enum(['paragraph', 'bullet points'], {
+    errorMap: () => ({ message: 'Layout must be either "paragraph" or "bullet points"' }),
+  }),
+  details: z.string().min(1, 'Details is required'),
+});
+
+/**
+ * PATCH request for updating a note template section
+ * Endpoint: PATCH /api/note-template-sections/:id
+ * All fields are optional, at least one must be provided
+ * Layout must be a valid section_layout enum: 'paragraph' or 'bullet points'
+ */
+export const noteTemplateSectionUpdateRequestSchema = z.object({
+  name: z.string().optional(),
+  layout: z.enum(['paragraph', 'bullet points'], {
+    errorMap: () => ({ message: 'Layout must be either "paragraph" or "bullet points"' }),
+  }).optional(),
+  details: z.string().optional(),
+}).refine(
+  (data) => data.name !== undefined || data.layout !== undefined || data.details !== undefined,
+  { message: 'At least one field (name, layout, or details) must be provided' }
+);
+
+// ============================================================================
+// Note Templates Schemas
+// ============================================================================
+
+/**
+ * PATCH request for updating a note template
+ * Endpoint: PATCH /api/note-templates/:id
+ * Name is optional
+ */
+export const noteTemplatesUpdateRequestSchema = z.object({
+  name: z.string().min(1, 'Name is required').optional(),
+}).refine(
+  (data) => Object.keys(data).length > 0,
+  { message: 'At least one field (name) must be provided' }
+);
+
+// ============================================================================
+// Note Template Section Orders Schemas
+// ============================================================================
+
+/**
+ * PATCH request for updating a note template section order
+ * Endpoint: PATCH /api/note-template-section-orders/:id
+ * Order is optional
+ */
+export const noteTemplateSectionOrdersUpdateRequestSchema = z.object({
+  order: z.number().int().min(1, 'Order must be at least 1').optional(),
+}).refine(
+  (data) => Object.keys(data).length > 0,
+  { message: 'At least one field (order) must be provided' }
+);
+
+// ============================================================================
+// Notes Schemas
+// ============================================================================
+
+/**
+ * PATCH request for updating a note
+ * Endpoint: PATCH /api/notes/:id
+ * Status is optional
+ */
+export const notesUpdateRequestSchema = z.object({
+  status: z.enum(['draft', 'in-progress', 'completed', 'archived'], {
+    message: 'Status must be one of: draft, in-progress, completed, archived',
+  }).optional(),
+}).refine(
+  (data) => Object.keys(data).length > 0,
+  { message: 'At least one field (status) must be provided' }
+);
 
 // ============================================================================
 // Authentication Schemas

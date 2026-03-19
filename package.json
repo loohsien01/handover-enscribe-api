@@ -22,7 +22,8 @@
     "test:gcp": "node tests/gcp.test.js",
     "test:deepgram": "node tests/deepgram.test.js",
     "test:teardown": "node tests/teardown.test.js",
-    "test:prompt-llm": "node tests/prompt-llm.test.js"
+    "test:prompt-llm": "node tests/prompt-llm.test.js",
+    "test:note-template-sections": "node tests/note-template-sections.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1009.0",

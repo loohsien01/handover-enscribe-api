@@ -285,3 +285,75 @@ export const transcribeResponseSchema = {
     },
   },
 };
+
+// ============================================================================
+// Note Template Schemas
+// ============================================================================
+
+/**
+ * Note Template response schema
+ */
+export const noteTemplatesResponseSchema = z.object({
+  id: z.bigint(),
+  user_id: z.string().uuid().nullable(),
+  name: z.string(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime().nullable(),
+});
+
+export const noteTemplatesListSchema = z.array(noteTemplatesResponseSchema);
+
+// ============================================================================
+// Note Template Section Orders Schemas
+// ============================================================================
+
+/**
+ * Note Template Section Order response schema
+ */
+export const noteTemplateSectionOrdersResponseSchema = z.object({
+  id: z.bigint(),
+  user_id: z.string().uuid().nullable(),
+  note_templates_id: z.bigint(),
+  note_template_sections_id: z.bigint(),
+  order: z.number(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime().nullable(),
+});
+
+export const noteTemplateSectionOrdersListSchema = z.array(noteTemplateSectionOrdersResponseSchema);
+
+// ============================================================================
+// Notes Schemas
+// ============================================================================
+
+/**
+ * Note response schema
+ */
+export const notesResponseSchema = z.object({
+  id: z.bigint(),
+  user_id: z.string().uuid(),
+  note_template_id: z.bigint(),
+  patient_encounter_id: z.bigint().nullable(),
+  encrypted_text: z.string().nullable(),
+  text_iv: z.string().nullable(),
+  status: z.enum(['draft', 'in-progress', 'completed', 'archived']),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime().nullable(),
+});
+
+export const notesListSchema = z.array(notesResponseSchema);
+
+// ============================================================================
+// User Security Configs Schemas
+// ============================================================================
+
+/**
+ * User Security Config response schema
+ */
+export const userSecurityConfigsResponseSchema = z.object({
+  id: z.bigint(),
+  user_id: z.string().uuid().nullable(),
+  wrapped_master_key: z.string(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime().nullable(),
+});

@@ -14,7 +14,7 @@ import pino from 'pino';
 import authenticationPlugin from './plugins/authentication.js';
 import { ALLOWED_ORIGINS_LIST } from './middleware/cors.js';
 import authRoutes from './routes/auth.js';
-import dotPhrasesRoutes from './routes/dot-phrases.js';
+import dotPhrasesRoutes from './routes/dotPhrases.js';
 import patientEncountersRoutes from './routes/patientEncounters.js';
 import { registerRecordingsRoutes } from './routes/recordings.js';
 import { registerTranscriptsRoutes } from './routes/transcripts.js';
@@ -22,6 +22,7 @@ import { registerSoapNotesRoutes } from './routes/soapNotes.js';
 import { registerMaskPhiRoutes } from './routes/maskPhi.js';
 import { registerTranscribeRoutes } from './routes/transcribe.js';
 import { registerPromptLlmJobsRoutes } from './routes/promptLlmJobs.js';
+import { registerNoteTemplateSectionsRoutes } from './routes/noteTemplateSections.js';
 
 /**
  * Create and configure Fastify application
@@ -136,6 +137,7 @@ async function createFastifyApp(options = {}) {
     await registerRecordingsRoutes(apiScope);
     await registerTranscriptsRoutes(apiScope);
     await registerSoapNotesRoutes(apiScope);
+    await registerNoteTemplateSectionsRoutes(apiScope);
     await registerMaskPhiRoutes(apiScope);
     await registerTranscribeRoutes(apiScope);
   }, { prefix: '/api' });
