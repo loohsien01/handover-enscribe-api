@@ -322,11 +322,20 @@ export const noteTemplateSectionUpdateRequestSchema = z.object({
 // ============================================================================
 
 /**
+ * POST request for creating a note template
+ * Endpoint: POST /api/note-templates
+ * Name is required and must be unique per user
+ */
+export const noteTemplateCreateRequestSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+});
+
+/**
  * PATCH request for updating a note template
  * Endpoint: PATCH /api/note-templates/:id
  * Name is optional
  */
-export const noteTemplatesUpdateRequestSchema = z.object({
+export const noteTemplateUpdateRequestSchema = z.object({
   name: z.string().min(1, 'Name is required').optional(),
 }).refine(
   (data) => Object.keys(data).length > 0,
@@ -338,15 +347,47 @@ export const noteTemplatesUpdateRequestSchema = z.object({
 // ============================================================================
 
 /**
- * PATCH request for updating a note template section order
- * Endpoint: PATCH /api/note-template-section-orders/:id
- * Order is optional
+ * POST request for creating a note template section order
+ * Endpoint: POST /api/note-template-section-orders
+ * Creates a single section-to-template association with a specific order
+ * Order must be the next consecutive value (e.g., if max is 3, order must be 4)
  */
-export const noteTemplateSectionOrdersUpdateRequestSchema = z.object({
-  order: z.number().int().min(1, 'Order must be at least 1').optional(),
+export const noteTemplateSectionOrdersCreateRequestSchema = z.object({
+  noteTemplate_id: z.number().int().positive('Template ID is required'),
+  section_id: z.number().int().positive('Section ID is required'),
+  order: z.number().int().min(1, 'Order must be at least 1'),
+});
+
+/**
+ * PATCH request for batch reordering note template sections (atomic)
+ * Endpoint: PATCH /api/note-template-section-orders
+ * Replaces all section orders for a template. Orders must be consecutive starting from 1.
+ * Any sections not in this list are deleted.
+ * Entire operation is atomic: succeeds completely or not at all.
+ */
+export const noteTemplateSectionOrdersPatchRequestSchema = z.object({
+  noteTemplate_id: z.number().int().positive('Template ID is required'),
+  sections: z.array(
+    z.object({
+      id: z.number().int().positive('Section ID is required'),
+      order: z.number().int().min(1, 'Order must be at least 1'),
+    })
+  ).min(1, 'At least one section is required'),
 }).refine(
-  (data) => Object.keys(data).length > 0,
-  { message: 'At least one field (order) must be provided' }
+  (data) => {
+    // Validate orders are consecutive starting from 1
+    const orders = data.sections.map(s => s.order).sort((a, b) => a - b);
+    for (let i = 0; i < orders.length; i++) {
+      if (orders[i] !== i + 1) {
+        return false;
+      }
+    }
+    return true;
+  },
+  {
+    message: 'Orders must be consecutive starting from 1 (no gaps or duplicates)',
+    path: ['sections'],
+  }
 );
 
 // ============================================================================

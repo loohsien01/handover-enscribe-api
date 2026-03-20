@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /**
- * User Security Configs Schema
+ * User Security Config Schema
  * Stores RSA-wrapped AES master key per user for encrypting/decrypting sensitive data
  * System has a single entry with user_id = NULL for system templates
  * Each authenticated user has their own entry for user-created templates and notes
@@ -21,7 +21,7 @@ import { z } from 'zod';
  * 5. Use AES key to encrypt/decrypt data (encrypted_details, details_iv, etc.)
  */
 
-export const userSecurityConfigsCreateSchema = z.object({
+export const userSecurityConfigDatabaseSchema = z.object({
   wrapped_master_key: z
     .string()
     .min(1, { message: 'Wrapped master key is required' }),

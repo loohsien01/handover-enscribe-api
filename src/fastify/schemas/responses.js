@@ -304,6 +304,26 @@ export const noteTemplatesResponseSchema = z.object({
 export const noteTemplatesListSchema = z.array(noteTemplatesResponseSchema);
 
 // ============================================================================
+// Note Template Sections Schemas
+// ============================================================================
+
+/**
+ * Note Template Section response schema
+ * Includes decrypted details field, excludes encryption metadata
+ */
+export const noteTemplateSectionResponseSchema = z.object({
+  id: z.bigint(),
+  user_id: z.string().uuid().nullable(),
+  name: z.string(),
+  layout: z.enum(['paragraph', 'bullet points']),
+  details: z.string(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime().nullable(),
+});
+
+export const noteTemplateSectionListSchema = z.array(noteTemplateSectionResponseSchema);
+
+// ============================================================================
 // Note Template Section Orders Schemas
 // ============================================================================
 

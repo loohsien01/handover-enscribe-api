@@ -14,6 +14,7 @@ import {
   noteTemplateSectionCreateRequestSchema,
   noteTemplateSectionUpdateRequestSchema,
 } from '../schemas/requests.js';
+import { serializeZodError } from '../../utils/serializeZodError.js';
 
 export async function registerNoteTemplateSectionsRoutes(fastify) {
   // GET /api/note-template-sections - Get all sections
@@ -36,7 +37,7 @@ export async function registerNoteTemplateSectionsRoutes(fastify) {
         // Validate request body
         const parseResult = noteTemplateSectionCreateRequestSchema.safeParse(request.body);
         if (!parseResult.success) {
-          return reply.status(400).send({ error: parseResult.error });
+          return reply.status(400).send({ error: serializeZodError(parseResult.error) });
         }
 
         // Set validated body on request for controller
@@ -58,7 +59,7 @@ export async function registerNoteTemplateSectionsRoutes(fastify) {
         // Validate request body
         const parseResult = noteTemplateSectionUpdateRequestSchema.safeParse(request.body);
         if (!parseResult.success) {
-          return reply.status(400).send({ error: parseResult.error });
+          return reply.status(400).send({ error: serializeZodError(parseResult.error) });
         }
 
         // Set validated body on request for controller

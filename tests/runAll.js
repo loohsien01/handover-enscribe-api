@@ -12,6 +12,7 @@ import { runRecordingsTests } from './recordings.test.js';
 import { runTranscriptsTests } from './transcripts.test.js';
 import { runSoapNotesTests } from './soap-notes.test.js';
 import { runNoteTemplateSectionsTests } from './note-template-sections.test.js';
+import { runNoteTemplateTests } from './note-templates.test.js';
 import { runAwsTests } from './aws.test.js';
 import { runPromptLlmTests } from './prompt-llm.test.js';
 
@@ -152,10 +153,29 @@ async function runAllTests() {
     results.push({ suite: 'Note Template Sections', status: 'failed', error: error.message });
   }
 
+  // Run Note Templates Tests
+  try {
+    console.log('\n' + '-'.repeat(70));
+    console.log('TEST SUITE 7: NOTE TEMPLATES API');
+    console.log('-'.repeat(70) + '\n');
+    const ntResult = await runNoteTemplateTests();
+    results.push({ 
+      suite: 'Note Templates', 
+      status: 'completed',
+      tests: ntResult?.total || 0,
+      passed: ntResult?.passed || 0,
+      failed: ntResult?.failed || 0,
+      passRate: ntResult?.passRate || '0%'
+    });
+  } catch (error) {
+    console.error('❌ Note Templates tests failed:', error.message);
+    results.push({ suite: 'Note Templates', status: 'failed', error: error.message });
+  }
+
   // Run AWS Tests
   try {
     console.log('\n' + '-'.repeat(70));
-    console.log('TEST SUITE 7: AWS PHI MASKING API');
+    console.log('TEST SUITE 8: AWS PHI MASKING API');
     console.log('-'.repeat(70) + '\n');
     const awsResult = await runAwsTests();
     results.push({ 
@@ -174,7 +194,7 @@ async function runAllTests() {
   // Run OpenAI Prompt-LLM Tests
   try {
     console.log('\n' + '-'.repeat(70));
-    console.log('TEST SUITE 8: OPENAI PROMPT-LLM (SOAP NOTE GENERATION)');
+    console.log('TEST SUITE 9: OPENAI PROMPT-LLM (SOAP NOTE GENERATION)');
     console.log('-'.repeat(70) + '\n');
     const promptLlmResult = await runPromptLlmTests();
     results.push({ 
@@ -193,7 +213,7 @@ async function runAllTests() {
   // Run Recordings Tests
   try {
     console.log('\n' + '-'.repeat(70));
-    console.log('TEST SUITE 9: RECORDINGS API');
+    console.log('TEST SUITE 10: RECORDINGS API');
     console.log('-'.repeat(70) + '\n');
     const recResult = await runRecordingsTests();
     results.push({ 
