@@ -324,6 +324,20 @@ export const noteTemplateSectionResponseSchema = z.object({
 export const noteTemplateSectionListSchema = z.array(noteTemplateSectionResponseSchema);
 
 // ============================================================================
+// Note Templates Complete Response Schemas
+// ============================================================================
+
+/**
+ * Complete note template response (with sections + ordering)
+ * Returned by GET /complete/:id and PATCH /complete/:id
+ * Includes template metadata and all decrypted sections in order
+ */
+export const noteTemplatesCompleteResponseSchema = z.object({
+  template: noteTemplatesResponseSchema,
+  sections: noteTemplateSectionListSchema,
+});
+
+// ============================================================================
 // Note Template Section Orders Schemas
 // ============================================================================
 

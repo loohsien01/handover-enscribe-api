@@ -7,7 +7,7 @@ import { z } from 'zod';
  */
 
 export const noteTemplateSectionOrderDatabaseSchema = z.object({
-  note_templates_id: z.bigint().or(z.string().transform(BigInt)),
-  note_template_sections_id: z.bigint().or(z.string().transform(BigInt)),
+  noteTemplate_id: z.bigint().or(z.string().transform(BigInt)),
+  noteTemplateSection_id: z.bigint().or(z.string().transform(BigInt)),
   order: z.number().int().min(1, { message: 'Order must be at least 1' }),
 }).strict();

@@ -343,6 +343,52 @@ export const noteTemplateUpdateRequestSchema = z.object({
 );
 
 // ============================================================================
+// Note Templates Complete Endpoints (with sections + ordering)
+// ============================================================================
+
+/**
+ * POST request for creating a complete note template with pre-existing sections
+ * Endpoint: POST /api/note-templates/complete
+ * Creates template and links existing sections in specified order
+ * All sections must already exist in DB
+ */
+export const noteTemplatesCompleteCreateRequestSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+  noteTemplateSection_ids: z.array(
+    z.number().int().positive('Section IDs must be positive integers')
+  ).min(1, 'At least one section is required'),
+});
+
+/**
+ * PATCH request for updating a complete note template (atomic)
+ * Endpoint: PATCH /api/note-templates/complete/:id
+ * Updates template name, section details, and section ordering
+ * Entire operation is atomic: succeeds completely or not at all
+ */
+export const noteTemplatesCompleteUpdateRequestSchema = z.object({
+  name: z.string().min(1, 'Name is required').optional(),
+  sections: z.array(
+    z.object({
+      id: z.number().int().positive('Section ID is required'),
+      name: z.string().min(1, 'Name is required').optional(),
+      layout: z.enum(['paragraph', 'bullet points'], {
+        errorMap: () => ({ message: 'Layout must be either "paragraph" or "bullet points"' }),
+      }).optional(),
+      details: z.string().min(1, 'Details is required').optional(),
+    }).refine(
+      (data) => data.name !== undefined || data.layout !== undefined || data.details !== undefined,
+      { message: 'At least one field (name, layout, or details) must be provided for each section' }
+    )
+  ).optional(),
+  noteTemplateSection_ids: z.array(
+    z.number().int().positive('Section IDs must be positive integers')
+  ).min(1, 'At least one section is required').optional(),
+}).refine(
+  (data) => data.name !== undefined || data.sections !== undefined || data.noteTemplateSection_ids !== undefined,
+  { message: 'At least one field (name, sections, or noteTemplateSection_ids) must be provided' }
+);
+
+// ============================================================================
 // Note Template Section Orders Schemas
 // ============================================================================
 

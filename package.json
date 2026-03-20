@@ -25,6 +25,7 @@
     "test:prompt-llm": "node tests/prompt-llm.test.js",
     "test:note-template-sections": "node tests/note-template-sections.test.js",
     "test:note-templates": "node tests/note-templates.test.js",
+    "test:note-templates-complete": "node tests/note-templates-complete.test.js",
     "test:note-template-section-orders": "node tests/note-template-section-orders.test.js"
   },
   "dependencies": {
