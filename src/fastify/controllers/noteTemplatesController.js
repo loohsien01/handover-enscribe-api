@@ -28,12 +28,9 @@ export async function getAllNoteTemplates(request, reply) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    const userId = user.id;
-
     const { data, error } = await supabase
       .from(noteTemplatesTable)
       .select('*')
-      .or(`user_id.eq.${userId},user_id.is.null`)
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -65,7 +62,6 @@ export async function getNoteTemplate(request, reply) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    const userId = user.id;
     const { id } = request.params;
 
     if (!isValidBigInt(id)) {
@@ -76,7 +72,6 @@ export async function getNoteTemplate(request, reply) {
       .from(noteTemplatesTable)
       .select('*')
       .eq('id', id)
-      .or(`user_id.eq.${userId},user_id.is.null`)
       .single();
 
     if (error) {

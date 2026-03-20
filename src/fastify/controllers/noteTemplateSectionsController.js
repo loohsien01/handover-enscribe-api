@@ -226,12 +226,9 @@ export async function getAllNoteTemplateSections(request, reply) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    const userId = user.id;
-
     const { data, error } = await supabase
       .from(noteTemplateSectionsTable)
       .select('*')
-      .or(`user_id.eq.${userId},user_id.is.null`)
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -312,7 +309,6 @@ export async function getNoteTemplateSection(request, reply) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    const userId = user.id;
     const { id } = request.params;
 
     if (!isValidBigInt(id)) {
@@ -323,7 +319,6 @@ export async function getNoteTemplateSection(request, reply) {
       .from(noteTemplateSectionsTable)
       .select('*')
       .eq('id', id)
-      .or(`user_id.eq.${userId},user_id.is.null`)
       .single();
 
     if (error) {

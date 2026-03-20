@@ -6,9 +6,11 @@
  * 
  * This script:
  * 1. Loads system master key from database (user_id = NULL)
- * 2. Defines system template sections from 001_system_templates.sql
- * 3. Encrypts each section's details
- * 4. Inserts/updates them in noteTemplateSections table
+ * 2. Creates/fetches system noteTemplate
+ * 3. Defines system template sections from 001_system_templates.sql
+ * 4. Encrypts and inserts/updates sections in noteTemplateSections table
+ * 5. Creates section ordering in noteTemplateSectionOrders table
+ * 6. Checks for existing records before creating (idempotent)
  */
 
 import { createClient } from '@supabase/supabase-js';
@@ -35,11 +37,11 @@ const supabaseAdmin = createClient(
 );
 
 /**
- * System template sections with their details
+ * Note template sections with their details
  * Based on claudeRequestBody.js and sql/seeds/001_system_templates.sql
  * Layout field specifies type (paragraph or bullet points)
  */
-const systemTemplateSections = [
+const noteTemplateSections = [
   // Subjective sections
   {
     name: 'Chief Complaint',
@@ -127,10 +129,140 @@ const systemTemplateSections = [
 ];
 
 /**
+ * Create or fetch system noteTemplate
+ */
+async function getOrCreateSystemTemplate() {
+  const templateName = 'System SOAP Note Template';
+
+  // Check if template already exists
+  const { data: existingTemplate, error: fetchError } = await supabaseAdmin
+    .from('noteTemplates')
+    .select('id')
+    .eq('name', templateName)
+    .is('user_id', null)
+    .single();
+
+  if (existingTemplate) {
+    console.log(`✅ Found existing template: ${templateName} (ID: ${existingTemplate.id})`);
+    return existingTemplate.id;
+  }
+
+  // Create new template
+  const { data: newTemplate, error: insertError } = await supabaseAdmin
+    .from('noteTemplates')
+    .insert({
+      name: templateName,
+      user_id: null, // System template
+    })
+    .select('id')
+    .single();
+
+  if (insertError) {
+    console.error(`❌ Failed to create template: ${insertError.message}`);
+    throw insertError;
+  }
+
+  console.log(`✅ Created new template: ${templateName} (ID: ${newTemplate.id})`);
+  return newTemplate.id;
+}
+
+/**
+ * Get or create a template section
+ */
+async function getOrCreateTemplateSection(template, aesKeyBase64) {
+  // Check if section already exists
+  const { data: existingSection, error: fetchError } = await supabaseAdmin
+    .from('noteTemplateSections')
+    .select('id')
+    .eq('name', template.name)
+    .is('user_id', null)
+    .single();
+
+  if (existingSection) {
+    console.log(`  📌 Found existing section: ${template.name} (ID: ${existingSection.id})`);
+    return existingSection.id;
+  }
+
+  // Encrypt and create new section
+  try {
+    const ivBase64 = encryptionUtils.generateRandomIVBase64();
+    const encrypted_details = encryptionUtils.encryptText(
+      template.details,
+      aesKeyBase64,
+      ivBase64
+    );
+
+    const { data: newSection, error: insertError } = await supabaseAdmin
+      .from('noteTemplateSections')
+      .insert({
+        name: template.name,
+        layout: template.layout,
+        encrypted_details,
+        details_iv: ivBase64,
+        user_id: null, // System template
+      })
+      .select('id')
+      .single();
+
+    if (insertError) {
+      throw insertError;
+    }
+
+    console.log(`  ✅ Created new section: ${template.name} (ID: ${newSection.id})`);
+    return newSection.id;
+  } catch (err) {
+    console.error(`  ❌ Error creating section ${template.name}: ${err.message}`);
+    throw err;
+  }
+}
+
+/**
+ * Get or create section order
+ */
+async function getOrCreateSectionOrder(noteTemplateId, noteTemplateSectionId, order) {
+  // Check if order already exists
+  const { data: existingOrder, error: fetchError } = await supabaseAdmin
+    .from('noteTemplateSectionOrders')
+    .select('id')
+    .eq('noteTemplate_id', noteTemplateId)
+    .eq('noteTemplateSection_id', noteTemplateSectionId)
+    .eq('order', order)
+    .single();
+
+  if (existingOrder) {
+    console.log(`    📍 Found existing section order (order: ${order})`);
+    return existingOrder.id;
+  }
+
+  // Create new section order
+  try {
+    const { data: newOrder, error: insertError } = await supabaseAdmin
+      .from('noteTemplateSectionOrders')
+      .insert({
+        noteTemplate_id: noteTemplateId,
+        noteTemplateSection_id: noteTemplateSectionId,
+        order,
+      })
+      .select('id')
+      .single();
+
+    if (insertError) {
+      throw insertError;
+    }
+
+    console.log(`    ✅ Created section order (order: ${order})`);
+    return newOrder.id;
+  } catch (err) {
+    console.error(`    ❌ Error creating section order: ${err.message}`);
+    throw err;
+  }
+}
+
+/**
  * Main execution
  */
 async function seedSystemTemplates() {
-  console.log('🔐 Seeding system template sections...\n');
+  console.log('🔐 Seeding system templates, sections, and section orders...\n');
 
   // Get system master key
   const { data: keyData, error: keyError } = await supabaseAdmin
@@ -157,51 +289,50 @@ async function seedSystemTemplates() {
 
   const aesKeyBase64 = systemMasterKey.toString('base64');
 
-  // Encrypt and insert/update each template section
-  let successCount = 0;
-  let failureCount = 0;
+  let templateId, sectionIds = [], successCount = 0, failureCount = 0;
 
-  for (const template of systemTemplateSections) {
-    try {
-      const ivBase64 = encryptionUtils.generateRandomIVBase64();
-      const encrypted_details = encryptionUtils.encryptText(
-        template.details,
-        aesKeyBase64,
-        ivBase64
-      );
+  try {
+    // Step 1: Create or fetch the main noteTemplate
+    console.log('📋 Step 1: Creating/fetching main template...');
+    templateId = await getOrCreateSystemTemplate();
+    console.log();
 
-      const { error: upsertError } = await supabaseAdmin
-        .from('noteTemplateSections')
-        .upsert(
-          {
-            name: template.name,
-            layout: template.layout,
-            encrypted_details,
-            details_iv: ivBase64,
-            user_id: null, // System template
-          },
-          { onConflict: 'name,user_id' }
-        );
-
-      if (upsertError) {
-        console.error(`❌ Failed to upsert ${template.name}:`, upsertError.message);
-        failureCount++;
-      } else {
-        console.log(`✅ Seeded: ${template.name}`);
+    // Step 2: Create or fetch template sections
+    console.log('📋 Step 2: Creating/fetching template sections...');
+    for (const template of noteTemplateSections) {
+      try {
+        const sectionId = await getOrCreateTemplateSection(template, aesKeyBase64);
+        sectionIds.push(sectionId);
         successCount++;
+      } catch (err) {
+        console.error(`❌ Error processing ${template.name}:`, err.message);
+        failureCount++;
       }
-    } catch (err) {
-      console.error(`❌ Error processing ${template.name}:`, err.message);
-      failureCount++;
     }
-  }
+    console.log();
 
-  console.log(`\n📊 Results: ${successCount} succeeded, ${failureCount} failed`);
+    // Step 3: Create section orders
+    console.log('📋 Step 3: Creating/fetching section orders...');
+    for (let order = 1; order <= sectionIds.length; order++) {
+      try {
+        await getOrCreateSectionOrder(templateId, sectionIds[order - 1], order);
+      } catch (err) {
+        console.error(`❌ Error creating section order for order ${order}:`, err.message);
+        failureCount++;
+      }
+    }
+    console.log();
 
-  if (failureCount === 0) {
-    console.log('\n✅ All system template sections seeded successfully!');
-    process.exit(0);
-  } else {
+    console.log(`📊 Results: ${successCount} sections succeeded, ${failureCount} failed`);
+
+    if (failureCount === 0) {
+      console.log('\n✅ All system templates, sections, and section orders seeded successfully!');
+      process.exit(0);
+    } else {
+      process.exit(1);
+    }
+  } catch (err) {
+    console.error('❌ Fatal error:', err.message);
     process.exit(1);
   }
 }

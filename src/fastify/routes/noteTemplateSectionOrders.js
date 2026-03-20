@@ -8,7 +8,6 @@ import {
   getNoteTemplateSectionOrder,
   createNoteTemplateSectionOrder,
   updateNoteTemplateSectionOrders,
-  deleteNoteTemplateSectionOrder,
 } from '../controllers/noteTemplateSectionOrdersController.js';
 import {
   noteTemplateSectionOrdersCreateRequestSchema,
@@ -71,12 +70,6 @@ export async function registerNoteTemplateSectionOrdersRoutes(fastify) {
         return reply.status(500).send({ error: 'Internal server error' });
       }
     },
-  });
-
-  // DELETE /api/note-template-section-orders/:id - Delete single section order
-  fastify.delete('/note-template-section-orders/:id', {
-    preHandler: [fastify.authenticate],
-    handler: deleteNoteTemplateSectionOrder,
   });
 }
 

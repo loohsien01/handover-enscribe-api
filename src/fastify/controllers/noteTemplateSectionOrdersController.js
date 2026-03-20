@@ -37,7 +37,7 @@ export async function getAllNoteTemplateSectionOrders(request, reply) {
 
     const userId = user.id;
 
-    // Get all orders for templates the user has access to (self-owned + system)
+    // Get all orders for templates the user has access to (RLS policies handle authorization)
     const { data, error } = await supabase
       .from(noteTemplateSectionOrdersTable)
       .select(`
@@ -47,7 +47,6 @@ export async function getAllNoteTemplateSectionOrders(request, reply) {
           user_id
         )
       `)
-      .or(`noteTemplate.user_id.eq.${userId},noteTemplate.user_id.is.null`)
       .order('noteTemplate_id', { ascending: true })
       .order('order', { ascending: true });
 
@@ -97,7 +96,6 @@ export async function getNoteTemplateSectionOrder(request, reply) {
         )
       `)
       .eq('id', id)
-      .or(`noteTemplate.user_id.eq.${userId},noteTemplate.user_id.is.null`)
       .single();
 
     if (error) {
@@ -130,15 +128,13 @@ export async function createNoteTemplateSectionOrder(request, reply) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    const userId = user.id;
     const { noteTemplate_id, section_id, order } = request.body;
 
-    // Verify template exists and user has access
+    // Verify template exists (RLS enforces user authorization)
     const { data: template, error: templateError } = await supabase
       .from(noteTemplatesTable)
       .select('id')
       .eq('id', noteTemplate_id)
-      .or(`user_id.eq.${userId},user_id.is.null`)
       .single();
 
     if (templateError || !template) {
@@ -176,8 +172,9 @@ export async function createNoteTemplateSectionOrder(request, reply) {
       .insert([
         {
           noteTemplate_id,
-          section_id,
+          noteTemplateSection_id: section_id,
           order,
+          user_id: request.user.id,
         },
       ])
       .select()
@@ -227,15 +224,13 @@ export async function updateNoteTemplateSectionOrders(request, reply) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    const userId = user.id;
     const { noteTemplate_id, sections } = request.body;
 
-    // Verify template exists and user has access
+    // Verify template exists (RLS enforces user authorization)
     const { data: template, error: templateError } = await supabase
       .from(noteTemplatesTable)
       .select('id')
       .eq('id', noteTemplate_id)
-      .or(`user_id.eq.${userId},user_id.is.null`)
       .single();
 
     if (templateError || !template) {
@@ -262,8 +257,9 @@ export async function updateNoteTemplateSectionOrders(request, reply) {
     // Insert all new orders
     const ordersToInsert = sections.map((section) => ({
       noteTemplate_id,
-      section_id: section.id,
+      noteTemplateSection_id: section.id,
       order: section.order,
+      user_id: request.user.id,
     }));
 
     const { data: insertData, error: insertError } = await supabase
@@ -302,100 +298,6 @@ export async function updateNoteTemplateSectionOrders(request, reply) {
     });
   } catch (err) {
     console.error('[updateNoteTemplateSectionOrders] Error:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
-  }
-}
-
-/**
- * Deletes a single note template section order
- * DELETE /api/note-template-section-orders/:id
- * Client must use PATCH to handle batch deletions and reordering
- */
-export async function deleteNoteTemplateSectionOrder(request, reply) {
-  try {
-    const supabase = getSupabaseClient(request.headers.authorization);
-    const user = request.user;
-
-    if (!user) {
-      return reply.status(401).send({ error: 'Unauthorized' });
-    }
-
-    const userId = user.id;
-    const { id } = request.params;
-
-    if (!isValidBigInt(id)) {
-      return reply.status(400).send({ error: 'Invalid order ID format' });
-    }
-
-    // Verify order exists and user has access to its template
-    const { data: orderRecord, error: fetchError } = await supabase
-      .from(noteTemplateSectionOrdersTable)
-      .select(`
-        *,
-        noteTemplate:noteTemplate_id (
-          id,
-          user_id
-        )
-      `)
-      .eq('id', id)
-      .or(`noteTemplate.user_id.eq.${userId},noteTemplate.user_id.is.null`)
-      .single();
-
-    if (fetchError || !orderRecord) {
-      console.error('[deleteNoteTemplateSectionOrder] Order not found:', fetchError);
-      return reply.status(404).send({ error: 'Order not found' });
-    }
-
-    const noteTemplate_id = orderRecord.noteTemplate_id;
-
-    // Delete the record
-    const { error: deleteError } = await supabase
-      .from(noteTemplateSectionOrdersTable)
-      .delete()
-      .eq('id', id);
-
-    if (deleteError) {
-      console.error('[deleteNoteTemplateSectionOrder] Delete error:', deleteError);
-      return reply.status(500).send({ error: 'Failed to delete order' });
-    }
-
-    // Get remaining orders for this template and renumber them
-    const { data: remainingOrders, error: fetchRemainingError } = await supabase
-      .from(noteTemplateSectionOrdersTable)
-      .select('*')
-      .eq('noteTemplate_id', noteTemplate_id)
-      .order('order', { ascending: true });
-
-    if (fetchRemainingError) {
-      console.error('[deleteNoteTemplateSectionOrder] Error fetching remaining:', fetchRemainingError);
-      return reply.status(500).send({ error: 'Failed to renumber remaining orders' });
-    }
-
-    // Renumber remaining orders (1, 2, 3...)
-    if (remainingOrders && remainingOrders.length > 0) {
-      const updates = remainingOrders.map((record, index) => ({
-        id: record.id,
-        newOrder: index + 1,
-      }));
-
-      for (const update of updates) {
-        if (update.newOrder !== remainingOrders[updates.indexOf(update)].order) {
-          const { error: updateError } = await supabase
-            .from(noteTemplateSectionOrdersTable)
-            .update({ order: update.newOrder })
-            .eq('id', update.id);
-
-          if (updateError) {
-            console.error('[deleteNoteTemplateSectionOrder] Update error:', updateError);
-            return reply.status(500).send({ error: 'Failed to renumber orders' });
-          }
-        }
-      }
-    }
-
-    return reply.status(204).send();
-  } catch (err) {
-    console.error('[deleteNoteTemplateSectionOrder] Error:', err);
     return reply.status(500).send({ error: 'Internal server error' });
   }
 }
