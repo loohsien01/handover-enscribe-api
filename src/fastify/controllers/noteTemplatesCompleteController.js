@@ -335,8 +335,23 @@ async function getCompleteTemplate(supabase, templateId, userId) {
 }
 
 /**
+ * Helper: Strips encrypted details from sections
+ * Returns sections without encrypted_details and details_iv fields
+ */
+function stripEncryptedDetails(sections) {
+  return sections.map(section => {
+    const { encrypted_details, details_iv, ...strippedSection } = section;
+    return strippedSection;
+  });
+}
+
+/**
  * GET /api/note-templates/complete
- * Batch fetch with pagination (returns template metadata only, not sections)
+ * Batch fetch templates with sections and pagination
+ * Query params:
+ *   - limit: int (default: 20)
+ *   - offset: int (default: 0)
+ *   - include_details: boolean (default: false) - if true, includes decrypted section details
  */
 export async function getAllNoteTemplatesComplete(request, reply) {
   try {
@@ -348,25 +363,127 @@ export async function getAllNoteTemplatesComplete(request, reply) {
     }
 
     const userId = user.id;
-    const { limit = 20, offset = 0 } = request.query;
+    const { limit = 20, offset = 0, include_details = 'false' } = request.query;
+    const includeDetails = include_details === 'true';
 
-    const { data, error } = await supabase
+    // Fetch templates with pagination
+    const { data: templates, error: templatesError } = await supabase
       .from(noteTemplatesTable)
-      .select('*', { count: 'exact' })
+      .select('*')
       .or(`user_id.eq.${userId},user_id.is.null`)
       .order('updated_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
-    if (error) {
-      console.error('[getAllNoteTemplatesComplete] Database error:', error);
+    if (templatesError) {
+      console.error('[getAllNoteTemplatesComplete] Error fetching templates:', templatesError);
       return reply.status(500).send({ error: 'Failed to fetch templates' });
     }
 
-    if (!data || data.length === 0) {
+    if (!templates || templates.length === 0) {
       return reply.status(200).send({ templates: [], total: 0 });
     }
 
-    return reply.status(200).send({ templates: convertBigIntsToStrings(data), total: data.length });
+    // Fetch sections and ordering for all templates
+    const templateIds = templates.map(t => t.id);
+    const { data: allOrders, error: ordersError } = await supabase
+      .from(noteTemplateSectionOrdersTable)
+      .select('noteTemplate_id, noteTemplateSection_id, order')
+      .in('noteTemplate_id', templateIds)
+      .order('noteTemplate_id', { ascending: true })
+      .order('order', { ascending: true });
+
+    if (ordersError) {
+      console.error('[getAllNoteTemplatesComplete] Error fetching orders:', ordersError);
+      return reply.status(500).send({ error: 'Failed to fetch section ordering' });
+    }
+
+    // Fetch all sections needed
+    const sectionIds = [...new Set(allOrders?.map(o => o.noteTemplateSection_id) || [])];
+    let allSections = [];
+
+    if (sectionIds.length > 0) {
+      const { data: sectionsData, error: sectionsError } = await supabase
+        .from(noteTemplateSectionsTable)
+        .select('*')
+        .in('id', sectionIds);
+
+      if (sectionsError) {
+        console.error('[getAllNoteTemplatesComplete] Error fetching sections:', sectionsError);
+        return reply.status(500).send({ error: 'Failed to fetch sections' });
+      }
+
+      allSections = sectionsData || [];
+    }
+
+    // If we need to decrypt, get the keys
+    let systemKeyResult = null;
+    let userKeyResult = null;
+
+    if (includeDetails && allSections.length > 0) {
+      const hasSystemSections = allSections.some(s => s.user_id === null);
+      const hasUserSections = allSections.some(s => s.user_id !== null);
+
+      if (hasSystemSections) {
+        systemKeyResult = await getSystemMasterKey();
+        if (!systemKeyResult.success) {
+          console.warn('[getAllNoteTemplatesComplete] Failed to get system key:', systemKeyResult.error);
+        }
+      }
+
+      if (hasUserSections) {
+        userKeyResult = await getOrCreateUserMasterKey(supabase, userId);
+        if (!userKeyResult.success) {
+          return reply.status(500).send({ error: userKeyResult.error });
+        }
+      }
+    }
+
+    // Build response with sections grouped by template
+    const templatesWithSections = templates.map(template => {
+      const templateOrders = (allOrders || [])
+        .filter(o => o.noteTemplate_id === template.id)
+        .sort((a, b) => a.order - b.order);
+
+      let sections = templateOrders
+        .map(order => allSections.find(s => s.id === order.noteTemplateSection_id))
+        .filter(s => s !== undefined);
+
+      // If include_details is false, strip encrypted details
+      if (!includeDetails) {
+        sections = stripEncryptedDetails(sections);
+      } else {
+        // Decrypt all sections in parallel
+        sections = sections.map(section => {
+          if (!section.encrypted_details) {
+            return section;
+          }
+
+          const keyResult = section.user_id === null ? systemKeyResult : userKeyResult;
+          if (!keyResult || !keyResult.success) {
+            console.warn(`[getAllNoteTemplatesComplete] No key available for section ${section.id}`);
+            return section; // Return as-is if can't decrypt
+          }
+
+          const decryptResult = decryptSectionDetails(section, keyResult.masterKey);
+          if (!decryptResult.success) {
+            console.warn(`[getAllNoteTemplatesComplete] Failed to decrypt section ${section.id}`);
+            return section; // Return as-is if decrypt fails
+          }
+
+          return decryptResult.section;
+        });
+      }
+
+      return {
+        ...template,
+        sections,
+      };
+    });
+
+    return reply.status(200).send({
+      templates: convertBigIntsToStrings(templatesWithSections),
+      total: templatesWithSections.length,
+    });
   } catch (err) {
     console.error('[getAllNoteTemplatesComplete] Error:', err);
     return reply.status(500).send({ error: 'Internal server error' });
