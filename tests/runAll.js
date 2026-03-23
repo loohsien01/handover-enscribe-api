@@ -11,6 +11,7 @@ import { runPatientEncounterTests } from './patient-encounters.test.js';
 import { runRecordingsTests } from './recordings.test.js';
 import { runTranscriptsTests } from './transcripts.test.js';
 import { runSoapNotesTests } from './soap-notes.test.js';
+import { runNotesTests } from './notes.test.js';
 import { runNoteTemplateSectionsTests } from './note-template-sections.test.js';
 import { runNoteTemplateTests } from './note-templates.test.js';
 import { runAwsTests } from './aws.test.js';
@@ -132,6 +133,25 @@ async function runAllTests() {
   } catch (error) {
     console.error('❌ SOAP Notes tests failed:', error.message);
     results.push({ suite: 'SOAP Notes', status: 'failed', error: error.message });
+  }
+
+  // Run Notes Tests
+  try {
+    console.log('\n' + '-'.repeat(70));
+    console.log('TEST SUITE 5.5: NOTES API');
+    console.log('-'.repeat(70) + '\n');
+    const notesResult = await runNotesTests();
+    results.push({ 
+      suite: 'Notes', 
+      status: 'completed',
+      tests: notesResult?.total || 0,
+      passed: notesResult?.passed || 0,
+      failed: notesResult?.failed || 0,
+      passRate: notesResult?.passRate || '0%'
+    });
+  } catch (error) {
+    console.error('❌ Notes tests failed:', error.message);
+    results.push({ suite: 'Notes', status: 'failed', error: error.message });
   }
 
   // Run Note Template Sections Tests

@@ -260,6 +260,79 @@ export function decryptAESKey(encryptedAESKey) {
   }
 }
 
+/**
+ * Encrypts the details field for a note template section using user's master key
+ * Creates new IV for each encryption
+ * @param {object} section - Section object containing details field
+ * @param {Buffer} masterKeyBuffer - Unwrapped master AES key
+ * @returns {object} { success, error, section }
+ */
+export function encryptNoteTemplateSectionDetails(section, masterKeyBuffer) {
+  try {
+    if (!section.details) {
+      return { success: true, error: null, section };
+    }
+
+    const aesKeyBase64 = Buffer.isBuffer(masterKeyBuffer)
+      ? masterKeyBuffer.toString('base64')
+      : masterKeyBuffer;
+
+    const ivBase64 = generateRandomIVBase64();
+
+    try {
+      section.encrypted_details = encryptText(
+        section.details,
+        aesKeyBase64,
+        ivBase64
+      );
+      section.details_iv = ivBase64;
+      delete section.details;
+      return { success: true, error: null, section };
+    } catch (err) {
+      console.error('[encryptNoteTemplateSectionDetails] Failed to encrypt details:', err);
+      return { success: false, error: 'Failed to encrypt details', section: null };
+    }
+  } catch (err) {
+    console.error('[encryptNoteTemplateSectionDetails] Error:', err);
+    return { success: false, error: 'Failed to encrypt section', section: null };
+  }
+}
+
+/**
+ * Decrypts the details field for a section using user's master key
+ * @param {object} section - Section object containing encrypted_details and details_iv
+ * @param {Buffer} masterKeyBuffer - Unwrapped master AES key
+ * @returns {object} { success, error, section }
+ */
+export function decryptNoteTemplateSectionDetails(section, masterKeyBuffer) {
+  try {
+    if (!section.encrypted_details || !section.details_iv) {
+      return { success: true, error: null, section };
+    }
+
+    const aesKeyBase64 = Buffer.isBuffer(masterKeyBuffer)
+      ? masterKeyBuffer.toString('base64')
+      : masterKeyBuffer;
+
+    try {
+      section.details = decryptText(
+        section.encrypted_details,
+        aesKeyBase64,
+        section.details_iv
+      );
+      delete section.encrypted_details;
+      delete section.details_iv;
+      return { success: true, error: null, section };
+    } catch (err) {
+      console.error('[decryptNoteTemplateSectionDetails] Failed to decrypt details:', err);
+      return { success: false, error: 'Failed to decrypt details', section: null };
+    }
+  } catch (err) {
+    console.error('[decryptNoteTemplateSectionDetails] Error:', err);
+    return { success: false, error: 'Failed to decrypt section', section: null };
+  }
+}
+
 // PBKDF2-based refresh token hashing utilities (used for server-side refresh token storage)
 export function hashToken(token, salt) {
   const HASH_ITERATIONS = 100000;
@@ -319,4 +392,65 @@ export function decryptRefreshToken(tokenEncB64) {
   decipher.setAuthTag(tag);
   const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return decrypted.toString('utf8');
+}
+
+/**
+ * Encrypts the text field for a note using user's master key
+ * Creates new IV for each encryption
+ * @param {object} note - Note object containing text field
+ * @param {Buffer} masterKeyBuffer - Unwrapped master AES key
+ * @returns {object} { success, error, value, iv }
+ */
+export function encryptNoteText(note, masterKeyBuffer) {
+  try {
+    if (!note.text) {
+      return { success: true, error: null, value: null, iv: null };
+    }
+
+    const aesKeyBase64 = Buffer.isBuffer(masterKeyBuffer)
+      ? masterKeyBuffer.toString('base64')
+      : masterKeyBuffer;
+
+    const ivBase64 = generateRandomIVBase64();
+
+    try {
+      const encryptedText = encryptText(note.text, aesKeyBase64, ivBase64);
+      return { success: true, error: null, value: encryptedText, iv: ivBase64 };
+    } catch (err) {
+      console.error('[encryptNoteText] Failed to encrypt text:', err);
+      return { success: false, error: 'Failed to encrypt note text', value: null, iv: null };
+    }
+  } catch (err) {
+    console.error('[encryptNoteText] Error:', err);
+    return { success: false, error: 'Failed to encrypt note', value: null, iv: null };
+  }
+}
+
+/**
+ * Decrypts the text field for a note using user's master key
+ * @param {object} note - Note object containing encrypted_text and text_iv
+ * @param {Buffer} masterKeyBuffer - Unwrapped master AES key
+ * @returns {object} { success, error, text }
+ */
+export function decryptNoteText(note, masterKeyBuffer) {
+  try {
+    if (!note.encrypted_text || !note.text_iv) {
+      return { success: true, error: null, text: note.text || null };
+    }
+
+    const aesKeyBase64 = Buffer.isBuffer(masterKeyBuffer)
+      ? masterKeyBuffer.toString('base64')
+      : masterKeyBuffer;
+
+    try {
+      const decryptedText = decryptText(note.encrypted_text, aesKeyBase64, note.text_iv);
+      return { success: true, error: null, text: decryptedText };
+    } catch (err) {
+      console.error('[decryptNoteText] Failed to decrypt text:', err);
+      return { success: false, error: 'Failed to decrypt note text', text: null };
+    }
+  } catch (err) {
+    console.error('[decryptNoteText] Error:', err);
+    return { success: false, error: 'Failed to decrypt note', text: null };
+  }
 }

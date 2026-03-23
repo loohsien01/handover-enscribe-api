@@ -133,8 +133,8 @@ BEGIN
 
       FOR v_order IN 1 .. array_length(v_section_ids, 1) LOOP
         v_section_id := v_section_ids[v_order];
-        INSERT INTO "noteTemplateSectionOrders" ("noteTemplate_id", "noteTemplateSection_id", "order")
-        VALUES (p_template_id, v_section_id, v_order);
+        INSERT INTO "noteTemplateSectionOrders" ("noteTemplate_id", "noteTemplateSection_id", "order", "user_id")
+        VALUES (p_template_id, v_section_id, v_order, p_user_id);
       END LOOP;
     END IF;
 
@@ -258,8 +258,8 @@ BEGIN
     -- Step 3: Link sections with ordering
     FOR v_order IN 1 .. array_length(v_section_ids, 1) LOOP
       v_section_id := v_section_ids[v_order];
-      INSERT INTO "noteTemplateSectionOrders" ("noteTemplate_id", "noteTemplateSection_id", "order")
-      VALUES (v_new_template_id, v_section_id, v_order);
+      INSERT INTO "noteTemplateSectionOrders" ("noteTemplate_id", "noteTemplateSection_id", "order", "user_id")
+      VALUES (v_new_template_id, v_section_id, v_order, p_user_id);
     END LOOP;
 
     RETURN QUERY SELECT v_new_template_id, TRUE, NULL::TEXT;

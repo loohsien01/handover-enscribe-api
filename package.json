@@ -19,6 +19,7 @@
     "test:recordings": "node tests/recordings.test.js --all",
     "test:transcripts": "node tests/transcripts.test.js",
     "test:soap-notes": "node tests/soap-notes.test.js",
+    "test:notes": "node tests/notes.test.js",
     "test:gcp": "node tests/gcp.test.js",
     "test:deepgram": "node tests/deepgram.test.js",
     "test:teardown": "node tests/teardown.test.js",

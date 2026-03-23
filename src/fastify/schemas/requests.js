@@ -530,3 +530,30 @@ export const authResendRequestSchema = z.object({
     .url('emailRedirectTo must be a valid URL')
     .optional(),
 });
+
+// ============================================================================
+// Notes Schemas
+// ============================================================================
+
+/**
+ * POST request for creating a note
+ * Endpoint: POST /api/notes
+ * noteTemplate_id is required, text and patientEncounter_id are optional
+ */
+export const noteCreateRequestSchema = z.object({
+  noteTemplate_id: z.number('Note Template ID is required').int('Note Template ID must be an integer'),
+  text: z.string().min(0).default(''),
+  patientEncounter_id: z.number('Patient Encounter ID must be an integer').int('Patient Encounter ID must be an integer').nullable().optional(),
+});
+
+/**
+ * PATCH request for updating a note
+ * Endpoint: PATCH /api/notes/:id
+ * text is optional
+ */
+export const noteUpdateRequestSchema = z.object({
+  text: z.string().optional(),
+}).refine(
+  (data) => Object.keys(data).length > 0,
+  { message: 'At least one field (text) must be provided' }
+);
