@@ -1,10 +1,16 @@
 /**
  * Test Suite: Note Templates Complete API
  * Tests atomic endpoints for templates with embedded sections + ordering
+ * NEW FEATURES: 
+ *   - POST/PATCH now use unified sections array format
+ *   - Sections with 'id' field: link existing sections
+ *   - Sections without 'id' field: create new sections atomically
+ *   - Array order determines final section ordering
+ * 
  * GET /api/note-templates/complete (batch) - with include_details query param
  * GET /api/note-templates/complete/:id (single with sections)
- * POST /api/note-templates/complete (create with sections - atomic)
- * PATCH /api/note-templates/complete/:id (update template + sections + ordering - atomic)
+ * POST /api/note-templates/complete (create with existing/new sections - atomic)
+ * PATCH /api/note-templates/complete/:id (update template + create/link sections + reorder - atomic)
  * 
  * Test List:
  *   Test 1: GET /api/note-templates/complete without auth (should fail 401)
@@ -12,16 +18,19 @@
  *   Test 3: GET /api/note-templates/complete with auth (basic batch)
  *   Test 4: GET /api/note-templates/complete?include_details=false (explicit)
  *   Test 5: GET /api/note-templates/complete?include_details=true (explicit)
- *   Test 6: POST /api/note-templates/complete with sections (create atomic)
- *   Test 7: Batch GET with created template (default: no details)
- *   Test 8: Batch GET with include_details=true (with decrypted details)
- *   Test 9: Batch GET with pagination (limit/offset + include_details)
- *   Test 10: POST /api/note-templates/complete without auth (should fail 401)
- *   Test 11: POST /api/note-templates/complete with missing sections (validation)
- *   Test 12: GET /api/note-templates/complete/:id with invalid ID (404)
- *   Test 13: GET /api/note-templates/complete/:id with real template (deps on Test 6)
- *   Test 14: PATCH /api/note-templates/complete/:id (update name, deps on Test 6)
- *   Test 15: PATCH /api/note-templates/complete/:id (reorder sections, deps on Test 6)
+ *   Test 6: POST /api/note-templates/complete with existing sections (link mode)
+ *   Test 7: POST /api/note-templates/complete with new sections only (create mode)
+ *   Test 8: POST /api/note-templates/complete with mixed sections (create + link mode)
+ *   Test 9: Batch GET with created template (default: no details)
+ *   Test 10: Batch GET with include_details=true (with decrypted details)
+ *   Test 11: Batch GET with pagination (limit/offset + include_details)
+ *   Test 12: POST /api/note-templates/complete without auth (should fail 401)
+ *   Test 13: POST /api/note-templates/complete with missing sections (validation)
+ *   Test 14: GET /api/note-templates/complete/:id with invalid ID (404)
+ *   Test 15: GET /api/note-templates/complete/:id with real template (deps on Test 6)
+ *   Test 16: PATCH /api/note-templates/complete/:id (update name, deps on Test 6)
+ *   Test 17: PATCH /api/note-templates/complete/:id (add new sections while reordering, deps on Test 6)
+ *   Test 18: PATCH /api/note-templates/complete/:id (reorder existing sections only, deps on Test 6)
  * 
  * Note: Requires valid JWT token for authentication
  * Requires: TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local
@@ -297,6 +306,7 @@ async function runNoteTemplatesCompleteTests() {
   if (!test2Passed || cachedSectionIds.length === 0) {
     test6Message = '⚠️  SKIPPED: Test 2 failed, cannot test POST /complete without sections';
   } else {
+    // Test 6: Create template by LINKING existing sections (using new sections array format)
     const createResponse = await fetch(`${runner.baseUrl}/api/note-templates/complete`, {
       method: 'POST',
       headers: {
@@ -304,8 +314,8 @@ async function runNoteTemplatesCompleteTests() {
         ...authHeaders,
       },
       body: JSON.stringify({
-        name: 'Complete Template - ' + Date.now(),
-        noteTemplateSection_ids: cachedSectionIds,
+        name: 'Complete Template (Existing Sections) - ' + Date.now(),
+        sections: cachedSectionIds.map(id => ({ id })), // Link existing sections
       }),
     });
 
@@ -314,7 +324,7 @@ async function runNoteTemplatesCompleteTests() {
       if (createdData?.template?.id) {
         cachedCompleteTemplateId = createdData.template.id;
         test6Passed = true;
-        test6Message = `Created complete template with ID: ${cachedCompleteTemplateId}, sections: ${createdData.sections?.length || 0}`;
+        test6Message = `Created complete template with ID: ${cachedCompleteTemplateId}, linked ${createdData.sections?.length || 0} sections`;
       } else {
         test6Message = 'Response missing template.id field';
       }
@@ -324,7 +334,7 @@ async function runNoteTemplatesCompleteTests() {
   }
 
   runner.results.push({
-    name: 'Test 6: POST /api/note-templates/complete with sections (create with atomic ordering)',
+    name: 'Test 6: POST /api/note-templates/complete with existing sections (link mode)',
     passed: test6Passed,
     endpoint: '/api/note-templates/complete',
     method: 'POST',
@@ -336,9 +346,122 @@ async function runNoteTemplatesCompleteTests() {
   });
 
   const test6Result = test6Passed ? '✅' : (test6Message.includes('SKIPPED') ? '⚠️ ' : '❌');
-  console.log(`${test6Result} Test 6: POST /api/note-templates/complete with sections (atomic)`);
+  console.log(`${test6Result} Test 6: POST /api/note-templates/complete with existing sections (link mode)`);
   console.log(`   ${test6Message}`);
-  console.log(`   ⚠️  TEST DEPENDENCY: Tests 7-9, 13-15 depend on Test 6. If Test 6 fails, those tests will be skipped.\n`);
+  console.log(`   ⚠️  TEST DEPENDENCY: Tests 7-9, 13-16 depend on Test 6. If Test 6 fails, those tests will be skipped.\n`);
+
+  // Test 6a: Create template with NEW sections only (create mode)
+  let test6aPassed = false;
+  let test6aMessage = '';
+  if (!accessToken) {
+    test6aMessage = '⚠️  SKIPPED: No access token';
+  } else {
+    const createNewResponse = await fetch(`${runner.baseUrl}/api/note-templates/complete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
+      body: JSON.stringify({
+        name: 'Template with New Sections - ' + Date.now(),
+        sections: [
+          {
+            name: 'Assessment - ' + Date.now(),
+            layout: 'paragraph',
+            details: 'Clinical assessment and diagnostic thinking',
+          },
+          {
+            name: 'Plan - ' + Date.now(),
+            layout: 'bullet points',
+            details: '• Treatment plan\n• Follow-up\n• Patient education',
+          },
+        ],
+      }),
+    });
+
+    if (createNewResponse.ok && createNewResponse.status === 201) {
+      const createdData = await createNewResponse.json();
+      if (createdData?.template?.id && createdData?.sections?.length === 2) {
+        test6aPassed = true;
+        test6aMessage = `Created template with ID: ${createdData.template.id}, created ${createdData.sections.length} NEW sections atomically`;
+      } else {
+        test6aMessage = 'Response missing template.id or sections count mismatch';
+      }
+    } else {
+      test6aMessage = `Expected 201, got ${createNewResponse.status}`;
+    }
+  }
+
+  runner.results.push({
+    name: 'Test 7: POST /api/note-templates/complete with new sections (create mode)',
+    passed: test6aPassed,
+    endpoint: '/api/note-templates/complete',
+    method: 'POST',
+    status: test6aPassed ? 201 : null,
+    expectedStatus: 201,
+    customMessage: test6aMessage,
+    testNumber: 7,
+    timestamp: new Date().toISOString(),
+  });
+
+  const test6aResult = test6aPassed ? '✅' : (test6aMessage.includes('SKIPPED') ? '⚠️ ' : '❌');
+  console.log(`${test6aResult} Test 7: POST /api/note-templates/complete with new sections (create mode)`);
+  console.log(`   ${test6aMessage}\n`);
+
+  // Test 6b: Create template with MIXED sections (both existing and new)
+  let test6bPassed = false;
+  let test6bMessage = '';
+  if (!test2Passed || cachedSectionIds.length === 0 || !accessToken) {
+    test6bMessage = '⚠️  SKIPPED: Test 2 failed or no access token';
+  } else {
+    const createMixedResponse = await fetch(`${runner.baseUrl}/api/note-templates/complete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
+      body: JSON.stringify({
+        name: 'Template with Mixed Sections - ' + Date.now(),
+        sections: [
+          { id: cachedSectionIds[0] }, // Link existing section
+          {
+            name: 'New Custom Section - ' + Date.now(),
+            layout: 'paragraph',
+            details: 'This is a newly created section in the same request',
+          },
+          { id: cachedSectionIds[1] }, // Link another existing section
+        ],
+      }),
+    });
+
+    if (createMixedResponse.ok && createMixedResponse.status === 201) {
+      const createdData = await createMixedResponse.json();
+      if (createdData?.template?.id && createdData?.sections?.length === 3) {
+        test6bPassed = true;
+        test6bMessage = `Created template with ID: ${createdData.template.id}, linked 2 existing + created 1 new section atomically`;
+      } else {
+        test6bMessage = 'Response missing template.id or sections count mismatch';
+      }
+    } else {
+      test6bMessage = `Expected 201, got ${createMixedResponse.status}`;
+    }
+  }
+
+  runner.results.push({
+    name: 'Test 8: POST /api/note-templates/complete with mixed sections (create + link mode)',
+    passed: test6bPassed,
+    endpoint: '/api/note-templates/complete',
+    method: 'POST',
+    status: test6bPassed ? 201 : null,
+    expectedStatus: 201,
+    customMessage: test6bMessage,
+    testNumber: 8,
+    timestamp: new Date().toISOString(),
+  });
+
+  const test6bResult = test6bPassed ? '✅' : (test6bMessage.includes('SKIPPED') ? '⚠️ ' : '❌');
+  console.log(`${test6bResult} Test 8: POST /api/note-templates/complete with mixed sections (create + link mode)`);
+  console.log(`   ${test6bMessage}\n`);
 
   // Test 7: GET /api/note-templates/complete batch with created template - default (no details)
   let test7Passed = false;
@@ -380,21 +503,21 @@ async function runNoteTemplatesCompleteTests() {
   }
 
   runner.results.push({
-    name: 'Test 7: GET /api/note-templates/complete batch (default: no details)',
+    name: 'Test 9: GET /api/note-templates/complete batch (default: no details)',
     passed: test7Passed,
     endpoint: '/api/note-templates/complete',
     method: 'GET',
     status: test7Passed || test7Message.includes('SKIPPED') ? 200 : null,
     expectedStatus: 200,
     customMessage: test7Message,
-    testNumber: 7,
+    testNumber: 9,
     timestamp: new Date().toISOString(),
   });
 
   const test7Result = test7Passed ? '✅' : (test7Message.includes('SKIPPED') ? '⚠️ ' : '❌');
-  console.log(`${test7Result} Test 7: GET /api/note-templates/complete batch (default: no details)`);
+  console.log(`${test7Result} Test 9: GET /api/note-templates/complete batch (default: no details)`);
   console.log(`   ${test7Message}`);
-  console.log(`   ⏳ DEPENDENCY: Test 7 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
+  console.log(`   ⏳ DEPENDENCY: Test 9 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
 
   // Test 8: GET /api/note-templates/complete batch with include_details=true (should have details)
   let test8Passed = false;
@@ -436,21 +559,21 @@ async function runNoteTemplatesCompleteTests() {
   }
 
   runner.results.push({
-    name: 'Test 8: GET /api/note-templates/complete batch with include_details=true (with details)',
+    name: 'Test 10: GET /api/note-templates/complete batch with include_details=true (with details)',
     passed: test8Passed,
     endpoint: '/api/note-templates/complete?include_details=true',
     method: 'GET',
     status: test8Passed || test8Message.includes('SKIPPED') ? 200 : null,
     expectedStatus: 200,
     customMessage: test8Message,
-    testNumber: 8,
+    testNumber: 10,
     timestamp: new Date().toISOString(),
   });
 
   const test8Result = test8Passed ? '✅' : (test8Message.includes('SKIPPED') ? '⚠️ ' : '❌');
-  console.log(`${test8Result} Test 8: GET /api/note-templates/complete batch with include_details=true`);
+  console.log(`${test8Result} Test 10: GET /api/note-templates/complete batch with include_details=true`);
   console.log(`   ${test8Message}`);
-  console.log(`   ⏳ DEPENDENCY: Test 8 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
+  console.log(`   ⏳ DEPENDENCY: Test 10 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
 
   // Test 9: GET /api/note-templates/complete batch with pagination (include_details behavior)
   let test9Passed = false;
@@ -482,36 +605,36 @@ async function runNoteTemplatesCompleteTests() {
   }
 
   runner.results.push({
-    name: 'Test 9: GET /api/note-templates/complete batch with pagination (limit/offset + include_details)',
+    name: 'Test 11: GET /api/note-templates/complete batch with pagination (limit/offset + include_details)',
     passed: test9Passed,
     endpoint: '/api/note-templates/complete?limit=1&offset=0&include_details=false',
     method: 'GET',
     status: test9Passed || test9Message.includes('SKIPPED') ? 200 : null,
     expectedStatus: 200,
     customMessage: test9Message,
-    testNumber: 9,
+    testNumber: 11,
     timestamp: new Date().toISOString(),
   });
 
   const test9Result = test9Passed ? '✅' : (test9Message.includes('SKIPPED') ? '⚠️ ' : '❌');
-  console.log(`${test9Result} Test 9: GET /api/note-templates/complete batch with pagination`);
+  console.log(`${test9Result} Test 11: GET /api/note-templates/complete batch with pagination`);
   console.log(`   ${test9Message}`);
-  console.log(`   ⏳ DEPENDENCY: Test 9 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
+  console.log(`   ⏳ DEPENDENCY: Test 11 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
 
-  // Test 10: POST /api/note-templates/complete without auth - should fail
-  await runner.test('Test 10: POST /api/note-templates/complete without authentication', {
+  // Test 12: POST /api/note-templates/complete without auth - should fail
+  await runner.test('Test 12: POST /api/note-templates/complete without authentication', {
     method: 'POST',
     endpoint: '/api/note-templates/complete',
     body: {
       name: 'Unauthorized Template',
-      noteTemplateSection_ids: [1],
+      sections: [{ name: 'Test Section' }],
     },
     expectedStatus: 401,
-    testNumber: 10,
+    testNumber: 12,
   });
 
-  // Test 11: POST /api/note-templates/complete with missing sections - validation error
-  await runner.test('Test 11: POST /api/note-templates/complete with missing noteTemplateSection_ids', {
+  // Test 13: POST /api/note-templates/complete with missing sections - validation error
+  await runner.test('Test 13: POST /api/note-templates/complete with missing sections array', {
     method: 'POST',
     endpoint: '/api/note-templates/complete',
     headers: authHeaders,
@@ -519,20 +642,20 @@ async function runNoteTemplatesCompleteTests() {
       name: 'Incomplete Template',
     },
     expectedStatus: 400,
-    testNumber: 11,
+    testNumber: 13,
     customValidator: (data) => {
       if (!data.error && !data.details) return { passed: false, message: 'Missing error or details field' };
       return { passed: true, message: '✓ Validation error for missing sections' };
     },
   });
 
-  // Test 12: GET /api/note-templates/complete/:id with invalid ID
-  await runner.test('Test 12: GET /api/note-templates/complete/:id with invalid ID', {
+  // Test 14: GET /api/note-templates/complete/:id with invalid ID
+  await runner.test('Test 14: GET /api/note-templates/complete/:id with invalid ID', {
     method: 'GET',
     endpoint: '/api/note-templates/complete/99999999',
     headers: authHeaders,
     expectedStatus: 404,
-    testNumber: 12,
+    testNumber: 14,
   });
 
   // ===== GET SINGLE COMPLETE TEMPLATE (DEPENDS ON TEST 6) =====
@@ -561,21 +684,21 @@ async function runNoteTemplatesCompleteTests() {
   }
 
   runner.results.push({
-    name: 'Test 13: GET /api/note-templates/complete/:id with real created template',
+    name: 'Test 15: GET /api/note-templates/complete/:id with real created template',
     passed: test13Passed,
     endpoint: '/api/note-templates/complete/:id',
     method: 'GET',
     status: test13Passed ? 200 : null,
     expectedStatus: 200,
     customMessage: test13Message,
-    testNumber: 13,
+    testNumber: 15,
     timestamp: new Date().toISOString(),
   });
 
   const test13Result = test13Passed ? '✅' : (test13Message.includes('SKIPPED') ? '⚠️ ' : '❌');
-  console.log(`${test13Result} Test 13: GET /api/note-templates/complete/:id with real created template`);
+  console.log(`${test13Result} Test 15: GET /api/note-templates/complete/:id with real created template`);
   console.log(`   ${test13Message}`);
-  console.log(`   ⏳ DEPENDENCY: Test 13 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
+  console.log(`   ⏳ DEPENDENCY: Test 15 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
 
   // ===== UPDATE COMPLETE TEMPLATE (DEPENDS ON TEST 6) =====
   
@@ -609,30 +732,29 @@ async function runNoteTemplatesCompleteTests() {
   }
 
   runner.results.push({
-    name: 'Test 14: PATCH /api/note-templates/complete/:id (update name)',
+    name: 'Test 16: PATCH /api/note-templates/complete/:id (update name only)',
     passed: test14Passed,
     endpoint: '/api/note-templates/complete/:id',
     method: 'PATCH',
     status: test14Passed ? 200 : null,
     expectedStatus: 200,
     customMessage: test14Message,
-    testNumber: 14,
+    testNumber: 16,
     timestamp: new Date().toISOString(),
   });
 
   const test14Result = test14Passed ? '✅' : (test14Message.includes('SKIPPED') ? '⚠️ ' : '❌');
-  console.log(`${test14Result} Test 14: PATCH /api/note-templates/complete/:id (update name)`);
+  console.log(`${test14Result} Test 16: PATCH /api/note-templates/complete/:id (update name only)`);
   console.log(`   ${test14Message}`);
-  console.log(`   ⏳ DEPENDENCY: Test 14 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
+  console.log(`   ⏳ DEPENDENCY: Test 16 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
 
-  // Test 15: PATCH /api/note-templates/complete/:id with section reordering (DEPENDS ON TEST 6)
+  // Test 15: PATCH /api/note-templates/complete/:id with adding new sections and reordering
   let test15Passed = false;
   let test15Message = '';
   if (!cachedCompleteTemplateId || cachedSectionIds.length < 2) {
-    test15Message = '⚠️  SKIPPED: Test 6 failed or not enough sections to test reordering';
+    test15Message = '⚠️  SKIPPED: Test 6 failed or not enough sections to test';
   } else {
-    // Reverse the order of sections
-    const reversedIds = [...cachedSectionIds].reverse();
+    // Add a new section and reorder: keep 2nd existing, add new, then 1st existing
     const patchResponse = await fetch(`${runner.baseUrl}/api/note-templates/complete/${cachedCompleteTemplateId}`, {
       method: 'PATCH',
       headers: {
@@ -640,17 +762,26 @@ async function runNoteTemplatesCompleteTests() {
         ...authHeaders,
       },
       body: JSON.stringify({
-        noteTemplateSection_ids: reversedIds,
+        sections: [
+          { id: cachedSectionIds[1] }, // Existing section (reordered to first)
+          {
+            name: 'New Additional Section - ' + Date.now(),
+            layout: 'paragraph',
+            details: 'Section added during PATCH update',
+          },
+          { id: cachedSectionIds[0] }, // Existing section (reordered to third)
+        ],
       }),
     });
 
     if (patchResponse.ok && patchResponse.status === 200) {
       const data = await patchResponse.json();
-      if (data?.sections?.length === cachedSectionIds.length) {
+      // Should now have 3 sections (2 existing + 1 new)
+      if (data?.sections?.length === 3) {
         test15Passed = true;
-        test15Message = `Successfully reordered ${data.sections.length} sections (atomic)`;
+        test15Message = `Successfully added new section and reordered to ${data.sections.length} total sections (atomic)`;
       } else {
-        test15Message = 'Response sections count mismatch';
+        test15Message = `Expected 3 sections, got ${data?.sections?.length || 0}`;
       }
     } else {
       test15Message = `Expected 200, got ${patchResponse.status}`;
@@ -658,21 +789,72 @@ async function runNoteTemplatesCompleteTests() {
   }
 
   runner.results.push({
-    name: 'Test 15: PATCH /api/note-templates/complete/:id (reorder sections)',
+    name: 'Test 17: PATCH /api/note-templates/complete/:id (add new sections + reorder)',
     passed: test15Passed,
     endpoint: '/api/note-templates/complete/:id',
     method: 'PATCH',
     status: test15Passed ? 200 : null,
     expectedStatus: 200,
     customMessage: test15Message,
-    testNumber: 15,
+    testNumber: 17,
     timestamp: new Date().toISOString(),
   });
 
   const test15Result = test15Passed ? '✅' : (test15Message.includes('SKIPPED') ? '⚠️ ' : '❌');
-  console.log(`${test15Result} Test 15: PATCH /api/note-templates/complete/:id (reorder sections)`);
+  console.log(`${test15Result} Test 17: PATCH /api/note-templates/complete/:id (add new sections + reorder)`);
   console.log(`   ${test15Message}`);
-  console.log(`   ⏳ DEPENDENCY: Test 15 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
+  console.log(`   ⏳ DEPENDENCY: Test 17 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
+
+  // Test 16: PATCH /api/note-templates/complete/:id with section reordering only (no new sections)
+  let test16Passed = false;
+  let test16Message = '';
+  if (!cachedCompleteTemplateId || cachedSectionIds.length < 2) {
+    test16Message = '⚠️  SKIPPED: Test 6 failed or not enough sections to test reordering';
+  } else {
+    // Reverse only the first 2 sections' order
+    const patchResponse = await fetch(`${runner.baseUrl}/api/note-templates/complete/${cachedCompleteTemplateId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
+      body: JSON.stringify({
+        sections: [
+          { id: cachedSectionIds[0] }, // Was second, now first
+          { id: cachedSectionIds[1] }, // Was first, now second
+        ],
+      }),
+    });
+
+    if (patchResponse.ok && patchResponse.status === 200) {
+      const data = await patchResponse.json();
+      if (data?.sections?.length >= 2) {
+        test16Passed = true;
+        test16Message = `Successfully reordered ${data.sections.length} sections (atomic)`;
+      } else {
+        test16Message = 'Response sections count mismatch';
+      }
+    } else {
+      test16Message = `Expected 200, got ${patchResponse.status}`;
+    }
+  }
+
+  runner.results.push({
+    name: 'Test 18: PATCH /api/note-templates/complete/:id (reorder sections only)',
+    passed: test16Passed,
+    endpoint: '/api/note-templates/complete/:id',
+    method: 'PATCH',
+    status: test16Passed ? 200 : null,
+    expectedStatus: 200,
+    customMessage: test16Message,
+    testNumber: 18,
+    timestamp: new Date().toISOString(),
+  });
+
+  const test16Result = test16Passed ? '✅' : (test16Message.includes('SKIPPED') ? '⚠️ ' : '❌');
+  console.log(`${test16Result} Test 18: PATCH /api/note-templates/complete/:id (reorder sections only)`);
+  console.log(`   ${test16Message}`);
+  console.log(`   ⏳ DEPENDENCY: Test 18 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
 
   // ===== CLEANUP (not formal tests) =====
   console.log('Cleaning up test data...\n');
@@ -716,7 +898,7 @@ async function runNoteTemplatesCompleteTests() {
   console.log('');
 
   // Print results
-  runner.printResults(15);  // Updated count: Tests 1-15 (sequential numbering)
+  runner.printResults(18);  // Updated count: Tests 1-18 (sequential numbering)
   // Save results to file
   const resultsFile = runner.saveResults('note-templates-complete-tests.json');
   console.log(`✅ Test results saved to: ${resultsFile}\n`);

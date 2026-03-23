@@ -529,7 +529,9 @@ export async function getNoteTemplateComplete(request, reply) {
 
 /**
  * POST /api/note-templates/complete
- * Create template with pre-existing sections (atomic via RPC)
+ * Create template with new and/or existing sections (atomic via RPC)
+ * Sections with 'id': link existing
+ * Sections without 'id': create new
  */
 export async function createNoteTemplateComplete(request, reply) {
   try {
@@ -541,23 +543,67 @@ export async function createNoteTemplateComplete(request, reply) {
     }
 
     const userId = user.id;
-    const { name, noteTemplateSection_ids } = request.body;
+    const { name, sections } = request.body;
 
-    if (!name || !noteTemplateSection_ids || noteTemplateSection_ids.length === 0) {
+    if (!name || !sections || sections.length === 0) {
       return reply.status(400).send({ error: 'Name and at least one section are required' });
     }
 
     console.log('[createNoteTemplateComplete] Creating template:', {
       name,
-      sections: noteTemplateSection_ids,
+      sectionsCount: sections.length,
       user_id: userId,
     });
 
+    // Separate sections into new (no id) and existing (with id)
+    const newSections = sections.filter((s) => !s.id);
+    const existingSections = sections.filter((s) => s.id);
+
+    // Get user's master key if there are new sections to encrypt
+    let masterKey = null;
+    if (newSections.length > 0) {
+      const keyResult = await getOrCreateUserMasterKey(supabase, userId);
+      if (!keyResult.success) {
+        return reply.status(500).send({ error: keyResult.error });
+      }
+      masterKey = keyResult.masterKey;
+    }
+
+    // Encrypt new section details and prepare sections for RPC
+    const sectionsForRpc = sections.map((section) => {
+      const sectionCopy = { ...section };
+
+      // If it's a new section, validate name and encrypt details if provided
+      if (!sectionCopy.id) {
+        if (!sectionCopy.name || sectionCopy.name.trim() === '') {
+          throw new Error('New sections must have a non-empty name');
+        }
+
+        // Encrypt details if provided and no pre-encrypted data
+        if (sectionCopy.details && !sectionCopy.encrypted_details) {
+          const encryptResult = encryptSectionDetails(sectionCopy, masterKey);
+          if (!encryptResult.success) {
+            throw new Error(`Failed to encrypt section: ${encryptResult.error}`);
+          }
+          return encryptResult.section;
+        }
+      }
+
+      return sectionCopy;
+    });
+
+    console.log('[createNoteTemplateComplete] Calling RPC with sections:', {
+      count: sectionsForRpc.length,
+      new: newSections.length,
+      existing: existingSections.length,
+    });
+
     // Call RPC function
+    // Note: Pass sections as object, not stringified - Supabase client handles JSON serialization
     const { data, error } = await supabase.rpc('create_note_template_complete', {
       p_name: name,
       p_user_id: userId,
-      p_section_ids: noteTemplateSection_ids,
+      p_sections: sectionsForRpc,
     });
 
     if (error) {
@@ -613,13 +659,13 @@ export async function updateNoteTemplateComplete(request, reply) {
 
     const userId = user.id;
     const { id } = request.params;
-    const { name, sections, noteTemplateSection_ids } = request.body;
+    const { name, sections } = request.body;
 
     if (!isValidBigInt(id)) {
       return reply.status(400).send({ error: 'Invalid template ID format' });
     }
 
-    console.log('[updateNoteTemplateComplete] Updating template:', { id, name, sections, noteTemplateSection_ids });
+    console.log('[updateNoteTemplateComplete] Updating template:', { id, name, sectionsCount: sections?.length || 0 });
 
     // Verify template exists and user owns it
     const { data: existing, error: fetchError } = await supabase
@@ -636,42 +682,67 @@ export async function updateNoteTemplateComplete(request, reply) {
       return reply.status(403).send({ error: 'Unauthorized' });
     }
 
-    // If sections are provided, encrypt them before passing to RPC
+    // If sections are provided, process them (encrypt new sections, prepare for RPC)
     let sectionsForRpc = null;
     if (sections && sections.length > 0) {
-      // Get user's master key for encryption
-      const keyResult = await getOrCreateUserMasterKey(supabase, userId);
-      if (!keyResult.success) {
-        return reply.status(500).send({ error: keyResult.error });
+      // Separate sections into new (no id) and existing (with id)
+      const newSections = sections.filter((s) => !s.id);
+      const existingSections = sections.filter((s) => s.id);
+
+      // Get user's master key once if there are any sections needing encryption
+      let masterKey = null;
+      if ((newSections.length > 0 || existingSections.some((s) => s.details)) && !existingSections.some((s) => s.encrypted_details)) {
+        const keyResult = await getOrCreateUserMasterKey(supabase, userId);
+        if (!keyResult.success) {
+          return reply.status(500).send({ error: keyResult.error });
+        }
+        masterKey = keyResult.masterKey;
       }
 
       sectionsForRpc = sections.map((section) => {
         const sectionCopy = { ...section };
 
-        // Only encrypt if details are provided
-        if (sectionCopy.details) {
-          const encryptResult = encryptSectionDetails(sectionCopy, keyResult.masterKey);
-          if (!encryptResult.success) {
-            throw new Error(`Failed to encrypt section ${section.id}: ${encryptResult.error}`);
+        // For new sections, validate name and encrypt details if provided
+        if (!sectionCopy.id) {
+          if (!sectionCopy.name || sectionCopy.name.trim() === '') {
+            throw new Error('New sections must have a non-empty name');
           }
-          return encryptResult.section;
+
+          // Encrypt details if provided and no pre-encrypted data
+          if (sectionCopy.details && !sectionCopy.encrypted_details) {
+            const encryptResult = encryptSectionDetails(sectionCopy, masterKey);
+            if (!encryptResult.success) {
+              throw new Error(`Failed to encrypt section: ${encryptResult.error}`);
+            }
+            return encryptResult.section;
+          }
+        } else {
+          // For existing sections, encrypt details if provided
+          if (sectionCopy.details && !sectionCopy.encrypted_details) {
+            const encryptResult = encryptSectionDetails(sectionCopy, masterKey);
+            if (!encryptResult.success) {
+              throw new Error(`Failed to encrypt section ${section.id}: ${encryptResult.error}`);
+            }
+            return encryptResult.section;
+          }
         }
 
         return sectionCopy;
       });
     }
 
-    // Convert sections array to JSONB for RPC
-    const sectionsJsonb = sectionsForRpc ? JSON.stringify(sectionsForRpc) : null;
+    console.log('[updateNoteTemplateComplete] Calling RPC with sections:', {
+      count: sectionsForRpc?.length || 0,
+    });
 
     // Call RPC function
     // Note: Pass id as number, not BigInt - Supabase client can't serialize BigInt
+    // Note: Pass sections as object, not stringified - Supabase client handles JSON serialization
     const { data, error } = await supabase.rpc('update_note_template_complete', {
       p_template_id: parseInt(id, 10),
       p_user_id: userId,
       p_name: name || existing.name,
-      p_sections: sectionsJsonb,
-      p_section_ids: noteTemplateSection_ids || [],
+      p_sections: sectionsForRpc,
     });
 
     if (error) {

@@ -354,8 +354,20 @@ export const noteTemplateUpdateRequestSchema = z.object({
  */
 export const noteTemplatesCompleteCreateRequestSchema = z.object({
   name: z.string().min(1, 'Name is required'),
-  noteTemplateSection_ids: z.array(
-    z.number().int().positive('Section IDs must be positive integers')
+  sections: z.array(
+    z.object({
+      id: z.number().int().positive('Section ID must be positive').optional(),
+      name: z.string().min(1, 'Name is required for new sections').optional(),
+      layout: z.enum(['paragraph', 'bullet points'], {
+        errorMap: () => ({ message: 'Layout must be either "paragraph" or "bullet points"' }),
+      }).optional(),
+      details: z.string().optional(),
+      encrypted_details: z.string().optional(),
+      details_iv: z.string().optional(),
+    }).refine(
+      (data) => data.id !== undefined || (data.name !== undefined && data.name.trim() !== ''),
+      { message: 'Either provide an id (to link existing section) or a name (to create new section)' }
+    )
   ).min(1, 'At least one section is required'),
 });
 
@@ -363,29 +375,29 @@ export const noteTemplatesCompleteCreateRequestSchema = z.object({
  * PATCH request for updating a complete note template (atomic)
  * Endpoint: PATCH /api/note-templates/complete/:id
  * Updates template name, section details, and section ordering
+ * Sections array order determines final section ordering
  * Entire operation is atomic: succeeds completely or not at all
  */
 export const noteTemplatesCompleteUpdateRequestSchema = z.object({
   name: z.string().min(1, 'Name is required').optional(),
   sections: z.array(
     z.object({
-      id: z.number().int().positive('Section ID is required'),
-      name: z.string().min(1, 'Name is required').optional(),
+      id: z.number().int().positive('Section ID must be positive').optional(),
+      name: z.string().min(1, 'Name is required for new sections').optional(),
       layout: z.enum(['paragraph', 'bullet points'], {
         errorMap: () => ({ message: 'Layout must be either "paragraph" or "bullet points"' }),
       }).optional(),
-      details: z.string().min(1, 'Details is required').optional(),
+      details: z.string().optional(),
+      encrypted_details: z.string().optional(),
+      details_iv: z.string().optional(),
     }).refine(
-      (data) => data.name !== undefined || data.layout !== undefined || data.details !== undefined,
-      { message: 'At least one field (name, layout, or details) must be provided for each section' }
+      (data) => data.id !== undefined || (data.name !== undefined && data.name.trim() !== ''),
+      { message: 'Either provide an id (to update existing section) or a name (to create new section)' }
     )
   ).optional(),
-  noteTemplateSection_ids: z.array(
-    z.number().int().positive('Section IDs must be positive integers')
-  ).min(1, 'At least one section is required').optional(),
 }).refine(
-  (data) => data.name !== undefined || data.sections !== undefined || data.noteTemplateSection_ids !== undefined,
-  { message: 'At least one field (name, sections, or noteTemplateSection_ids) must be provided' }
+  (data) => data.name !== undefined || data.sections !== undefined,
+  { message: 'At least one field (name or sections) must be provided' }
 );
 
 // ============================================================================
