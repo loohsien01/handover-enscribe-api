@@ -32,10 +32,14 @@ const runner = new TestRunner('OpenAI Prompt-LLM API Tests');
 // Mock token for invalid auth tests
 const MOCK_TOKEN = 'invalid.token.here';
 
+// Skip Test 5 by default (run only when explicitly enabled), since it's identical to Test 4 just using  fallback template (don't pass noteTemplate_id)
+const skipTest5 = false;
+
 // Load test data
 const TEST_DATA_FILE = path.resolve(__dirname, 'testData.json');
 let testData = null;
-let cachedSoapResponse = null; // Cache SOAP response from test 4 for reuse
+let cachedSoapResponse = null; // Cache SOAP response from test 4 (custom template) for reuse
+let cachedFallbackResponse = null; // Cache SOAP response from test 5 (fallback template) for reuse
 
 function loadTestData() {
   if (!fs.existsSync(TEST_DATA_FILE)) {
@@ -392,13 +396,13 @@ async function runAllPromptLlmTests() {
     testNumber: 3,
   });
 
-  // Test 4: REAL OpenAI call - Generate SOAP note via job-based polling (PRIMARY TEST)
-  console.log('\n⏳ Test 4 will create a job and poll until complete (max 10 minutes)...\n');
-  console.log('   Process: Audio → Transcribe (Deepgram) → Expand dot phrases → Mask PHI (AWS) → Generate SOAP (OpenAI o3)\n');
+  // Test 4: REAL call - Generate SOAP note via job-based polling with standard note template (PRIMARY TEST)
+  console.log('\n⏳ Test 4 will create a job with standard note template (ID: 33) and poll until complete (max 10 minutes)...\n');
+  console.log('   Process: Audio → Transcribe (Deepgram) → Expand dot phrases → Mask PHI (AWS) → Fetch Template → LLM Generate note\n');
   
-  // Create job
+  // Create job with noteTemplate_id parameter
   const createResponse = await makeRequest('POST', '/api/jobs/prompt-llm',
-    { recording_file_path: recording.path },
+    { recording_file_path: recording.path, noteTemplate_id: "33" },
     { Authorization: `Bearer ${accessToken}` }
   );
 
@@ -455,114 +459,202 @@ async function runAllPromptLlmTests() {
   }
 
   runner.results.push({
-    name: 'Generate SOAP Note from Recording (Job-Based Polling)',
+    name: 'Generate SOAP Note from Recording with Custom Note Template (Job-Based Polling)',
     passed: test4Passed,
     endpoint: '/api/jobs/prompt-llm',
     method: 'POST → GET (polling)',
     status: createResponse.status,
     expectedStatus: 202,
     body: createResponse.body,
+    requestBody: { recording_file_path: recording.path, noteTemplate_id: "33" },
     customMessage: test4Message,
     testNumber: 4,
     timestamp: new Date().toISOString(),
   });
 
   const test4Result = test4Passed ? '✅' : '❌';
-  console.log(`\n${test4Result} Test 4: Generate SOAP Note from Recording (Job-Based Polling)`);
+  console.log(`\n${test4Result} Test 4: Generate SOAP Note from Recording with Custom Note Template (Job-Based Polling)`);
   console.log(`   ${test4Message}`);
 
-  // Test 5: Validate SOAP Structure (inline validation - dependent on test 4)
-  let test5Passed = false;
-  let test5Message = '';
-  if (!cachedSoapResponse) {
-    test5Message = '⚠️  SKIPPED: Test 4 failed, cannot validate SOAP structure';
+  // Test 5: Generate SOAP note via job-based polling WITHOUT noteTemplate_id (uses fallback schema) - SKIPPED BY DEFAULT
+  if (!skipTest5) {
+    console.log('\n⏳ Test 5 will create a job WITHOUT noteTemplate_id (fallback schema) and poll until complete (max 10 minutes)...\n');
+    console.log('   Process: Audio → Transcribe (Deepgram) → Expand dot phrases → Mask PHI (AWS) → LLM Generate note (fixed schema)\n');
+    
+    // Create job WITHOUT noteTemplate_id parameter
+    const createResponse5 = await makeRequest('POST', '/api/jobs/prompt-llm',
+      { recording_file_path: recording.path },
+      { Authorization: `Bearer ${accessToken}` }
+    );
+
+    let test5Passed = false;
+    let test5Message = '';
+    let jobId5 = null;
+
+    if (!createResponse5.ok || createResponse5.status !== 202) {
+      test5Message = `Failed to create job: HTTP ${createResponse5.status}`;
+    } else if (!createResponse5.body?.id) {
+      test5Message = 'Job creation response missing job ID';
+    } else {
+      jobId5 = createResponse5.body.id;
+      console.log(`✅ Job created: ${jobId5}`);
+      console.log('⏳ Polling (10s initial interval, exponential backoff to 45s cap)...');
+
+      // Poll until complete
+      const pollResult5 = await pollJobUntilComplete(jobId5, accessToken);
+
+      if (pollResult5.timedOut) {
+        test5Message = `Job polling timed out after ${pollResult5.elapsed}s`;
+      } else if (pollResult5.pollingFailed || pollResult5.resultFetchFailed) {
+        test5Message = pollResult5.error_message;
+      } else if (pollResult5.finalStatus === 'error') {
+        test5Message = `Job failed: ${pollResult5.error_message}`;
+      } else if (pollResult5.finalStatus === 'complete') {
+        if (!pollResult5.soap_note) {
+          test5Message = 'Job completed but parsed SOAP note is missing';
+        } else {
+          // Parse soap_note if it's a string
+          let parsedSoapNote5 = pollResult5.soap_note;
+          if (typeof pollResult5.soap_note === 'string') {
+            try {
+              parsedSoapNote5 = JSON.parse(pollResult5.soap_note);
+            } catch (err) {
+              test5Message = `Failed to parse SOAP note JSON: ${err.message}`;
+            }
+          }
+          
+          if (!test5Message) {
+            cachedFallbackResponse = {
+              soap_note: parsedSoapNote5.soap_note,
+              transcript_text: pollResult5.transcript_text,
+              soap_note_text: pollResult5.soap_note_text,
+              billing: parsedSoapNote5.billing,
+            };
+            test5Passed = true;
+            test5Message = `Completed in ${pollResult5.elapsed}s`;
+          }
+        }
+      } else {
+        test5Message = `Unexpected final status: ${pollResult5.finalStatus}`;
+      }
+    }
+
+    runner.results.push({
+      name: 'Generate SOAP Note from Recording with Fallback Schema (Job-Based Polling)',
+      passed: test5Passed,
+      endpoint: '/api/jobs/prompt-llm',
+      method: 'POST → GET (polling)',
+      status: createResponse5.status,
+      expectedStatus: 202,
+      body: createResponse5.body,
+      requestBody: { recording_file_path: recording.path },
+      customMessage: test5Message,
+      testNumber: 5,
+      timestamp: new Date().toISOString(),
+    });
+
+    const test5Result = test5Passed ? '✅' : '❌';
+    console.log(`\n${test5Result} Test 5: Generate SOAP Note from Recording with Fallback Schema (Job-Based Polling)`);
+    console.log(`   ${test5Message}`);
+  } else {
+    console.log('\n⏭️  Test 5: SKIPPED BY DEFAULT (set skipTest5 = false to enable)');
+  }
+
+  // Test 6: Validate SOAP Structure (inline validation - dependent on test 5)
+  let test6Passed = false;
+  let test6Message = '';
+  if (!cachedFallbackResponse) {
+    test6Message = '⚠️  SKIPPED: Test 5 failed or was skipped, cannot validate SOAP structure';
   } else {
     try {
       // Response.soap_note is already parsed by jobController using parseSoapNotes()
-      if (!cachedSoapResponse.soap_note || typeof cachedSoapResponse.soap_note !== 'object') {
-        test5Message = 'Missing or invalid soap_note object';
+      if (!cachedFallbackResponse.soap_note || typeof cachedFallbackResponse.soap_note !== 'object') {
+        test6Message = 'Missing or invalid soap_note object';
       } else {
-        const sn = cachedSoapResponse.soap_note;
+        const sn = cachedFallbackResponse.soap_note;
         
         // Check subjective with required fields
         if (!sn.subjective || typeof sn.subjective !== 'object') {
-          test5Message = 'Missing or invalid subjective object';
+          test6Message = 'Missing or invalid subjective object';
         } else {
           const subjReq = ['Chief complaint', 'HPI', 'History', 'ROS', 'Medications', 'Allergies'];
           for (const key of subjReq) {
             if (!(key in sn.subjective) || typeof sn.subjective[key] !== 'string') {
-              test5Message = `subjective missing or invalid: ${key}`;
+              test6Message = `subjective missing or invalid: ${key}`;
               break;
             }
           }
         }
         
         // Check objective with required fields
-        if (!test5Message && (!sn.objective || typeof sn.objective !== 'object')) {
-          test5Message = 'Missing or invalid objective object';
-        } else if (!test5Message) {
+        if (!test6Message && (!sn.objective || typeof sn.objective !== 'object')) {
+          test6Message = 'Missing or invalid objective object';
+        } else if (!test6Message) {
           const objReq = ['HEENT', 'General', 'Cardiovascular', 'Musculoskeletal', 'Other'];
           for (const key of objReq) {
             if (!(key in sn.objective) || typeof sn.objective[key] !== 'string') {
-              test5Message = `objective missing or invalid: ${key}`;
+              test6Message = `objective missing or invalid: ${key}`;
               break;
             }
           }
         }
         
         // Check assessment and plan
-        if (!test5Message && typeof sn.assessment !== 'string') {
-          test5Message = 'assessment must be a string';
-        } else if (!test5Message && typeof sn.plan !== 'string') {
-          test5Message = 'plan must be a string';
+        if (!test6Message && typeof sn.assessment !== 'string') {
+          test6Message = 'assessment must be a string';
+        } else if (!test6Message && typeof sn.plan !== 'string') {
+          test6Message = 'plan must be a string';
         }
         
         // Check billing
-        if (!test5Message && (!cachedSoapResponse.billing || typeof cachedSoapResponse.billing !== 'object')) {
-          test5Message = 'Missing or invalid billing object';
-        } else if (!test5Message) {
-          const bill = cachedSoapResponse.billing;
+        if (!test6Message && (!cachedFallbackResponse.billing || typeof cachedFallbackResponse.billing !== 'object')) {
+          test6Message = 'Missing or invalid billing object';
+        } else if (!test6Message) {
+          const bill = cachedFallbackResponse.billing;
           if (!Array.isArray(bill.icd10_codes) || bill.icd10_codes.length === 0) {
-            test5Message = 'icd10_codes must be non-empty array';
+            test6Message = 'icd10_codes must be non-empty array';
           } else if (typeof bill.billing_code !== 'string' || !bill.billing_code.length) {
-            test5Message = 'billing_code must be non-empty string';
+            test6Message = 'billing_code must be non-empty string';
           } else if (typeof bill.additional_inquiries !== 'string') {
-            test5Message = 'additional_inquiries must be string';
+            test6Message = 'additional_inquiries must be string';
           }
         }
         
-        if (!test5Message) {
-          test5Passed = true;
-          test5Message = 'SOAP note structure is valid and matches schema';
+        if (!test6Message) {
+          test6Passed = true;
+          test6Message = 'SOAP note structure is valid and matches schema';
         }
       }
     } catch (err) {
-      test5Message = `Validation error: ${err.message}`;
+      test6Message = `Validation error: ${err.message}`;
     }
   }
   
-  runner.results.push({
-    name: 'Validate SOAP Note Structure (from cached response)',
-    passed: test5Passed,
-    endpoint: '/api/jobs/prompt-llm',
-    method: 'GET (dependent on Test 4)',
-    status: null,
-    expectedStatus: null,
-    body: cachedSoapResponse || {},
-    customMessage: test5Message,
-    testNumber: 5,
-    timestamp: new Date().toISOString(),
-  }); 
-  
-  const test5Result = test5Passed ? '✅' : '⚠️ ';
-  console.log(`\n${test5Result} Test 5: Validate SOAP Note Structure`);
-  console.log(`   ${test5Message}`);
+  // Only run Test 6 if Test 5 was actually executed
+  if (!skipTest5) {
+    runner.results.push({
+      name: 'Validate SOAP Note Structure (from cached response)',
+      passed: test6Passed,
+      endpoint: '/api/jobs/prompt-llm',
+      method: 'GET (dependent on Test 5)',
+      status: null,
+      expectedStatus: null,
+      body: cachedFallbackResponse || {},
+      customMessage: test6Message,
+      testNumber: 6,
+      timestamp: new Date().toISOString(),
+    }); 
+    
+    const test6Result = test6Passed ? '✅' : '⚠️ ';
+    console.log(`\n${test6Result} Test 6: Validate SOAP Note Structure`);
+    console.log(`   ${test6Message}`);
+  }
 
-  // Test 6: Verify Special Character Handling (inline validation - dependent on test 4)
-  let test6Passed = false;
-  let test6Message = '';
+  // Test 7: Verify Special Character Handling (inline validation - dependent on test 4)
+  let test7Passed = false;
+  let test7Message = '';
   if (!cachedSoapResponse) {
-    test6Message = '⚠️  SKIPPED: Test 4 failed, cannot verify special character handling';
+    test7Message = '⚠️  SKIPPED: Test 4 failed, cannot verify special character handling';
   } else {
     const soapText = JSON.stringify(cachedSoapResponse);
     
@@ -618,32 +710,32 @@ async function runAllPromptLlmTests() {
     }
     
     if (foundProblematic.length > 0) {
-      test6Message = `Found unclean special characters: ${foundProblematic.slice(0, 3).join(', ')}${foundProblematic.length > 3 ? ` +${foundProblematic.length - 3} more` : ''}`;
+      test7Message = `Found unclean special characters: ${foundProblematic.slice(0, 3).join(', ')}${foundProblematic.length > 3 ? ` +${foundProblematic.length - 3} more` : ''}`;
     } else {
-      test6Passed = true;
-      test6Message = 'All special characters properly normalized by cleanRawText()';
+      test7Passed = true;
+      test7Message = 'All special characters properly normalized by cleanRawText()';
     }
   }
   
   runner.results.push({
     name: 'Verify Special Character Normalization (from cached response)',
-    passed: test6Passed,
+    passed: test7Passed,
     endpoint: '/api/jobs/prompt-llm',
     method: 'GET (dependent on Test 4)',
     status: null,
     expectedStatus: null,
     body: cachedSoapResponse || {},
-    customMessage: test6Message,
-    testNumber: 6,
+    customMessage: test7Message,
+    testNumber: 7,
     timestamp: new Date().toISOString(),
   });
   
-  const test6Result = test6Passed ? '✅' : '⚠️ ';
-  console.log(`\n${test6Result} Test 6: Verify Special Character Normalization`);
-  console.log(`   ${test6Message}`);
+  const test7Result = test7Passed ? '✅' : '⚠️ ';
+  console.log(`\n${test7Result} Test 7: Verify Special Character Normalization`);
+  console.log(`   ${test7Message}`);
 
   // Print and save results
-  runner.printResults(6); // 6 total tests
+  runner.printResults(7); // 7 total tests
   
   const resultsPath = runner.saveResults('prompt-llm-tests.json');
   console.log(`✅ Detailed results saved to: ${resultsPath}`);

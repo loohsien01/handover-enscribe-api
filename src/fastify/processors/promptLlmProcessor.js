@@ -18,6 +18,9 @@ import { unmask_phi } from '../../utils/maskPhiHelper.js';
 import { transcribe_expand_mask } from '../controllers/transcribeController.js';
 import parseSoapNotes from '../../utils/parseSoapNotes.js';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
+import { getSystemMasterKey, getOrCreateUserMasterKey } from '../controllers/userSecurityConfigController.js';
+import { decryptNoteTemplateSectionDetails } from '../../utils/encryptionUtils.js';
+import { getCompleteTemplate } from '../controllers/noteTemplatesCompleteController.js';
 
 /**
  * Helper: Clean raw text from LLMs to normalize problematic characters for EHR systems
@@ -84,6 +87,20 @@ async function updateJobStatus(jobId, status, updates = {}) {
   if (error) {
     console.error(`[updateJobStatus] Failed to update job ${jobId}:`, error);
   }
+}
+
+/**
+ * Helper: Convert template sections to schema format
+ * Converts from { name, layout, details, ... } to { name, layout, details }
+ * Filters out encrypted fields and keeps only what's needed for prompt
+ */
+function convertTemplateSectionsToSchema(sections) {
+  if (!sections || !Array.isArray(sections)) return null;
+  return sections.map(s => ({
+    name: s.name,
+    layout: s.layout,
+    details: s.details || '',
+  }));
 }
 
 
@@ -168,8 +185,9 @@ async function claudeAPIReq(reqBody) {
  * @param {string} jobId - Job UUID
  * @param {string} userId - User UUID
  * @param {string} authorizationHeader - User's JWT token from initial request (e.g., 'Bearer ...')
+ * @param {BigInt|string|null} noteTemplate_id - Optional note template ID to customize SOAP note schema
  */
-export async function promptLlmProcessor(jobId, userId, authorizationHeader) {
+export async function promptLlmProcessor(jobId, userId, authorizationHeader, noteTemplate_id = null) {
   const startTime = Date.now();
   console.log(`[promptLlmProcessor] Starting job ${jobId} for user ${userId}`);
 
@@ -201,20 +219,36 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader) {
       throw new Error(`Failed to create signed URL: ${signedError.message}`);
     }
 
-    // Transcribe, expand, and mask
+    // Parallel execution: Transcribe AND fetch note template simultaneously
     let transcriptResult;
+    let templateResult = null;
     const transcribeStartTime = Date.now();
+
     try {
-      // Use the authorization header from job creation for authenticated access
       const internalRequest = {
         headers: {
           authorization: authorizationHeader,
         },
       };
-      transcriptResult = await transcribe_expand_mask({
-        recording_file_signed_url: signedUrlData.signedUrl,
-        req: internalRequest,
-      });
+
+      // Run both in parallel
+      const [transcriptRes, templateRes] = await Promise.all([
+        // Transcription
+        transcribe_expand_mask({
+          recording_file_signed_url: signedUrlData.signedUrl,
+          req: internalRequest,
+        }),
+        // Template fetch (if needed)
+        noteTemplate_id
+          ? getCompleteTemplate(supabase, BigInt(noteTemplate_id), userId).catch(err => {
+              console.warn(`[promptLlmProcessor] ${jobId}: Template fetch error: ${err.message}`);
+              return null;
+            })
+          : Promise.resolve(null),
+      ]);
+
+      transcriptResult = transcriptRes;
+      templateResult = templateRes;
     } catch (error) {
       throw new Error(`Transcription failed: ${error?.message || 'Unknown error'}`);
     }
@@ -245,9 +279,34 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader) {
     const soapStartTime = Date.now();
     let soapNoteAndBillingReqBody;
     let soapNoteAndBillingResultRaw;
+    let noteTemplateSections = null;
+
+    // Convert note template sections if fetch was successful
+    if (templateResult && templateResult.success && templateResult.sections && templateResult.sections.length > 0) {
+      noteTemplateSections = convertTemplateSectionsToSchema(templateResult.sections);
+      
+      // Log the converted template for debugging
+      console.log(`[promptLlmProcessor] ${jobId}: Using note template ${noteTemplate_id} with ${noteTemplateSections.length} sections:`);
+      noteTemplateSections.forEach((section, index) => {
+        const content = `${section.layout} - ${section.details}`;
+        console.log(`  [${index + 1}] ${section.name}: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
+      });
+    } else if (noteTemplate_id && templateResult) {
+      console.warn(`[promptLlmProcessor] ${jobId}: Failed to fetch note template ${noteTemplate_id}: ${templateResult.error}. Using fallback schema`);
+    }
 
     try {
-      soapNoteAndBillingReqBody = claudeRequestBody.getSoapNoteAndBillingRequestBody(maskedTranscript);
+      soapNoteAndBillingReqBody = claudeRequestBody.getSoapNoteAndBillingRequestBody(maskedTranscript, noteTemplateSections);
+      
+      // Log the final schema being sent to Claude (crucial for debugging LLM prompt)
+      console.log(`[promptLlmProcessor] ${jobId}: Final JSON schema for Claude:`);
+      soapNoteAndBillingReqBody.system.forEach(sys => {
+        if (sys.text && sys.text.includes('MUST return')) {
+          const schemaText = sys.text.substring(0, 500);
+          console.log(schemaText + (sys.text.length > 500 ? '\n... [truncated for logs]' : ''));
+        }
+      });
+      
       soapNoteAndBillingResultRaw = await claudeAPIReq(soapNoteAndBillingReqBody);
     } catch (error) {
       throw new Error(`Claude API request failed: ${error.message}`);
@@ -301,7 +360,25 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader) {
     try {
       soapNoteAndBillingResult = JSON.parse(unmaskedString);
     } catch (error) {
-      throw new Error(`Failed to parse SOAP note JSON: ${error.message}`);
+      // Extract position from error message (e.g., "position 6484")
+      const positionMatch = error.message.match(/position (\d+)/);
+      const errorPos = positionMatch ? parseInt(positionMatch[1], 10) : null;
+      
+      // Build helpful error message with context
+      let contextInfo = `Failed to parse SOAP note JSON: ${error.message}\n`;
+      contextInfo += `Total length: ${unmaskedString.length} characters\n`;
+      contextInfo += `First 150 chars:\n${unmaskedString.substring(0, 150)}...\n\n`;
+      
+      if (errorPos) {
+        const startContext = Math.max(0, errorPos - 75);
+        const endContext = Math.min(unmaskedString.length, errorPos + 75);
+        contextInfo += `Context around position ${errorPos}:\n`;
+        contextInfo += `[${startContext}] ${unmaskedString.substring(startContext, endContext)} [${endContext}]\n`;
+        contextInfo += `${'='.repeat(Math.min(75, errorPos - startContext))}↑ ERROR HERE`;
+      }
+      
+      console.error(`[promptLlmProcessor] ${jobId}: JSON Parse Error:\n${contextInfo}`);
+      throw new Error(contextInfo);
     }
 
     // Normalize field names to lowercase (soap_note, subjective, objective, assessment, plan)

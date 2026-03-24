@@ -64,7 +64,18 @@ function convertBigIntsToStrings(obj) {
  * Fetches template + sections + ordering for a single template
  * Returns with decrypted section details
  */
-async function getCompleteTemplate(supabase, templateId, userId) {
+/**
+ * Fetch complete template with sections in order
+ * Decrypts section details using appropriate master key
+ * Returns { success, error, template, sections } where sections are decrypted
+ * Exported for use in other modules (e.g., promptLlmProcessor)
+ *
+ * @param {Object} supabase - Supabase client
+ * @param {BigInt} templateId - Template ID
+ * @param {string} userId - User ID for authorization
+ * @returns {Promise} Result object with template and decrypted sections
+ */
+export async function getCompleteTemplate(supabase, templateId, userId) {
   try {
     // Fetch template
     const { data: template, error: templateError } = await supabase

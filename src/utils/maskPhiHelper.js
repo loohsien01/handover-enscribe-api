@@ -82,6 +82,24 @@ export async function mask_phi(transcript, mask_threshold = 0.15) {
  * @returns {Object} - { unmasked_transcript }
  * @throws {Error} - If maskedText is not a string or tokens is not an object
  */
+/**
+ * Escapes special JSON characters in a string value
+ * to prevent JSON parsing errors when inserting into JSON strings.
+ * @param {string} str - The string to escape
+ * @returns {string} - The JSON-escaped string
+ */
+function escapeJsonString(str) {
+  if (!str || typeof str !== 'string') return str;
+  return str
+    .replace(/\\/g, '\\\\')  // Backslash first
+    .replace(/"/g, '\\"')    // Double quotes
+    .replace(/\n/g, '\\n')   // Newlines
+    .replace(/\r/g, '\\r')   // Carriage returns
+    .replace(/\t/g, '\\t')   // Tabs
+    .replace(/\b/g, '\\b')   // Backspace
+    .replace(/\f/g, '\\f');  // Form feed
+}
+
 export function unmask_phi(maskedText, tokens) {
   if (!maskedText || typeof maskedText !== 'string') {
     throw new Error('maskedText is required and must be a string');
@@ -118,9 +136,11 @@ export function unmask_phi(maskedText, tokens) {
       return match;
     }
 
+    // Escape JSON special characters in the replacement value
+    const escapedReplacement = escapeJsonString(replacement);
     unmaskedCount++;
-    console.log(`[unmask_phi] Unmasked ${match} -> "${replacement}"`);
-    return replacement;
+    console.log(`[unmask_phi] Unmasked ${match} -> "${escapedReplacement}"`);
+    return escapedReplacement;
   });
 
   console.log('[unmask_phi] Unmasking complete');

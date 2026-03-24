@@ -20,10 +20,29 @@ const SchemaType = {
  * Claude to follow the format requirements.
  * 
  * @param {string} transcript - The masked medical transcript
+ * @param {Array} noteTemplateSections - Optional note template sections with { name, layout, details }
  * @returns {object} Claude Bedrock request body for SOAP note generation
  */
-export function getSoapNoteAndBillingRequestBody(transcript) {
-    const jsonSchemaDescription = `
+export function getSoapNoteAndBillingRequestBody(transcript, noteTemplateSections = null) {
+    // Build JSON schema based on whether we have a note template
+    let jsonSchemaDescription;
+    
+    if (noteTemplateSections && Array.isArray(noteTemplateSections) && noteTemplateSections.length > 0) {
+        // Dynamically build schema from template sections
+        const sections = noteTemplateSections.map(s => `  "${s.name}": "${s.layout} - ${s.details}"`).join(',\n');
+        jsonSchemaDescription = `
+You MUST return a valid JSON object with this exact structure based on the template:
+{
+${sections},
+  "billing": {
+    "icd10_codes": "array of strings - ICD-10 codes with description (format: 'CODE - Description'). Max 4, can have additional supporting codes. Example: 'M79.3 - Panniculitis, unspecified'",
+    "billing_code": "string - CPT codes for services provided. Use 99202–99205 for new patients / 99211–99215 for established patients with justification",
+    "additional_inquiries": "string - Doctor's additional areas of investigation for the patient to increase doctor's billing level"
+  }
+}`;
+    } else {
+        // Fallback to original schema
+        jsonSchemaDescription = `
 You MUST return a valid JSON object with this exact structure:
 {
   "soap_note": {
@@ -51,6 +70,7 @@ You MUST return a valid JSON object with this exact structure:
     "additional_inquiries": "string - Doctor's additional areas of investigation for the patient to increase doctor's billing level"
   }
 }`;
+    }
 
     return {
         // modelId: "us.anthropic.claude-sonnet-4-6",

@@ -21,7 +21,7 @@ import parseSoapNotes from '../../utils/parseSoapNotes.js';
  */
 export async function createPromptLlmJobHandler(request, reply) {
   try {
-    const { recording_file_path } = request.body;
+    const { recording_file_path, noteTemplate_id } = request.body;
     const userId = request.user.id;
 
     // Create job record in database
@@ -42,9 +42,10 @@ export async function createPromptLlmJobHandler(request, reply) {
     }
 
     // Spawn async processor (fire and forget)
+    // Pass noteTemplate_id as parameter, not stored in DB
     const authorizationHeader = request.headers.authorization;
     setImmediate(() => {
-      promptLlmProcessor(job.id, userId, authorizationHeader).catch((err) => {
+      promptLlmProcessor(job.id, userId, authorizationHeader, noteTemplate_id).catch((err) => {
         console.error(`[promptLlmProcessor] Unhandled error for job ${job.id}:`, err);
       });
     });
