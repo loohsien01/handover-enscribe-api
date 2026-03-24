@@ -364,21 +364,25 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
       const positionMatch = error.message.match(/position (\d+)/);
       const errorPos = positionMatch ? parseInt(positionMatch[1], 10) : null;
       
-      // Build helpful error message with context
-      let contextInfo = `Failed to parse SOAP note JSON: ${error.message}\n`;
-      contextInfo += `Total length: ${unmaskedString.length} characters\n`;
-      contextInfo += `First 150 chars:\n${unmaskedString.substring(0, 150)}...\n\n`;
+      // Build detailed error message for logs (includes full context and stack trace)
+      let debugInfo = `Failed to parse SOAP note JSON: ${error.message}\n`;
+      debugInfo += `Total length: ${unmaskedString.length} characters\n`;
+      debugInfo += `First 100 chars:\n${unmaskedString.substring(0, 100)}...\n\n`;
       
       if (errorPos) {
-        const startContext = Math.max(0, errorPos - 75);
-        const endContext = Math.min(unmaskedString.length, errorPos + 75);
-        contextInfo += `Context around position ${errorPos}:\n`;
-        contextInfo += `[${startContext}] ${unmaskedString.substring(startContext, endContext)} [${endContext}]\n`;
-        contextInfo += `${'='.repeat(Math.min(75, errorPos - startContext))}↑ ERROR HERE`;
+        const startContext = Math.max(0, errorPos - 150);
+        const endContext = Math.min(unmaskedString.length, errorPos + 150);
+        debugInfo += `Context around position ${errorPos} (300 chars):\n`;
+        debugInfo += `[${startContext}] ${unmaskedString.substring(startContext, endContext)} [${endContext}]\n`;
+        debugInfo += `${'='.repeat(Math.min(150, errorPos - startContext))}↑ ERROR HERE\n`;
       }
       
-      console.error(`[promptLlmProcessor] ${jobId}: JSON Parse Error:\n${contextInfo}`);
-      throw new Error(contextInfo);
+      // Log full debugging info with stack trace
+      console.error(`[promptLlmProcessor] ${jobId}: JSON Parse Error:\n${debugInfo}`);
+      console.error(`[promptLlmProcessor] ${jobId}: Stack trace:`, error.stack);
+      
+      // Throw clean error message (without debug context) so it can be stored safely in DB
+      throw new Error(`Failed to parse SOAP note JSON: ${error.message}`);
     }
 
     // Normalize field names to lowercase (soap_note, subjective, objective, assessment, plan)
