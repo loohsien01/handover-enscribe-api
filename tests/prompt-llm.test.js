@@ -33,7 +33,7 @@ const runner = new TestRunner('OpenAI Prompt-LLM API Tests');
 const MOCK_TOKEN = 'invalid.token.here';
 
 // Skip Test 5 by default (run only when explicitly enabled), since it's identical to Test 4 just using  fallback template (don't pass noteTemplate_id)
-const skipTest5 = false;
+const skipTest5 = true;
 
 // Load test data
 const TEST_DATA_FILE = path.resolve(__dirname, 'testData.json');

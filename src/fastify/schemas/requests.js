@@ -540,10 +540,9 @@ export const authResendRequestSchema = z.object({
 /**
  * POST request for creating a note
  * Endpoint: POST /api/notes
- * noteTemplate_id is required, text and patientEncounter_id are optional
+ * text and patientEncounter_id are optional
  */
 export const noteCreateRequestSchema = z.object({
-  noteTemplate_id: z.number('Note Template ID is required').int('Note Template ID must be an integer'),
   text: z.string().min(0).default(''),
   patientEncounter_id: z.number('Patient Encounter ID must be an integer').int('Patient Encounter ID must be an integer').nullable().optional(),
 });

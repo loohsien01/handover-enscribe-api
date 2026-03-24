@@ -37,6 +37,8 @@ export async function getAllNoteTemplateSections(request, reply) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
+    const userId = user.id;
+
     const { data, error } = await supabase
       .from(noteTemplateSectionsTable)
       .select('*')
@@ -120,6 +122,7 @@ export async function getNoteTemplateSection(request, reply) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
+    const userId = user.id;
     const { id } = request.params;
 
     if (!isValidBigInt(id)) {

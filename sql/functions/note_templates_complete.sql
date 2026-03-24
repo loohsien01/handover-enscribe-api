@@ -25,6 +25,7 @@
  *   - All or nothing: if any step fails, entire operation is rolled back
  *   - Validates section ownership before updates
  */
+ DROP FUNCTION IF EXISTS update_note_template_complete(bigint, uuid, character varying, jsonb);
 CREATE OR REPLACE FUNCTION update_note_template_complete(
   p_template_id BIGINT,
   p_user_id UUID,
@@ -32,7 +33,8 @@ CREATE OR REPLACE FUNCTION update_note_template_complete(
   p_sections JSONB
 ) RETURNS TABLE (
   success BOOLEAN,
-  error TEXT
+  error TEXT,
+  error_code VARCHAR
 ) AS $$
 DECLARE
   v_section JSONB;
@@ -45,7 +47,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM "noteTemplates" WHERE id = p_template_id AND user_id IS NOT DISTINCT FROM p_user_id
   ) THEN
-    RETURN QUERY SELECT FALSE, 'Template not found or unauthorized'::TEXT;
+    RETURN QUERY SELECT FALSE, 'Template not found or unauthorized'::TEXT, 'TEMPLATE_NOT_FOUND'::VARCHAR;
     RETURN;
   END IF;
 
@@ -76,7 +78,7 @@ BEGIN
             SELECT 1 FROM "noteTemplateSections"
             WHERE id = v_section_id AND (user_id = p_user_id OR user_id IS NULL)
           ) THEN
-            RAISE EXCEPTION 'Section % not found or unauthorized', v_section_id;
+            RAISE EXCEPTION 'SECTION_NOT_FOUND:%', v_section_id;
           END IF;
 
           -- Update section with provided fields (only non-null fields)
@@ -138,10 +140,15 @@ BEGIN
       END LOOP;
     END IF;
 
-    RETURN QUERY SELECT TRUE, NULL::TEXT;
+    RETURN QUERY SELECT TRUE, NULL::TEXT, NULL::VARCHAR;
 
-  EXCEPTION WHEN OTHERS THEN
-    RETURN QUERY SELECT FALSE, SQLERRM::TEXT;
+  EXCEPTION 
+    WHEN OTHERS THEN
+      IF SQLERRM LIKE 'SECTION_NOT_FOUND:%' THEN
+        RETURN QUERY SELECT FALSE, SQLERRM::TEXT, 'SECTION_NOT_FOUND'::VARCHAR;
+      ELSE
+        RETURN QUERY SELECT FALSE, SQLERRM::TEXT, 'INTERNAL_ERROR'::VARCHAR;
+      END IF;
   END;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -170,6 +177,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
  * Transaction Behavior:
  *   - All or nothing: if any step fails, entire transaction is rolled back
  */
+DROP FUNCTION IF EXISTS create_note_template_complete(character varying, uuid, jsonb);
 CREATE OR REPLACE FUNCTION create_note_template_complete(
   p_name VARCHAR,
   p_user_id UUID,
@@ -177,7 +185,8 @@ CREATE OR REPLACE FUNCTION create_note_template_complete(
 ) RETURNS TABLE (
   template_id BIGINT,
   success BOOLEAN,
-  error TEXT
+  error TEXT,
+  error_code VARCHAR
 ) AS $$
 DECLARE
   v_new_template_id BIGINT;
@@ -189,7 +198,7 @@ DECLARE
 BEGIN
   -- Validation: sections array must not be empty
   IF p_sections IS NULL OR jsonb_array_length(p_sections) = 0 THEN
-    RETURN QUERY SELECT NULL::BIGINT, FALSE, 'At least one section is required'::TEXT;
+    RETURN QUERY SELECT NULL::BIGINT, FALSE, 'At least one section is required'::TEXT, 'INVALID_REQUEST'::VARCHAR;
     RETURN;
   END IF;
 
@@ -217,7 +226,7 @@ BEGIN
           SELECT 1 FROM "noteTemplateSections"
           WHERE id = v_section_id AND (user_id = p_user_id OR user_id IS NULL)
         ) THEN
-          RAISE EXCEPTION 'Section % not found or unauthorized', v_section_id;
+          RAISE EXCEPTION 'SECTION_NOT_FOUND:%', v_section_id;
         END IF;
 
         v_section_ids := array_append(v_section_ids, v_section_id);
@@ -262,13 +271,17 @@ BEGIN
       VALUES (v_new_template_id, v_section_id, v_order, p_user_id);
     END LOOP;
 
-    RETURN QUERY SELECT v_new_template_id, TRUE, NULL::TEXT;
+    RETURN QUERY SELECT v_new_template_id, TRUE, NULL::TEXT, NULL::VARCHAR;
 
   EXCEPTION 
     WHEN unique_violation THEN
-      RETURN QUERY SELECT NULL::BIGINT, FALSE, 'A template with this name already exists for your account'::TEXT;
+      RETURN QUERY SELECT NULL::BIGINT, FALSE, 'A template with this name already exists for your account'::TEXT, 'DUPLICATE_NAME'::VARCHAR;
     WHEN OTHERS THEN
-      RETURN QUERY SELECT NULL::BIGINT, FALSE, SQLERRM::TEXT;
+      IF SQLERRM LIKE 'SECTION_NOT_FOUND:%' THEN
+        RETURN QUERY SELECT NULL::BIGINT, FALSE, SQLERRM::TEXT, 'SECTION_NOT_FOUND'::VARCHAR;
+      ELSE
+        RETURN QUERY SELECT NULL::BIGINT, FALSE, SQLERRM::TEXT, 'INTERNAL_ERROR'::VARCHAR;
+      END IF;
   END;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;

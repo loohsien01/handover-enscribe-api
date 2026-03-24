@@ -14,7 +14,6 @@
 import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
 import { getSupabaseClient } from '../../utils/supabase.js';
 import * as claudeRequestBody from '../../utils/claudeRequestBody.js';
-import { unmask_phi } from '../../utils/maskPhiHelper.js';
 import { transcribe_expand_mask } from '../controllers/transcribeController.js';
 import parseSoapNotes from '../../utils/parseSoapNotes.js';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
@@ -87,6 +86,40 @@ async function updateJobStatus(jobId, status, updates = {}) {
   if (error) {
     console.error(`[updateJobStatus] Failed to update job ${jobId}:`, error);
   }
+}
+
+/**
+ * Helper: Recursively unmask PHI tokens in a JSON object
+ * Searches all string values for {{TYPE_ID}} tokens and replaces them with original text
+ * 
+ * @param {*} obj - Any value (object, array, string, etc.)
+ * @param {Object} tokens - Token dictionary mapping "TYPE_ID" to original text
+ * @returns {*} - Same structure with PHI tokens replaced
+ */
+function unmaskedPhiInObject(obj, tokens) {
+  if (typeof obj === 'string') {
+    // Replace all {{TYPE_ID}} tokens in string
+    return obj.replace(/\{\{([^}]+)\}\}/g, (match, tokenKey) => {
+      const replacement = tokens[tokenKey];
+      if (!replacement) {
+        console.warn(`[unmaskedPhiInObject] Token not found: ${tokenKey}`);
+        return match; // Keep token if not found
+      }
+      return replacement;
+    });
+  } else if (Array.isArray(obj)) {
+    // Recursively unmask each element in array
+    return obj.map(item => unmaskedPhiInObject(item, tokens));
+  } else if (obj !== null && typeof obj === 'object') {
+    // Recursively unmask each value in object
+    const unmasked = {};
+    for (const [key, value] of Object.entries(obj)) {
+      unmasked[key] = unmaskedPhiInObject(value, tokens);
+    }
+    return unmasked;
+  }
+  // Return primitives (numbers, booleans, null) as-is
+  return obj;
 }
 
 /**
@@ -342,38 +375,28 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
       throw new Error('LLM response does not appear to be valid JSON structure');
     }
 
-    // Clean and unmask
+    // Clean: normalize special characters from LLM output
     rawString = cleanRawText(rawString);
-    let unmaskRes;
-    try {
-      unmaskRes = unmask_phi(rawString, tokens);
-    } catch (error) {
-      throw new Error(`PHI unmasking failed: ${error.message}`);
-    }
 
-    const unmaskedString = (unmaskRes && typeof unmaskRes === 'object' && unmaskRes.unmasked_transcript)
-      ? unmaskRes.unmasked_transcript
-      : String(unmaskRes || rawString);
-
-    // Parse JSON
+    // Parse JSON first (validates syntax, handles special chars naturally)
     let soapNoteAndBillingResult;
     try {
-      soapNoteAndBillingResult = JSON.parse(unmaskedString);
+      soapNoteAndBillingResult = JSON.parse(rawString);
     } catch (error) {
       // Extract position from error message (e.g., "position 6484")
       const positionMatch = error.message.match(/position (\d+)/);
       const errorPos = positionMatch ? parseInt(positionMatch[1], 10) : null;
       
-      // Build detailed error message for logs (includes full context and stack trace)
+      // Build detailed error message for logs
       let debugInfo = `Failed to parse SOAP note JSON: ${error.message}\n`;
-      debugInfo += `Total length: ${unmaskedString.length} characters\n`;
-      debugInfo += `First 100 chars:\n${unmaskedString.substring(0, 100)}...\n\n`;
+      debugInfo += `Total length: ${rawString.length} characters\n`;
+      debugInfo += `First 100 chars:\n${rawString.substring(0, 100)}...\n\n`;
       
       if (errorPos) {
         const startContext = Math.max(0, errorPos - 150);
-        const endContext = Math.min(unmaskedString.length, errorPos + 150);
+        const endContext = Math.min(rawString.length, errorPos + 150);
         debugInfo += `Context around position ${errorPos} (300 chars):\n`;
-        debugInfo += `[${startContext}] ${unmaskedString.substring(startContext, endContext)} [${endContext}]\n`;
+        debugInfo += `[${startContext}] ${rawString.substring(startContext, endContext)} [${endContext}]\n`;
         debugInfo += `${'='.repeat(Math.min(150, errorPos - startContext))}↑ ERROR HERE\n`;
       }
       
@@ -385,8 +408,11 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
       throw new Error(`Failed to parse SOAP note JSON: ${error.message}`);
     }
 
+    // Unmask PHI tokens in the parsed object (no escaping needed)
+    soapNoteAndBillingResult = unmaskedPhiInObject(soapNoteAndBillingResult, tokens);
+
     // Normalize field names to lowercase (soap_note, subjective, objective, assessment, plan)
-    if (soapNoteAndBillingResult && typeof soapNoteAndBillingResult === 'object') {
+    if (soapNoteAndBillingResult && typeof soapNoteAndBillingResult === 'object' && !Array.isArray(soapNoteAndBillingResult)) {
       // Find and normalize soap_note key (case-insensitive)
       const soapNoteKey = Object.keys(soapNoteAndBillingResult).find(
         key => key.toLowerCase() === 'soap_note'

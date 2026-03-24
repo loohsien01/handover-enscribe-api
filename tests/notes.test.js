@@ -460,12 +460,11 @@ async function runNotesTests() {
           'Content-Type': 'application/json',
         },
         body: {
-          noteTemplate_id: testTemplateId,
           patientEncounter_id: testEncounterId,
           ...mockNoteData,
         },
         expectedStatus: 201,
-        expectedFields: ['id', 'patientEncounter_id', 'noteTemplate_id'],
+        expectedFields: ['id', 'patientEncounter_id'],
         testNumber: 13,
         onSuccess: (data) => {
           // Store the created ID for retrieval and cleanup
@@ -477,46 +476,14 @@ async function runNotesTests() {
         },
       });
 
-      // Test 14: Create note with missing noteTemplate_id (should fail)
-      await runner.test('Create note with missing noteTemplate_id', {        testNumber: 14,        method: 'POST',
+      // Test 14: Create note with non-existent encounter (should fail)
+      await runner.test('Create note with non-existent encounter', {        testNumber: 14,        method: 'POST',
         endpoint: '/api/notes',
         headers: {
           Authorization: `Bearer ${realAccessToken}`,
           'Content-Type': 'application/json',
         },
         body: {
-          patientEncounter_id: testEncounterId,
-          ...mockNoteData,
-        },
-        expectedStatus: 400,
-      });
-
-
-
-      // Test 14: Create note with non-existent template (should fail)
-      await runner.test('Create note with non-existent template', {        testNumber: 15,        method: 'POST',
-        endpoint: '/api/notes',
-        headers: {
-          Authorization: `Bearer ${realAccessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: {
-          noteTemplate_id: 99999999,
-          patientEncounter_id: testEncounterId,
-          ...mockNoteData,
-        },
-        expectedStatus: 404,
-      });
-
-      // Test 15: Create note with non-existent encounter (should fail)
-      await runner.test('Create note with non-existent encounter', {        testNumber: 16,        method: 'POST',
-        endpoint: '/api/notes',
-        headers: {
-          Authorization: `Bearer ${realAccessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: {
-          noteTemplate_id: testTemplateId,
           patientEncounter_id: 99999999,
           ...mockNoteData,
         },
@@ -526,7 +493,7 @@ async function runNotesTests() {
       // ===== RETRIEVAL TESTS =====
 
       if (createdNoteId) {
-        // Test 16: Get single note by ID
+        // Test 15: Get single note by ID
         await runner.test('Get single note by ID', {
           method: 'GET',
           endpoint: `/api/notes/${createdNoteId}`,
@@ -534,11 +501,11 @@ async function runNotesTests() {
             Authorization: `Bearer ${realAccessToken}`,
           },
           expectedStatus: 200,
-          expectedFields: ['id', 'patientEncounter_id', 'noteTemplate_id', 'text'],
-          testNumber: 17,
+          expectedFields: ['id', 'patientEncounter_id', 'text'],
+          testNumber: 15,
         });
 
-        // Test 17: Get note with invalid ID format (should fail)
+        // Test 16: Get note with invalid ID format (should fail)
         await runner.test('Get note with invalid ID format', {
           method: 'GET',
           endpoint: '/api/notes/invalid-id',
@@ -546,10 +513,10 @@ async function runNotesTests() {
             Authorization: `Bearer ${realAccessToken}`,
           },
           expectedStatus: 400,
-          testNumber: 18,
+          testNumber: 16,
         });
 
-        // Test 18: Get note with non-existent ID (should fail)
+        // Test 17: Get note with non-existent ID (should fail)
         await runner.test('Get note with non-existent ID', {
           method: 'GET',
           endpoint: '/api/notes/99999999',
@@ -557,20 +524,20 @@ async function runNotesTests() {
             Authorization: `Bearer ${realAccessToken}`,
           },
           expectedStatus: 404,
-          testNumber: 19,
+          testNumber: 17,
         });
       }
 
       // ===== UPDATE TESTS =====
 
-      // Test 19: Update note with valid data
+      // Test 18: Update note with valid data
       const updatedNoteData = {
         text: 'Updated note: Patient condition improved. Continue with rest and fluids. Follow up next week.',
         status: 'paused',
       };
 
       if (!createdNoteId) {
-        console.log('  ⚠️  Test 10 (Create note) must pass first - Test 19 cannot run\n');
+        console.log('  ⚠️  Test 13 (Create note) must pass first - Test 18 cannot run\n');
       } else {
         await runner.test('Update note with valid data', {
           method: 'PATCH',
@@ -581,13 +548,13 @@ async function runNotesTests() {
           },
           body: updatedNoteData,
           expectedStatus: 200,
-          expectedFields: ['id', 'patientEncounter_id', 'noteTemplate_id', 'text'],
-          testNumber: 20,
+          expectedFields: ['id', 'patientEncounter_id', 'text'],
+          testNumber: 18,
         });
       }
 
-      // Test 20: Update note with invalid ID format (should fail)
-      await runner.test('Update note with invalid ID format', {        testNumber: 21,        method: 'PATCH',
+      // Test 19: Update note with invalid ID format (should fail)
+      await runner.test('Update note with invalid ID format', {        testNumber: 19,        method: 'PATCH',
         endpoint: '/api/notes/invalid-id',
         headers: {
           Authorization: `Bearer ${realAccessToken}`,

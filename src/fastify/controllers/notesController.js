@@ -166,7 +166,7 @@ export async function getNote(request, reply) {
 /**
  * Create a new note
  * POST /api/notes
- * Body: { noteTemplate_id, text (optional), patientEncounter_id (optional) }
+ * Body: { text (optional), patientEncounter_id (optional) }
  */
 export async function createNote(request, reply) {
   try {
@@ -177,19 +177,7 @@ export async function createNote(request, reply) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    const { noteTemplate_id, text = '', patientEncounter_id } = request.body;
-
-    // Verify noteTemplate_id exists
-    const { data: template, error: templateError } = await supabase
-      .from('noteTemplates')
-      .select('id')
-      .eq('id', noteTemplate_id)
-      .eq('user_id', user.id)
-      .single();
-
-    if (templateError || !template) {
-      return reply.status(404).send({ error: 'Note template not found' });
-    }
+    const { text = '', patientEncounter_id } = request.body;
 
     // If patientEncounter_id provided, verify user owns it
     if (patientEncounter_id) {
@@ -231,7 +219,6 @@ export async function createNote(request, reply) {
       .from(notesTable)
       .insert({
         user_id: user.id,
-        noteTemplate_id,
         patientEncounter_id: patientEncounter_id || null,
         encrypted_text: encryptedText,
         text_iv: textIv,

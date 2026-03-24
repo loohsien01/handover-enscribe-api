@@ -463,21 +463,36 @@ export async function createNoteTemplateComplete(request, reply) {
 
     if (error) {
       console.error('[createNoteTemplateComplete] RPC error:', error);
-
-      if (error.message.includes('already exists')) {
-        return reply.status(409).send({
-          code: 'DUPLICATE_NAME',
-          message: 'A template with this name already exists for your account',
-          field: 'name',
-        });
-      }
-
-      return reply.status(400).send({ error: error.message || 'Failed to create template' });
+      return reply.status(500).send({ error: 'RPC invocation failed', details: error.message });
     }
 
     if (!data || !data[0].success) {
-      console.error('[createNoteTemplateComplete] RPC returned error:', data?.[0]?.error);
-      return reply.status(400).send({ error: data?.[0]?.error || 'Failed to create template' });
+      console.error('[createNoteTemplateComplete] RPC returned error:', data?.[0]?.error, data?.[0]?.error_code);
+      
+      const errorCode = data?.[0]?.error_code;
+      const errorMessage = data?.[0]?.error;
+      
+      if (errorCode === 'DUPLICATE_NAME') {
+        return reply.status(409).send({
+          code: 'DUPLICATE_NAME',
+          message: errorMessage,
+          field: 'name',
+        });
+      }
+      
+      if (errorCode === 'SECTION_NOT_FOUND') {
+        return reply.status(404).send({
+          code: 'SECTION_NOT_FOUND',
+          message: errorMessage,
+        });
+      }
+      
+      if (errorCode === 'INVALID_REQUEST') {
+        return reply.status(400).send({ code: 'INVALID_REQUEST', message: errorMessage });
+      }
+      
+      // Default: treat as internal error
+      return reply.status(400).send({ error: errorMessage || 'Failed to create template' });
     }
 
     const templateId = data[0].template_id;
@@ -602,21 +617,43 @@ export async function updateNoteTemplateComplete(request, reply) {
 
     if (error) {
       console.error('[updateNoteTemplateComplete] RPC error:', error);
-
-      if (error.message.includes('already exists')) {
-        return reply.status(409).send({
-          code: 'DUPLICATE_NAME',
-          message: 'A template with this name already exists for your account',
-          field: 'name',
-        });
-      }
-
-      return reply.status(400).send({ error: error.message || 'Failed to update template' });
+      return reply.status(500).send({ error: 'RPC invocation failed', details: error.message });
     }
 
     if (!data || !data[0].success) {
-      console.error('[updateNoteTemplateComplete] RPC returned error:', data?.[0]?.error);
-      return reply.status(400).send({ error: data?.[0]?.error || 'Failed to update template' });
+      console.error('[updateNoteTemplateComplete] RPC returned error:', data?.[0]?.error, data?.[0]?.error_code);
+      
+      const errorCode = data?.[0]?.error_code;
+      const errorMessage = data?.[0]?.error;
+      
+      if (errorCode === 'DUPLICATE_NAME') {
+        return reply.status(409).send({
+          code: 'DUPLICATE_NAME',
+          message: errorMessage,
+          field: 'name',
+        });
+      }
+      
+      if (errorCode === 'SECTION_NOT_FOUND') {
+        return reply.status(404).send({
+          code: 'SECTION_NOT_FOUND',
+          message: errorMessage,
+        });
+      }
+      
+      if (errorCode === 'TEMPLATE_NOT_FOUND') {
+        return reply.status(404).send({
+          code: 'TEMPLATE_NOT_FOUND',
+          message: errorMessage,
+        });
+      }
+      
+      if (errorCode === 'INVALID_REQUEST') {
+        return reply.status(400).send({ code: 'INVALID_REQUEST', message: errorMessage });
+      }
+      
+      // Default: treat as internal error
+      return reply.status(400).send({ error: errorMessage || 'Failed to update template' });
     }
 
     // Fetch complete data to return

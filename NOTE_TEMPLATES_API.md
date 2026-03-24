@@ -1060,3 +1060,36 @@ All errors follow this format:
 | **Update full** | `/api/note-templates/complete/:id` | PATCH | **→ Use for all updates** |
 | List orders | `/api/note-template-section-orders` | GET | Debugging ordering issues |
 | Reorder sections | `/api/note-template-section-orders` | PATCH | **→ Use for drag-and-drop** |
+
+---
+
+## Recent Changes (March 24, 2026)
+
+### Schema Changes
+- **Removed `noteTemplates_id` from notes schema**: Notes are no longer directly linked to templates. Templates are used contextually through jobs/prompt-llm processing.
+
+### RPC Error Code Handling
+The `create_note_template_complete` and `update_note_template_complete` RPC functions now return structured error codes for consistent error handling:
+
+| Error Code | HTTP Status | Meaning |
+|---|---|---|
+| `DUPLICATE_NAME` | 409 | Template or section name already exists for user |
+| `SECTION_NOT_FOUND` | 404 | Referenced section not found or unauthorized |
+| `TEMPLATE_NOT_FOUND` | 404 | Template not found or unauthorized |
+| `INVALID_REQUEST` | 400 | Invalid request parameters (e.g., missing required fields) |
+| `INTERNAL_ERROR` | 500 | Unexpected server error (transaction rolled back) |
+
+**Example Error Response**:
+```json
+{
+  "code": "DUPLICATE_NAME",
+  "message": "A template with this name already exists for your account",
+  "field": "name"
+}
+```
+
+### Encryption Foundation
+- Master key functions (`getSystemMasterKey()`, `getOrCreateUserMasterKey()`) are backend-only
+- Handles both system templates (system key) and user templates (user-created key)
+- Automatic AES-256 encryption/decryption of section details
+- Encryption helpers in `src/utils/encryptionUtils.js` for consistent operations
