@@ -12,6 +12,24 @@ const SchemaType = {
 };
 
 /**
+ * Helper: Escape special characters in template section fields for safe JSON embedding
+ * Handles quotes, newlines, backslashes, and other JSON escape sequences
+ * Also replaces backticks to prevent template literal breakage
+ * @param {string} str - The string to escape
+ * @returns {string} - The escaped string safe for JSON
+ */
+function escapeJsonString(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r')
+        .replace(/\t/g, '\\t')
+        .replace(/`/g, "'");
+}
+
+/**
  * Generates Claude Bedrock request body for SOAP note and billing generation.
  * Uses claude-sonnet-4-6 model via AWS Bedrock.
  * 
@@ -29,16 +47,12 @@ export function getSoapNoteAndBillingRequestBody(transcript, noteTemplateSection
     
     if (noteTemplateSections && Array.isArray(noteTemplateSections) && noteTemplateSections.length > 0) {
         // Dynamically build schema from template sections
-        const sections = noteTemplateSections.map(s => `  "${s.name}": "${s.layout} - ${s.details}"`).join(',\n');
+        // Escape all template fields to prevent JSON injection
+        const sections = noteTemplateSections.map(s => `  "${escapeJsonString(s.name)}": "${escapeJsonString(s.layout)} - ${escapeJsonString(s.details)}"`).join(',\n');
         jsonSchemaDescription = `
 You MUST return a valid JSON object with this exact structure based on the template:
 {
-${sections},
-  "billing": {
-    "icd10_codes": "array of strings - ICD-10 codes with description (format: 'CODE - Description'). Max 4, can have additional supporting codes. Example: 'M79.3 - Panniculitis, unspecified'",
-    "billing_code": "string - CPT codes for services provided. Use 99202–99205 for new patients / 99211–99215 for established patients with justification",
-    "additional_inquiries": "string - Doctor's additional areas of investigation for the patient to increase doctor's billing level"
-  }
+${sections}
 }`;
     } else {
         // Fallback to original schema

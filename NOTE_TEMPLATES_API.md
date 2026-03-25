@@ -1068,23 +1068,33 @@ All errors follow this format:
 ### Schema Changes
 - **Removed `noteTemplates_id` from notes schema**: Notes are no longer directly linked to templates. Templates are used contextually through jobs/prompt-llm processing.
 
-### RPC Error Code Handling
-The `create_note_template_complete` and `update_note_template_complete` RPC functions now return structured error codes for consistent error handling:
+### Error Handling
+The controllers handle 409 (conflict) errors by inspecting the Supabase error code and message:
 
-| Error Code | HTTP Status | Meaning |
-|---|---|---|
-| `DUPLICATE_NAME` | 409 | Template or section name already exists for user |
-| `SECTION_NOT_FOUND` | 404 | Referenced section not found or unauthorized |
-| `TEMPLATE_NOT_FOUND` | 404 | Template not found or unauthorized |
-| `INVALID_REQUEST` | 400 | Invalid request parameters (e.g., missing required fields) |
-| `INTERNAL_ERROR` | 500 | Unexpected server error (transaction rolled back) |
+| Error Code | HTTP Status | Meaning | Handler |
+|---|---|---|---|
+| `DUPLICATE_TEMPLATE_NAME` | 409 | Template name already exists for user | Controller (parses 23505 + error.message) |
+| `DUPLICATE_SECTION_NAME` | 409 | Section name already exists for user | Controller (parses 23505 + error.message) |
+| `SECTION_NOT_FOUND` | 404 | Referenced section not found or unauthorized | RPC (SECTION_NOT_FOUND code) |
+| `TEMPLATE_NOT_FOUND` | 404 | Template not found or unauthorized | RPC (TEMPLATE_NOT_FOUND code) |
+| `INVALID_REQUEST` | 400 | Invalid request parameters (e.g., missing required fields) | RPC (INVALID_REQUEST code) |
+| `INTERNAL_ERROR` | 500 | Unexpected server error (transaction rolled back) | RPC (INTERNAL_ERROR code) |
 
-**Example Error Response**:
+**Example Error Response (Template Name Duplicate)**:
 ```json
 {
-  "code": "DUPLICATE_NAME",
+  "code": "DUPLICATE_TEMPLATE_NAME",
   "message": "A template with this name already exists for your account",
   "field": "name"
+}
+```
+
+**Example Error Response (Section Name Duplicate)**:
+```json
+{
+  "code": "DUPLICATE_SECTION_NAME",
+  "message": "A section with this name already exists for your account",
+  "field": "sections[*].name"
 }
 ```
 

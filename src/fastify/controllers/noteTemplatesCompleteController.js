@@ -462,19 +462,45 @@ export async function createNoteTemplateComplete(request, reply) {
     });
 
     if (error) {
-      console.error('[createNoteTemplateComplete] RPC error:', error);
+      console.error('[createNoteTemplateComplete] Supabase error:', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        fullError: error,
+      });
+      
+      // Handle unique constraint violations (23505) at controller level
+      if (error.code === '23505') {
+        console.log('[createNoteTemplateComplete] Duplicate constraint detected:', {
+          constraintName: error.message,
+        });
+        
+        // Only template name constraint exists now (section names allow duplicates)
+        return reply.status(409).send({
+          code: 'DUPLICATE_TEMPLATE_NAME',
+          message: 'A template with this name already exists for your account',
+          field: 'name',
+        });
+      }
+      
       return reply.status(500).send({ error: 'RPC invocation failed', details: error.message });
     }
 
     if (!data || !data[0].success) {
-      console.error('[createNoteTemplateComplete] RPC returned error:', data?.[0]?.error, data?.[0]?.error_code);
+      console.error('[createNoteTemplateComplete] RPC returned error:', {
+        success: data?.[0]?.success,
+        error: data?.[0]?.error,
+        error_code: data?.[0]?.error_code,
+        fullResponse: data?.[0],
+      });
       
       const errorCode = data?.[0]?.error_code;
       const errorMessage = data?.[0]?.error;
       
-      if (errorCode === 'DUPLICATE_NAME') {
+      if (errorCode === 'DUPLICATE_TEMPLATE_NAME') {
         return reply.status(409).send({
-          code: 'DUPLICATE_NAME',
+          code: 'DUPLICATE_TEMPLATE_NAME',
           message: errorMessage,
           field: 'name',
         });
@@ -616,19 +642,45 @@ export async function updateNoteTemplateComplete(request, reply) {
     });
 
     if (error) {
-      console.error('[updateNoteTemplateComplete] RPC error:', error);
+      console.error('[updateNoteTemplateComplete] Supabase error:', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        fullError: error,
+      });
+      
+      // Handle unique constraint violations (23505) at controller level
+      if (error.code === '23505') {
+        console.log('[updateNoteTemplateComplete] Duplicate constraint detected:', {
+          constraintName: error.message,
+        });
+        
+        // Only template name constraint exists now (section names allow duplicates)
+        return reply.status(409).send({
+          code: 'DUPLICATE_TEMPLATE_NAME',
+          message: 'A template with this name already exists for your account',
+          field: 'name',
+        });
+      }
+      
       return reply.status(500).send({ error: 'RPC invocation failed', details: error.message });
     }
 
     if (!data || !data[0].success) {
-      console.error('[updateNoteTemplateComplete] RPC returned error:', data?.[0]?.error, data?.[0]?.error_code);
+      console.error('[updateNoteTemplateComplete] RPC returned error:', {
+        success: data?.[0]?.success,
+        error: data?.[0]?.error,
+        error_code: data?.[0]?.error_code,
+        fullResponse: data?.[0],
+      });
       
       const errorCode = data?.[0]?.error_code;
       const errorMessage = data?.[0]?.error;
       
-      if (errorCode === 'DUPLICATE_NAME') {
+      if (errorCode === 'DUPLICATE_TEMPLATE_NAME') {
         return reply.status(409).send({
-          code: 'DUPLICATE_NAME',
+          code: 'DUPLICATE_TEMPLATE_NAME',
           message: errorMessage,
           field: 'name',
         });

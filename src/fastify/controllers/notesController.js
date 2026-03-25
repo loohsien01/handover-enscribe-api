@@ -41,6 +41,24 @@ async function decryptNoteText(note, masterKey) {
 }
 
 /**
+ * Helper: Strips encryption-related fields from note(s) before sending to client
+ * Removes: encrypted_text, text_iv
+ * @param {Object|Array} notes - Single note or array of notes
+ * @returns {Object|Array} Note(s) without encryption fields
+ */
+function stripEncryptionFields(notes) {
+  if (Array.isArray(notes)) {
+    return notes.map((note) => {
+      const { encrypted_text, text_iv, ...stripped } = note;
+      return stripped;
+    });
+  }
+
+  const { encrypted_text, text_iv, ...stripped } = notes;
+  return stripped;
+}
+
+/**
  * Get all notes for the authenticated user (with pagination and batched decryption)
  * GET /api/notes
  * Query params: limit (default 100), offset (default 0), sortBy (default 'created_at'), order (default 'desc')
@@ -104,7 +122,7 @@ export async function getAllNotes(request, reply) {
       }
     }
 
-    return reply.status(200).send(data);
+    return reply.status(200).send(stripEncryptionFields(data));
   } catch (error) {
     console.error('Error fetching notes:', error);
     return reply.status(500).send({ error: error.message });
@@ -156,7 +174,7 @@ export async function getNote(request, reply) {
       return reply.status(400).send({ error: decryptResult.error });
     }
 
-    return reply.status(200).send(decryptResult.note);
+    return reply.status(200).send(stripEncryptionFields(decryptResult.note));
   } catch (error) {
     console.error('Error fetching note:', error);
     return reply.status(500).send({ error: error.message });
@@ -233,7 +251,7 @@ export async function createNote(request, reply) {
 
     // Return note with decrypted text in response
     newNote.text = text;
-    return reply.status(201).send(newNote);
+    return reply.status(201).send(stripEncryptionFields(newNote));
   } catch (error) {
     console.error('Error creating note:', error);
     return reply.status(500).send({ error: error.message });
@@ -318,7 +336,7 @@ export async function updateNote(request, reply) {
       updatedNote.text = decryptResult.note.text;
     }
 
-    return reply.status(200).send(updatedNote);
+    return reply.status(200).send(stripEncryptionFields(updatedNote));
   } catch (error) {
     console.error('Error updating note:', error);
     return reply.status(500).send({ error: error.message });
@@ -362,7 +380,7 @@ export async function deleteNote(request, reply) {
       return reply.status(500).send({ error: deleteError.message });
     }
 
-    return reply.status(200).send({ success: true, data });
+    return reply.status(200).send({ success: true, data: stripEncryptionFields(data) });
   } catch (error) {
     console.error('Error deleting note:', error);
     return reply.status(500).send({ error: error.message });

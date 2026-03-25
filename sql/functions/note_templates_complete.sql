@@ -143,6 +143,9 @@ BEGIN
     RETURN QUERY SELECT TRUE, NULL::TEXT, NULL::VARCHAR;
 
   EXCEPTION 
+    WHEN unique_violation THEN
+      -- Unique constraint violation only on template name
+      RETURN QUERY SELECT FALSE, 'A template with this name already exists for your account'::TEXT, 'DUPLICATE_TEMPLATE_NAME'::VARCHAR;
     WHEN OTHERS THEN
       IF SQLERRM LIKE 'SECTION_NOT_FOUND:%' THEN
         RETURN QUERY SELECT FALSE, SQLERRM::TEXT, 'SECTION_NOT_FOUND'::VARCHAR;
@@ -275,7 +278,8 @@ BEGIN
 
   EXCEPTION 
     WHEN unique_violation THEN
-      RETURN QUERY SELECT NULL::BIGINT, FALSE, 'A template with this name already exists for your account'::TEXT, 'DUPLICATE_NAME'::VARCHAR;
+      -- Unique constraint violation only on template name
+      RETURN QUERY SELECT NULL::BIGINT, FALSE, 'A template with this name already exists for your account'::TEXT, 'DUPLICATE_TEMPLATE_NAME'::VARCHAR;
     WHEN OTHERS THEN
       IF SQLERRM LIKE 'SECTION_NOT_FOUND:%' THEN
         RETURN QUERY SELECT NULL::BIGINT, FALSE, SQLERRM::TEXT, 'SECTION_NOT_FOUND'::VARCHAR;
