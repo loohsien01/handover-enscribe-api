@@ -22,6 +22,34 @@ import { decryptNoteTemplateSectionDetails } from '../../utils/encryptionUtils.j
 import { getCompleteTemplate } from '../controllers/noteTemplatesCompleteController.js';
 
 /**
+ * Helper: Extract the first structurally complete JSON object from a string.
+ * Handles cases where the LLM appends trailing prose or data after the closing brace.
+ * Returns null if no complete object is found.
+ */
+function extractFirstJsonObject(str) {
+  const start = str.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < str.length; i++) {
+    const ch = str[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && inString) { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) return str.substring(start, i + 1);
+    }
+  }
+  return null;
+}
+
+/**
  * Helper: Clean raw text from LLMs to normalize problematic characters for EHR systems
  */
 function cleanRawText(s) {
@@ -365,15 +393,16 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
       console.log(`[promptLlmProcessor] ${jobId}: Stripped markdown wrapper`);
     }
 
-    // console.log(`[promptLlmProcessor] ${jobId}: Parsed response length: ${rawString.length}`);
-
-    // Validate format - just check it's valid JSON
-    const trimmed = rawString.trim();
-    const looksLikeJson = trimmed.startsWith('{') && trimmed.endsWith('}');
-    if (!looksLikeJson) {
+    // Extract the first structurally complete JSON object, discarding any trailing content
+    const extractedJson = extractFirstJsonObject(rawString);
+    if (!extractedJson) {
       console.error(`[promptLlmProcessor] ${jobId}: Invalid response, first 500 chars:`, rawString.substring(0, 500));
       throw new Error('LLM response does not appear to be valid JSON structure');
     }
+    if (extractedJson.length < rawString.trim().length) {
+      console.warn(`[promptLlmProcessor] ${jobId}: Discarded ${rawString.trim().length - extractedJson.length} trailing chars after JSON object`);
+    }
+    rawString = extractedJson;
 
     // Clean: normalize special characters from LLM output
     rawString = cleanRawText(rawString);

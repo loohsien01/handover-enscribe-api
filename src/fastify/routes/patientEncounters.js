@@ -10,10 +10,8 @@ import {
   deletePatientEncounter,
   getCompletePatientEncounter,
   completePatientEncounter,
-  updatePatientEncounterTranscript,
-  updatePatientEncounterWithTranscript,
 } from '../controllers/patientEncountersController.js';
-import { patientEncounterCreateRequestSchema, patientEncounterUpdateRequestSchema, patientEncounterCompleteCreateRequestSchema, patientEncounterTranscriptUpdateRequestSchema, patientEncounterWithTranscriptUpdateRequestSchema } from '../schemas/requests.js';
+import { patientEncounterCreateRequestSchema, patientEncounterUpdateRequestSchema, patientEncounterCompleteCreateRequestSchema } from '../schemas/requests.js';
 
 /**
  * Register patient encounters routes
@@ -88,14 +86,14 @@ export async function registerPatientEncountersRoutes(fastify) {
   });
 
   // GET /patient-encounters/complete/:id
-  // Get a complete patient encounter bundle with all linked data (recording, transcript, SOAP notes)
+  // Get a complete patient encounter bundle with all linked data (recording, notes)
   fastify.get('/patient-encounters/complete/:id', {
     preHandler: [fastify.authenticate],
     handler: getCompletePatientEncounter,
   });
 
   // POST /patient-encounters/complete
-  // Create a complete patient encounter bundle with recording, transcript, and SOAP notes
+  // Create a complete patient encounter bundle with recording and notes
   fastify.post('/patient-encounters/complete', {
     preHandler: [fastify.authenticate],
     handler: async (request, reply) => {
@@ -117,51 +115,6 @@ export async function registerPatientEncountersRoutes(fastify) {
     },
   });
 
-  // PATCH /patient-encounters/:id/transcript
-  // Update transcript for a patient encounter
-  fastify.patch('/patient-encounters/:id/transcript', {
-    preHandler: [fastify.authenticate],
-    handler: async (request, reply) => {
-      try {
-        // Validate request body
-        const parseResult = patientEncounterTranscriptUpdateRequestSchema.safeParse(request.body);
-        if (!parseResult.success) {
-          return reply.status(400).send({ error: parseResult.error });
-        }
-
-        // Set validated body on request for controller
-        request.body = parseResult.data;
-
-        return updatePatientEncounterTranscript(request, reply);
-      } catch (error) {
-        console.error('Error in PATCH /patient-encounters/:id/transcript route:', error);
-        return reply.status(500).send({ error: 'Internal server error' });
-      }
-    },
-  });
-
-  // PATCH /patient-encounters/:id/update-with-transcript
-  // Update patient encounter name and transcript together (compound update with rollback)
-  fastify.patch('/patient-encounters/:id/update-with-transcript', {
-    preHandler: [fastify.authenticate],
-    handler: async (request, reply) => {
-      try {
-        // Validate request body
-        const parseResult = patientEncounterWithTranscriptUpdateRequestSchema.safeParse(request.body);
-        if (!parseResult.success) {
-          return reply.status(400).send({ error: parseResult.error });
-        }
-
-        // Set validated body on request for controller
-        request.body = parseResult.data;
-
-        return updatePatientEncounterWithTranscript(request, reply);
-      } catch (error) {
-        console.error('Error in PATCH /patient-encounters/:id/update-with-transcript route:', error);
-        return reply.status(500).send({ error: 'Internal server error' });
-      }
-    },
-  });
 }
 
 export default registerPatientEncountersRoutes;

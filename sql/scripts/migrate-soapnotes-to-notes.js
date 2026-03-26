@@ -37,7 +37,8 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const BATCH_SIZE = 10; // Decrypt in batches
 
 // TEST MODE: Set to limit number of records (e.g., 10, null = all)
-const LIMIT = 10; // Change to 10 for testing
+const LIMIT = null; // Change to 10 for testing
+const OFFSET = 1000; // Set to 1000, 2000, etc. to paginate through results
 const TEST_MODE = LIMIT !== null;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -192,11 +193,16 @@ async function migrateSoapNotesToNotes() {
           encrypted_aes_key
         )
       `)
-      .order('created_at', { ascending: true });
+      .order('updated_at', { ascending: true });
 
     // Apply limit for testing
     if (LIMIT) {
       query = query.limit(LIMIT);
+    }
+
+    // Apply offset for pagination
+    if (OFFSET > 0) {
+      query = query.range(OFFSET, OFFSET + (LIMIT || 1000) - 1);
     }
 
     const { data: soapNotes, error: fetchError } = await query;

@@ -14,7 +14,7 @@ export const patientEncounterCreateRequestSchema = z.object({
 /**
  * POST request for creating a complete patient encounter bundle
  * Endpoint: POST /api/patient-encounters/complete
- * Requires patientEncounter, recording, transcript, and soapNote_text objects
+ * Requires patientEncounter, recording, and note_text objects
  */
 export const patientEncounterCompleteCreateRequestSchema = z.object({
   patientEncounter: z.object({
@@ -23,44 +23,14 @@ export const patientEncounterCompleteCreateRequestSchema = z.object({
   recording: z.object({
     recording_file_path: z.string().min(1, 'Recording file path is required'),
   }),
-  transcript: z.object({
-    transcript_text: z.string().min(1, 'Transcript text is required'),
-  }),
-  soapNote_text: z.object({
-    soapNote: z.object({
-      subjective: z.string().optional().default(''),
-      objective: z.string().optional().default(''),
-      assessment: z.string().optional().default(''),
-      plan: z.string().optional().default(''),
-    }).optional(),
-    billingSuggestion: z.string().optional().default(''),
-  }),
+  note_text: z.string().min(0, 'Note text can be empty'),
 });
 
 /**
  * PATCH request for patient encounter - only updates the encounter itself (e.g., name)
- * Use PATCH /api/patient-encounters/{id}/update-with-transcript for compound updates
  */
 export const patientEncounterUpdateRequestSchema = z.object({
   name: z.string().min(1, 'Name is required').optional(),
-});
-
-/**
- * PATCH request for transcript-only updates via patient encounter endpoint
- * Endpoint: PATCH /api/patient-encounters/:id/transcript
- */
-export const patientEncounterTranscriptUpdateRequestSchema = z.object({
-  transcript_text: z.string().min(1, 'Transcript text is required'),
-});
-
-/**
- * PATCH request for compound updates (name + transcript)
- * Endpoint: PATCH /api/patient-encounters/:id/update-with-transcript
- * Both fields are required
- */
-export const patientEncounterWithTranscriptUpdateRequestSchema = z.object({
-  name: z.string().min(1, 'Name is required'),
-  transcript_text: z.string().min(1, 'Transcript text is required'),
 });
 
 /**
@@ -193,7 +163,7 @@ export const promptLlmRequestSchema = z.object({
  */
 export const createPromptLlmJobRequestSchema = z.object({
   recording_file_path: z.string().min(1, 'Recording file path is required'),
-  noteTemplate_id: z.bigint().or(z.string().transform(BigInt)).optional().nullable(),
+  noteTemplate_id: z.number().int().or(z.bigint()).or(z.string().transform(BigInt)).optional().nullable(),
 });
 
 /**
