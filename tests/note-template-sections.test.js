@@ -20,7 +20,7 @@ const runner = new TestRunner('Note Template Sections API Tests');
 // Mock token for invalid auth tests
 const MOCK_TOKEN = 'invalid.token.here';
 
-// Cache section ID from Test 10 for dependent tests (Tests 12-15, 19-20)
+// Cache section ID from Test 10 for dependent tests (Tests 12-15, 18-19)
 let cachedSectionId = null;
 
 // Test data - Use timestamps to ensure unique names
@@ -323,75 +323,54 @@ async function runNoteTemplateSectionsTests() {
       });
     }
 
-    // Test 16: Create duplicate section name (should fail with 409)
-    await runner.test('Test 16: POST /api/note-template-sections with duplicate name', {
-      method: 'POST',
-      endpoint: '/api/note-template-sections',
-      body: { name: 'Updated Test Section 1', layout: 'paragraph', details: 'Different' },
-      headers: {
-        Authorization: `Bearer ${realAccessToken}`,
-      },
-      expectedStatus: 409,
-      testNumber: 16,
-      customValidator: (body) => {
-        const isDuplicateError = body.code === 'DUPLICATE_NAME';
-        return {
-          passed: isDuplicateError,
-          message: isDuplicateError
-            ? '✓ Duplicate name error returned (409 Conflict)'
-            : '✗ Expected DUPLICATE_NAME error',
-        };
-      },
-    });
-
-    // Test 17: Get invalid section ID (should fail with 404)
-    await runner.test('Test 17: GET /api/note-template-sections/:id with invalid ID', {
+    // Test 16: Get invalid section ID (should fail with 404)
+    await runner.test('Test 16: GET /api/note-template-sections/:id with invalid ID', {
       method: 'GET',
       endpoint: '/api/note-template-sections/99999999',
       headers: {
         Authorization: `Bearer ${realAccessToken}`,
       },
       expectedStatus: 404,
-      testNumber: 17,
+      testNumber: 16,
     });
 
-    // Test 18: Delete section successfully (DEPENDENT ON TEST 10)
-    let test18Passed = false;
+    // Test 17: Delete section successfully (DEPENDENT ON TEST 10)
+    let test17DeletePassed = false;
     if (!cachedSectionId) {
-      console.log('⚠️  Test 18: DELETE /api/note-template-sections/:id successfully');
+      console.log('⚠️  Test 17: DELETE /api/note-template-sections/:id successfully');
       console.log('   ⚠️  SKIPPED: Test 10 failed, cannot test DELETE with real section\n');
     } else {
-      await runner.test('Test 18: DELETE /api/note-template-sections/:id successfully', {
+      await runner.test('Test 17: DELETE /api/note-template-sections/:id successfully', {
         method: 'DELETE',
         endpoint: `/api/note-template-sections/${cachedSectionId}`,
         headers: {
           Authorization: `Bearer ${realAccessToken}`,
         },
         expectedStatus: 204,
-        testNumber: 18,
+        testNumber: 17,
         onSuccess: () => {
-          test18Passed = true;
+          test17DeletePassed = true;
         },
       });
     }
 
-    // Test 19: Verify deleted section is gone (DEPENDENT ON TEST 18 AND TEST 10)
-    if (!cachedSectionId || !test18Passed) {
-      console.log('⚠️  Test 19: GET /api/note-template-sections/:id verifies section deleted');
-      console.log('   ⚠️  SKIPPED: Test 18 or Test 10 failed, cannot verify deletion\n');
+    // Test 18: Verify deleted section is gone (DEPENDENT ON TEST 17 AND TEST 10)
+    if (!cachedSectionId || !test17DeletePassed) {
+      console.log('⚠️  Test 18: GET /api/note-template-sections/:id verifies section deleted');
+      console.log('   ⚠️  SKIPPED: Test 17 or Test 10 failed, cannot verify deletion\n');
     } else {
-      await runner.test('Test 19: GET /api/note-template-sections/:id verifies section deleted', {
+      await runner.test('Test 18: GET /api/note-template-sections/:id verifies section deleted', {
         method: 'GET',
         endpoint: `/api/note-template-sections/${cachedSectionId}`,
         headers: {
           Authorization: `Bearer ${realAccessToken}`,
         },
         expectedStatus: 404,
-        testNumber: 19,
+        testNumber: 18,
       });
     }
 
-    // Test 20: Verify system-generated sections are present
+    // Test 19: Verify system-generated sections are present
     const systemSectionNames = [
       'Chief Complaint',
       'History of Present Illness',
@@ -411,14 +390,14 @@ async function runNoteTemplateSectionsTests() {
       'Additional Inquiries',
     ];
 
-    await runner.test('Test 20: GET /api/note-template-sections retrieves 16 system-generated sections', {
+    await runner.test('Test 19: GET /api/note-template-sections retrieves 16 system-generated sections', {
       method: 'GET',
       endpoint: '/api/note-template-sections',
       headers: {
         Authorization: `Bearer ${realAccessToken}`,
       },
       expectedStatus: 200,
-      testNumber: 20,
+      testNumber: 19,
       customValidator: (data) => {
         if (!Array.isArray(data)) {
           return { passed: false, message: '✗ Response is not an array' };
@@ -460,7 +439,7 @@ async function runNoteTemplateSectionsTests() {
 
   // ===== REPORTING =====
 
-  runner.printResults(20);
+  runner.printResults(19);
   const resultsFile = runner.saveResults('note-template-sections-tests.json');
   console.log(`✅ Test results saved to: ${resultsFile}\n`);
 

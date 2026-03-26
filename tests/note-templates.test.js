@@ -1,12 +1,14 @@
 /**
  * Test Suite: Note Templates API
  * Tests CRUD operations: GET all, GET single, POST, PATCH, DELETE
- * Note: Requires valid JWT token for authentication
+ * Also: POST /api/note-templates/llm-extract (multipart/form-data, field: file)
+ * Note: Requires valid JWT token for authentication (tests 2–10, 13–16)
  * Requires: TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local
  */
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
 
 // Load .env.local
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -17,6 +19,22 @@ import { TestRunner } from './testUtils.js';
 import { getTestAccount, hasTestAccounts, getApiBaseUrl } from './testConfig.js';
 
 const runner = new TestRunner('Note Templates API Tests');
+
+const MOCK_TOKEN = 'invalid.token.here';
+const FIXTURES_DIR = path.resolve(__dirname, 'fixtures');
+const PDF_FIXTURE = '2026-03-25____11-16-53-PM.pdf';
+
+function getFixtureFile() {
+  const pdfPath = path.join(FIXTURES_DIR, PDF_FIXTURE);
+  if (fs.existsSync(pdfPath)) {
+    return {
+      filename: PDF_FIXTURE,
+      contentType: 'application/pdf',
+      buffer: fs.readFileSync(pdfPath),
+    };
+  }
+  return null;
+}
 
 // Will store real access token from test account
 let accessToken = null;
@@ -47,8 +65,14 @@ async function runNoteTemplateTests() {
 
       if (signInResponse.ok) {
         const authData = await signInResponse.json();
-        accessToken = authData.token.access_token;
-        console.log('✓ Obtained valid access token from test account\n');
+        accessToken =
+          authData?.token?.access_token ||
+          authData?.session?.access_token ||
+          authData?.access_token ||
+          null;
+        if (accessToken) {
+          console.log('✓ Obtained valid access token from test account\n');
+        }
       } else {
         console.log('⚠️  Could not obtain access token from test account');
         console.log('   Verify TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local\n');
@@ -67,17 +91,44 @@ async function runNoteTemplateTests() {
     testNumber: 1,
   });
 
-  // Only run remaining tests if we have a valid token
+  const tinyTxt = {
+    filename: 'tiny.txt',
+    contentType: 'text/plain',
+    buffer: Buffer.from('hello'),
+  };
+
+  // Only run remaining CRUD + llm-extract (auth) tests if we have a valid token
   if (!accessToken) {
-    console.warn('\n⚠️  Skipping Tests 2-10: No valid access token available');
+    console.warn('\n⚠️  Skipping Tests 2-10 and 13-16: No valid access token available');
     console.log('To run full test suite:');
     console.log('  1. Add credentials to .env.local:');
     console.log('     TEST_ACCOUNT_EMAIL=your@email.com');
     console.log('     TEST_ACCOUNT_PASSWORD=yourpassword');
     console.log('  2. Ensure server is running: npm run dev:fastify');
     console.log('  3. Run: npm run test:note-templates\n');
-    
-    runner.printResults();
+
+    console.log('Contract: POST /api/note-templates/llm-extract — multipart/form-data with "file" field\n');
+
+    await runner.testMultipart('Test 11: POST /note-templates/llm-extract without auth', {
+      method: 'POST',
+      endpoint: '/api/note-templates/llm-extract',
+      testNumber: 11,
+      expectedStatus: 401,
+      filePart: tinyTxt,
+    });
+
+    await runner.testMultipart('Test 12: POST /note-templates/llm-extract with invalid token', {
+      method: 'POST',
+      endpoint: '/api/note-templates/llm-extract',
+      testNumber: 12,
+      expectedStatus: 401,
+      headers: {
+        Authorization: `Bearer ${MOCK_TOKEN}`,
+      },
+      filePart: tinyTxt,
+    });
+
+    runner.printResults(16);
     const resultsFile = runner.saveResults('note-templates-tests.json');
     console.log(`✅ Test results saved to: ${resultsFile}\n`);
     return runner.getSummary();
@@ -290,8 +341,100 @@ async function runNoteTemplateTests() {
   console.log(`   ${test10Message}`);
   console.log(`   ⏳ DEPENDENCY: Test 10 depends on Test 2 (creation). If Test 2 fails, this test is skipped.\n`);
 
+  // ===== LLM extract (POST /api/note-templates/llm-extract) =====
+  console.log('Contract: POST /api/note-templates/llm-extract — multipart/form-data with "file" field\n');
+
+  await runner.testMultipart('Test 11: POST /note-templates/llm-extract without auth', {
+    method: 'POST',
+    endpoint: '/api/note-templates/llm-extract',
+    testNumber: 11,
+    expectedStatus: 401,
+    filePart: tinyTxt,
+  });
+
+  await runner.testMultipart('Test 12: POST /note-templates/llm-extract with invalid token', {
+    method: 'POST',
+    endpoint: '/api/note-templates/llm-extract',
+    testNumber: 12,
+    expectedStatus: 401,
+    headers: {
+      Authorization: `Bearer ${MOCK_TOKEN}`,
+    },
+    filePart: tinyTxt,
+  });
+
+  await runner.testMultipart('Test 13: POST /note-templates/llm-extract missing file', {
+    method: 'POST',
+    endpoint: '/api/note-templates/llm-extract',
+    testNumber: 13,
+    expectedStatus: 400,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  await runner.testMultipart('Test 14: POST /note-templates/llm-extract unsupported file type', {
+    method: 'POST',
+    endpoint: '/api/note-templates/llm-extract',
+    testNumber: 14,
+    expectedStatus: 400,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    filePart: {
+      filename: 'image.png',
+      contentType: 'image/png',
+      buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    },
+  });
+
+  await runner.testMultipart('Test 15: POST /note-templates/llm-extract empty file', {
+    method: 'POST',
+    endpoint: '/api/note-templates/llm-extract',
+    testNumber: 15,
+    expectedStatus: 400,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    filePart: {
+      filename: 'empty.pdf',
+      contentType: 'application/pdf',
+      buffer: Buffer.alloc(0),
+    },
+  });
+
+  const fixture = getFixtureFile();
+  if (!fixture) {
+    console.log(`⚠️  Fixture missing: expected ${PDF_FIXTURE}`);
+    console.log('    Test 16 will be marked skipped in printed output.\n');
+  } else {
+    await runner.testMultipart(`Test 16: POST /note-templates/llm-extract valid fixture (${fixture.filename})`, {
+      method: 'POST',
+      endpoint: '/api/note-templates/llm-extract',
+      testNumber: 16,
+      expectedStatus: 200,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      filePart: fixture,
+      customValidator: (body) => {
+        const sections = body?.sections;
+        const validLayouts =
+          Array.isArray(sections) &&
+          sections.every((s) => s?.layout === 'paragraph' || s?.layout === 'bullet points');
+        const passed = Array.isArray(sections) && sections.length > 0 && validLayouts;
+        return {
+          passed,
+          message: passed
+            ? `Extracted ${sections.length} sections`
+            : `Invalid sections response: ${JSON.stringify(body).substring(0, 200)}...`,
+        };
+      },
+    });
+  }
+
   // Print results
-  runner.printResults();
+  runner.printResults(16);
   // Save results to file
   const resultsFile = runner.saveResults('note-templates-tests.json');
   console.log(`✅ Test results saved to: ${resultsFile}\n`);

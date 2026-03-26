@@ -9,6 +9,7 @@ import {
   createNoteTemplate,
   updateNoteTemplate,
   deleteNoteTemplate,
+  extractNoteTemplateSections,
 } from '../controllers/noteTemplatesController.js';
 import {
   noteTemplateCreateRequestSchema,
@@ -16,6 +17,19 @@ import {
 } from '../schemas/requests.js';
 
 export async function registerNoteTemplatesRoutes(fastify) {
+  // POST /api/note-templates/llm-extract — LLM PDF → section preview (no DB write; register before :id)
+  fastify.post('/note-templates/llm-extract', {
+    preHandler: [fastify.authenticate],
+    handler: async (request, reply) => {
+      try {
+        return extractNoteTemplateSections(request, reply);
+      } catch (error) {
+        console.error('Error in POST /note-templates/llm-extract:', error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  });
+
   // GET /api/note-templates - Get all templates
   fastify.get('/note-templates', {
     preHandler: [fastify.authenticate],

@@ -1,9 +1,9 @@
 /**
  * Job Controller
- * 
+ *
  * Handles job creation and status polling for SOAP note generation
- * - POST /api/jobs/prompt-llm - Create job, spawn async processor
- * - GET /api/jobs/prompt-llm/:jobId - Poll job status and results
+ * - POST /api/jobs/prompt-llm/generate-note — create job, spawn async processor
+ * - GET /api/jobs/prompt-llm/:jobId — poll job status and results
  */
 
 import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
@@ -11,11 +11,12 @@ import { promptLlmProcessor } from '../processors/promptLlmProcessor.js';
 import parseSoapNotes from '../../utils/parseSoapNotes.js';
 
 /**
- * POST /api/jobs/prompt-llm
- * 
- * Create a new SOAP note generation job
- * Immediately returns jobId, processes asynchronously in background
- * 
+ * Create a new SOAP note generation job (used by generate-note routes).
+ *
+ * Route: POST /api/jobs/prompt-llm/generate-note.
+ * Returns 202 with job id immediately;
+ * processing runs asynchronously in the background.
+ *
  * @param {Object} request - Fastify request with { recording_file_path }
  * @param {Object} reply - Fastify reply
  */

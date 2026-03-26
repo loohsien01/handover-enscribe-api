@@ -8,7 +8,7 @@
  * - SOAP note structure validation
  * - Special character normalization
  * 
- * Architecture: POST /api/jobs/prompt-llm (202) → GET /api/jobs/prompt-llm/:jobId (poll)
+ * Architecture: POST /api/jobs/prompt-llm/generate-note (202) → GET /api/jobs/prompt-llm/:jobId (poll)
  * Polling: 10s initial, exponential backoff to 45s on HTTP error, 10min timeout
  * 
  * Note: Transcription and PHI masking are tested separately in Deepgram and AWS tests.
@@ -342,7 +342,7 @@ async function runAllPromptLlmTests() {
   // Test 1: Missing authentication
   await runner.test('Missing Authentication Header', {
     method: 'POST',
-    endpoint: '/api/jobs/prompt-llm',
+    endpoint: '/api/jobs/prompt-llm/generate-note',
     body: { recording_file_path: recording.path },
     expectedStatus: 401,
     customValidator: (body) => {
@@ -358,7 +358,7 @@ async function runAllPromptLlmTests() {
   // Test 2: Invalid authentication token
   await runner.test('Invalid Authentication Token', {
     method: 'POST',
-    endpoint: '/api/jobs/prompt-llm',
+    endpoint: '/api/jobs/prompt-llm/generate-note',
     body: { recording_file_path: recording.path },
     headers: { Authorization: `Bearer ${MOCK_TOKEN}` },
     expectedStatus: 401,
@@ -375,7 +375,7 @@ async function runAllPromptLlmTests() {
   // Test 3: Missing recording_file_path
   await runner.test('Missing recording_file_path Parameter', {
     method: 'POST',
-    endpoint: '/api/jobs/prompt-llm',
+    endpoint: '/api/jobs/prompt-llm/generate-note',
     body: {},
     headers: { Authorization: `Bearer ${accessToken}` },
     expectedStatus: 400,
@@ -401,7 +401,7 @@ async function runAllPromptLlmTests() {
   console.log('   Process: Audio → Transcribe (Deepgram) → Expand dot phrases → Mask PHI (AWS) → Fetch Template → LLM Generate note\n');
   
   // Create job with noteTemplate_id parameter
-  const createResponse = await makeRequest('POST', '/api/jobs/prompt-llm',
+  const createResponse = await makeRequest('POST', '/api/jobs/prompt-llm/generate-note',
     { recording_file_path: recording.path, noteTemplate_id: "33" },
     { Authorization: `Bearer ${accessToken}` }
   );
@@ -461,7 +461,7 @@ async function runAllPromptLlmTests() {
   runner.results.push({
     name: 'Generate SOAP Note from Recording with Custom Note Template (Job-Based Polling)',
     passed: test4Passed,
-    endpoint: '/api/jobs/prompt-llm',
+    endpoint: '/api/jobs/prompt-llm/generate-note',
     method: 'POST → GET (polling)',
     status: createResponse.status,
     expectedStatus: 202,
@@ -482,7 +482,7 @@ async function runAllPromptLlmTests() {
     console.log('   Process: Audio → Transcribe (Deepgram) → Expand dot phrases → Mask PHI (AWS) → LLM Generate note (fixed schema)\n');
     
     // Create job WITHOUT noteTemplate_id parameter
-    const createResponse5 = await makeRequest('POST', '/api/jobs/prompt-llm',
+    const createResponse5 = await makeRequest('POST', '/api/jobs/prompt-llm/generate-note',
       { recording_file_path: recording.path },
       { Authorization: `Bearer ${accessToken}` }
     );
@@ -542,7 +542,7 @@ async function runAllPromptLlmTests() {
     runner.results.push({
       name: 'Generate SOAP Note from Recording with Fallback Schema (Job-Based Polling)',
       passed: test5Passed,
-      endpoint: '/api/jobs/prompt-llm',
+      endpoint: '/api/jobs/prompt-llm/generate-note',
       method: 'POST → GET (polling)',
       status: createResponse5.status,
       expectedStatus: 202,
@@ -635,7 +635,7 @@ async function runAllPromptLlmTests() {
     runner.results.push({
       name: 'Validate SOAP Note Structure (from cached response)',
       passed: test6Passed,
-      endpoint: '/api/jobs/prompt-llm',
+      endpoint: '/api/jobs/prompt-llm/generate-note',
       method: 'GET (dependent on Test 5)',
       status: null,
       expectedStatus: null,
@@ -720,7 +720,7 @@ async function runAllPromptLlmTests() {
   runner.results.push({
     name: 'Verify Special Character Normalization (from cached response)',
     passed: test7Passed,
-    endpoint: '/api/jobs/prompt-llm',
+    endpoint: '/api/jobs/prompt-llm/generate-note',
     method: 'GET (dependent on Test 4)',
     status: null,
     expectedStatus: null,

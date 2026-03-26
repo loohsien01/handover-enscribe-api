@@ -1,13 +1,14 @@
 /**
  * Prompt LLM Jobs Routes
- * 
+ *
  * Polling-based job architecture for SOAP note generation
- * - POST /prompt-llm - Create job, returns jobId immediately
+ * - POST /prompt-llm/generate-note - Create job, returns jobId immediately
  * - GET /prompt-llm/:jobId - Poll job status and results
  */
 
-import { createPromptLlmJobHandler, getPromptLlmJobStatusHandler } from '../controllers/jobController.js';
-import { createPromptLlmJobRequestSchema, getPromptLlmJobStatusQuerySchema } from '../schemas/requests.js';
+import { generateNoteHandler } from '../controllers/promptLlm/generateNoteController.js';
+import { getPromptLlmJobStatusHandler } from '../controllers/jobController.js';
+import { promptLlmGenerateNoteRequestSchema, getPromptLlmJobStatusQuerySchema } from '../schemas/requests.js';
 
 /**
  * Register prompt LLM jobs routes (polling-based)
@@ -15,24 +16,25 @@ import { createPromptLlmJobRequestSchema, getPromptLlmJobStatusQuerySchema } fro
  * @param {Object} fastify - Fastify instance
  */
 export async function registerPromptLlmJobsRoutes(fastify) {
-  // POST /api/jobs/prompt-llm (prefix /api applied in server.js)
-  fastify.post('/prompt-llm', {
-    onRequest: [fastify.authenticate],
-  }, async (request, reply) => {
+  const postGenerateNote = async (request, reply) => {
     try {
-      // Validate request body using Zod schema
-      const parseResult = createPromptLlmJobRequestSchema.safeParse(request.body);
+      const parseResult = promptLlmGenerateNoteRequestSchema.safeParse(request.body);
       if (!parseResult.success) {
         return reply.status(400).send({ error: parseResult.error });
       }
 
       request.body = parseResult.data;
-      return createPromptLlmJobHandler(request, reply);
+      return generateNoteHandler(request, reply);
     } catch (error) {
       console.error('[registerPromptLlmJobsRoutes POST] Error:', error);
       return reply.status(500).send({ error: 'Internal server error' });
     }
-  });
+  };
+
+  // POST /api/jobs/prompt-llm/generate-note (prefix /api/jobs in server.js)
+  fastify.post('/prompt-llm/generate-note', {
+    onRequest: [fastify.authenticate],
+  }, postGenerateNote);
 
   // GET /api/jobs/prompt-llm/:jobId (prefix /api applied in server.js)
   fastify.get('/prompt-llm/:jobId', {

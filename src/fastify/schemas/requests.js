@@ -157,11 +157,11 @@ export const promptLlmRequestSchema = z.object({
 });
 
 /**
- * POST request for creating a SOAP note generation job (polling-based)
- * Endpoint: POST /api/jobs/prompt-llm
+ * POST request for SOAP note generation (job-based, polling).
+ * Endpoint: POST /api/jobs/prompt-llm/generate-note
  * Optional: noteTemplate_id to use a specific note template for SOAP note generation
  */
-export const createPromptLlmJobRequestSchema = z.object({
+export const promptLlmGenerateNoteRequestSchema = z.object({
   recording_file_path: z.string().min(1, 'Recording file path is required'),
   noteTemplate_id: z.number().int().or(z.bigint()).or(z.string().transform(BigInt)).optional().nullable(),
 });
