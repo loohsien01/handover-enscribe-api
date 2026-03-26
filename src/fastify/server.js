@@ -10,6 +10,7 @@ dotenv.config({ path: envPath });
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookiePlugin from '@fastify/cookie';
+import multipart from '@fastify/multipart';
 import pino from 'pino';
 import authenticationPlugin from './plugins/authentication.js';
 import { ALLOWED_ORIGINS_LIST } from './middleware/cors.js';
@@ -27,6 +28,7 @@ import { registerNoteTemplateSectionsRoutes } from './routes/noteTemplateSection
 import { registerNoteTemplatesRoutes } from './routes/noteTemplates.js';
 import { registerNoteTemplatesCompleteRoutes } from './routes/noteTemplatesComplete.js';
 import { registerNoteTemplateSectionOrdersRoutes } from './routes/noteTemplateSectionOrders.js';
+import { registerExtractNoteTemplateRoutes } from './routes/extractNoteTemplate.js';
 
 /**
  * Create and configure Fastify application
@@ -125,6 +127,14 @@ async function createFastifyApp(options = {}) {
   // Register cookie parser plugin (makes fastify.parseCookie available)
   await fastify.register(cookiePlugin);
 
+  // Register multipart parser for transient document uploads
+  await fastify.register(multipart, {
+    limits: {
+      files: 1,
+      fileSize: 20 * 1024 * 1024, // 20MB max document size
+    },
+  });
+
   // Register authentication plugin (makes fastify.authenticate available)
   await fastify.register(authenticationPlugin);
 
@@ -146,6 +156,7 @@ async function createFastifyApp(options = {}) {
     await registerNoteTemplatesRoutes(apiScope);
     await registerNoteTemplatesCompleteRoutes(apiScope);
     await registerNoteTemplateSectionOrdersRoutes(apiScope);
+    await registerExtractNoteTemplateRoutes(apiScope);
     await registerMaskPhiRoutes(apiScope);
     await registerTranscribeRoutes(apiScope);
   }, { prefix: '/api' });

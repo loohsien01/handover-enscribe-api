@@ -1,8 +1,8 @@
 /**
- * Claude Bedrock SOAP Note Request Body Generator
- * 
+ * Claude Bedrock Request Body Generators
+ *
  * Generates request bodies optimized for Claude via AWS Bedrock.
- * Claude doesn't support response_format parameter, so JSON schema 
+ * Claude doesn't support response_format parameter, so JSON schema
  * requirements are embedded directly in the system message.
  */
 
@@ -114,6 +114,78 @@ Use bullet points (marked by '-' symbols, '•' is invalid symbol) and markdown 
 IMPORTANT: Return ONLY valid JSON matching the structure above. Do not include any text before or after the JSON.`
             }
         ],
-        max_tokens: 10000,
-    };
+    max_tokens: 10000,
+  };
+}
+
+/**
+ * Generates Claude Bedrock request body for extracting note template sections
+ * from a native PDF document.
+ *
+ * Claude analyzes the document structure and returns a JSON array of sections
+ * matching the noteTemplateSection schema: { name, layout, details }.
+ *
+ * @param {string} documentBase64 - Base64-encoded document content
+ * @param {string} mediaType - MIME type (e.g. 'application/pdf')
+ * @returns {object} Claude Bedrock request body
+ */
+export function getExtractNoteTemplateSectionsRequestBody(documentBase64, mediaType) {
+  const jsonSchemaDescription = `You MUST return a valid JSON array with this exact structure:
+[
+  {
+    "name": "string - section name (e.g. Chief Complaint, HPI, Assessment)",
+    "layout": "enum - paragraph OR bullet points",
+    "details": "string - concise description of what content belongs in this section"
+  }
+]
+
+Rules:
+- "layout" must be exactly "paragraph" or "bullet points" — no other values.
+- Use "bullet points" for list-style sections (medications, allergies, problem list, ROS).
+- Use "paragraph" for narrative sections (HPI, assessment, plan, notes).
+- "details" should be 1-3 sentences describing what a clinician would write in this section.
+- Do NOT include any text, explanation, or markdown outside the JSON array.`;
+
+  return {
+    modelId: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+    system: [
+      {
+        type: 'text',
+        text: 'You are a clinical documentation expert. Analyze medical note template documents and extract their section structure as structured JSON data.',
+        cache_control: { type: 'ephemeral' },
+      },
+      {
+        type: 'text',
+        text: jsonSchemaDescription,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: mediaType,
+              data: documentBase64,
+            },
+          },
+          {
+            type: 'text',
+            text: `Analyze this medical note template document and extract all its sections.
+
+For each section:
+- Identify the section name as it appears in the document.
+- Choose "paragraph" or "bullet points" based on whether the section contains narrative prose or a list of items.
+- Write a concise description (1-3 sentences) of what a clinician would document in this section.
+
+IMPORTANT: Return ONLY the JSON array. No preamble, no explanation, no markdown fences.`,
+          },
+        ],
+      },
+    ],
+    max_tokens: 4000,
+  };
 }

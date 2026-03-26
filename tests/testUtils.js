@@ -6,6 +6,14 @@ import fs from 'fs';
 import path from 'path';
 import { getApiBaseUrl } from './testConfig.js';
 
+function parseJsonSafe(text) {
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Make HTTP request to Fastify server
  */
@@ -25,6 +33,53 @@ export async function makeRequest(method, url, options = {}) {
     });
 
     const data = await response.json().catch(() => ({}));
+
+    return {
+      status: response.statusCode || response.status,
+      headers: Object.fromEntries(response.headers || []),
+      body: data,
+      ok: response.ok,
+      passed: expectedStatus ? response.status === expectedStatus : response.ok,
+    };
+  } catch (error) {
+    return {
+      status: null,
+      headers: {},
+      body: { error: error.message },
+      ok: false,
+      passed: false,
+    };
+  }
+}
+
+/**
+ * Make multipart/form-data request to Fastify server
+ */
+export async function makeMultipartRequest(method, url, options = {}) {
+  const { headers = {}, filePart = null, fields = {}, expectedStatus = null } = options;
+
+  try {
+    const formData = new FormData();
+
+    if (filePart) {
+      const blob = new Blob([filePart.buffer], { type: filePart.contentType || 'application/octet-stream' });
+      formData.append(filePart.fieldName || 'file', blob, filePart.filename || 'upload.bin');
+    }
+
+    Object.entries(fields || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        formData.append(key, String(value));
+      }
+    });
+
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: formData,
+    });
+
+    const rawText = await response.text();
+    const data = parseJsonSafe(rawText);
 
     return {
       status: response.statusCode || response.status,
@@ -112,6 +167,79 @@ export class TestRunner {
         onSuccess(response.body);
       } catch (error) {
         console.error(`Error in onSuccess callback for test "${name}":`, error.message);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Add a multipart test case
+   * @param {string} name - Test name
+   * @param {object} config - Multipart test configuration
+   */
+  async testMultipart(name, config) {
+    const {
+      method = 'POST',
+      endpoint,
+      headers,
+      filePart,
+      fields,
+      expectedStatus,
+      expectedFields,
+      customValidator,
+      onSuccess,
+      testNumber,
+    } = config;
+
+    const url = `${this.baseUrl}${endpoint}`;
+    const response = await makeMultipartRequest(method, url, {
+      headers,
+      filePart,
+      fields,
+      expectedStatus,
+    });
+
+    let passed = response.passed &&
+      (!expectedFields ||
+        expectedFields.every((field) => {
+          const keys = field.split('.');
+          let value = response.body;
+          for (const key of keys) {
+            value = value?.[key];
+          }
+          return value !== undefined && value !== null;
+        }));
+
+    let customMessage = '';
+    if (customValidator) {
+      const validationResult = customValidator(response.body, response);
+      if (passed) {
+        passed = passed && validationResult.passed;
+      }
+      customMessage = validationResult.message || '';
+    }
+
+    const result = {
+      name,
+      passed,
+      endpoint,
+      method,
+      status: response.status,
+      expectedStatus,
+      body: response.body,
+      customMessage,
+      testNumber: testNumber || null,
+      timestamp: new Date().toISOString(),
+    };
+
+    this.results.push(result);
+
+    if (passed && onSuccess && typeof onSuccess === 'function') {
+      try {
+        onSuccess(response.body);
+      } catch (error) {
+        console.error(`Error in onSuccess callback for multipart test "${name}":`, error.message);
       }
     }
 
