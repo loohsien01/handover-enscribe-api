@@ -528,3 +528,28 @@ export const noteUpdateRequestSchema = z.object({
   (data) => Object.keys(data).length > 0,
   { message: 'At least one field (text) must be provided' }
 );
+
+// ============================================================================
+// User profile (public."userProfiles")
+// ============================================================================
+
+/**
+ * POST /api/user-profile
+ * Create or replace profile for the authenticated user
+ */
+export const userProfileCreateRequestSchema = z.object({
+  username: z.string().min(1, 'Username is required'),
+  specialty: z.string().min(1, 'Specialty is required'),
+});
+
+/**
+ * PATCH /api/user-profile
+ * Partial update; at least one field required
+ */
+export const userProfilePatchRequestSchema = z.object({
+  username: z.string().min(1, 'Username is required').optional(),
+  specialty: z.string().min(1, 'Specialty is required').optional(),
+}).refine(
+  (data) => data.username !== undefined || data.specialty !== undefined,
+  { message: 'At least one of username or specialty must be provided' }
+);

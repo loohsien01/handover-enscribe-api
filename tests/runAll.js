@@ -7,6 +7,7 @@ import path from 'path';
 import { getApiBaseUrl } from './testConfig.js';
 import { runAuthTests } from './auth.test.js';
 import { runDotPhrasesTests } from './dot-phrases.test.js';
+import { runUserProfileTests } from './user-profile.test.js';
 import { runPatientEncounterTests } from './patient-encounters.test.js';
 import { runRecordingsTests } from './recordings.test.js';
 import { runTranscriptsTests } from './transcripts.test.js';
@@ -76,6 +77,25 @@ async function runAllTests() {
   } catch (error) {
     console.error('❌ Dot Phrases tests failed:', error.message);
     results.push({ suite: 'Dot Phrases', status: 'failed', error: error.message });
+  }
+
+  // Run User Profile Tests
+  try {
+    console.log('\n' + '-'.repeat(70));
+    console.log('TEST SUITE 2.5: USER PROFILE API');
+    console.log('-'.repeat(70) + '\n');
+    const upResult = await runUserProfileTests();
+    results.push({
+      suite: 'User Profile',
+      status: 'completed',
+      tests: upResult?.total || 0,
+      passed: upResult?.passed || 0,
+      failed: upResult?.failed || 0,
+      passRate: upResult?.passRate || '0%',
+    });
+  } catch (error) {
+    console.error('❌ User Profile tests failed:', error.message);
+    results.push({ suite: 'User Profile', status: 'failed', error: error.message });
   }
 
   // Run Patient Encounters Tests

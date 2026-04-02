@@ -378,6 +378,22 @@ export const notesResponseSchema = z.object({
 export const notesListSchema = z.array(notesResponseSchema);
 
 // ============================================================================
+// User profile (public."userProfiles")
+// ============================================================================
+
+/**
+ * GET/POST/PATCH /api/user-profile — single row response
+ */
+export const userProfileResponseSchema = z.object({
+  id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+  username: z.string(),
+  specialty: z.string(),
+});
+
+// ============================================================================
 // User Security Configs Schemas
 // ============================================================================
 

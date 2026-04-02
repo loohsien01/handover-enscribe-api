@@ -14,4 +14,5 @@ export { noteTemplateDatabaseSchema } from './noteTemplate.js';
 export { noteTemplateSectionDatabaseSchema } from './noteTemplateSection.js';
 export { noteTemplateSectionOrderDatabaseSchema } from './noteTemplateSectionOrder.js';
 export { userSecurityConfigDatabaseSchema } from './userSecurityConfig.js';
+export { userProfileDatabaseSchema } from './userProfile.js';
 export { uuidRegex, isoDatetimeRegex } from './regex.js';
