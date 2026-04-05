@@ -35,26 +35,91 @@ async function ensureAuthUserExists(userId) {
 }
 
 /**
- * Map common Postgres / Supabase errors to HTTP responses
+ * Map common Postgres / Supabase errors to status + JSON body
+ * @returns {{ status: number, payload: object }}
  */
-function mapProfileDbError(error, reply) {
+function profileDbErrorToHttp(error) {
   if (!error?.code) {
-    return reply.status(500).send({ error: 'Database operation failed' });
+    return { status: 500, payload: { error: 'Database operation failed' } };
   }
   if (error.code === '23505') {
-    return reply.status(409).send({
-      error: 'This username is already taken',
-      code: 'USERNAME_TAKEN',
-    });
+    return {
+      status: 409,
+      payload: {
+        error: 'This username is already taken',
+        code: 'USERNAME_TAKEN',
+      },
+    };
   }
   if (error.code === '23503') {
-    return reply.status(422).send({
-      error: 'Account could not be linked; try again or contact support',
-      code: 'FOREIGN_KEY_VIOLATION',
-    });
+    return {
+      status: 422,
+      payload: {
+        error: 'Account could not be linked; try again or contact support',
+        code: 'FOREIGN_KEY_VIOLATION',
+      },
+    };
   }
   console.error('[userProfile] Unhandled DB error:', error);
-  return reply.status(500).send({ error: 'Database operation failed' });
+  return { status: 500, payload: { error: 'Database operation failed' } };
+}
+
+function mapProfileDbError(error, reply) {
+  const { status, payload } = profileDbErrorToHttp(error);
+  return reply.status(status).send(payload);
+}
+
+/**
+ * Insert or update the profile row for user_id (one row per user).
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase
+ * @param {string} userId
+ * @param {{ username: string, specialty: string }} fields
+ * @returns {Promise<{ ok: true, data: object, created: boolean } | { ok: false, status: number, payload: object }>}
+ */
+export async function upsertUserProfileForUser(supabase, userId, fields) {
+  const { username, specialty } = fields;
+
+  const { data: existing, error: fetchError } = await supabase
+    .from(userProfileTable)
+    .select('id')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (fetchError) {
+    console.error('[userProfile] upsert fetch existing:', fetchError);
+    return {
+      ok: false,
+      status: 500,
+      payload: { error: 'Failed to save profile' },
+    };
+  }
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from(userProfileTable)
+      .update({ username, specialty })
+      .eq('user_id', userId)
+      .select()
+      .single();
+
+    if (error) {
+      const { status, payload } = profileDbErrorToHttp(error);
+      return { ok: false, status, payload };
+    }
+    return { ok: true, data, created: false };
+  }
+
+  const { data, error } = await supabase
+    .from(userProfileTable)
+    .insert([{ user_id: userId, username, specialty }])
+    .select()
+    .single();
+
+  if (error) {
+    const { status, payload } = profileDbErrorToHttp(error);
+    return { ok: false, status, payload };
+  }
+  return { ok: true, data, created: true };
 }
 
 /**
@@ -103,41 +168,14 @@ export async function createOrUpdateUserProfile(request, reply) {
 
     const supabase = getSupabaseClient(request.headers.authorization);
 
-    const { data: existing, error: fetchError } = await supabase
-      .from(userProfileTable)
-      .select('id')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    if (fetchError) {
-      console.error('[userProfile] POST fetch existing:', fetchError);
-      return reply.status(500).send({ error: 'Failed to save profile' });
+    const result = await upsertUserProfileForUser(supabase, userId, {
+      username,
+      specialty,
+    });
+    if (!result.ok) {
+      return reply.status(result.status).send(result.payload);
     }
-
-    if (existing) {
-      const { data, error } = await supabase
-        .from(userProfileTable)
-        .update({ username, specialty })
-        .eq('user_id', userId)
-        .select()
-        .single();
-
-      if (error) {
-        return mapProfileDbError(error, reply);
-      }
-      return reply.status(200).send(data);
-    }
-
-    const { data, error } = await supabase
-      .from(userProfileTable)
-      .insert([{ user_id: userId, username, specialty }])
-      .select()
-      .single();
-
-    if (error) {
-      return mapProfileDbError(error, reply);
-    }
-    return reply.status(201).send(data);
+    return reply.status(result.created ? 201 : 200).send(result.data);
   } catch (err) {
     console.error('[userProfile] POST:', err);
     return reply.status(500).send({ error: 'Internal server error' });

@@ -109,6 +109,8 @@ async function createFastifyApp(options = {}) {
       // Allow requests with no origin (mobile apps, curl requests)
       if (!origin) return callback(null, true);
 
+      if (environment !== 'production' && /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$/i.test(origin)) return callback(null, true);
+
       // Check if origin is in allowed list
       if (ALLOWED_ORIGINS_LIST.includes(origin)) {
         return callback(null, true);

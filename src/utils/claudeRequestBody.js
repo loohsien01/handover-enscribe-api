@@ -77,11 +77,6 @@ You MUST return a valid JSON object with this exact structure:
     },
     "assessment": "string - Clinical assessment and diagnosis based on subjective and objective findings",
     "plan": "string - Treatment plan, medications, follow-up instructions and next steps. Base solely on transcript - do not include assumptions. Only output data if present in transcript."
-  },
-  "billing": {
-    "icd10_codes": "array of strings - ICD-10 codes with description (format: 'CODE - Description'). Max 4, can have additional supporting codes. Example: 'M79.3 - Panniculitis, unspecified'",
-    "billing_code": "string - CPT codes for services provided. Use 99202–99205 for new patients / 99211–99215 for established patients with justification",
-    "additional_inquiries": "string - Doctor's additional areas of investigation for the patient to increase doctor's billing level"
   }
 }`;
     }

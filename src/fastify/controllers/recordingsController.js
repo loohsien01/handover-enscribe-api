@@ -2,6 +2,7 @@
  * Recordings Controller
  * Handles all recording-related operations including listing attached/unattached files
  */
+import { randomUUID } from 'node:crypto';
 import { getSupabaseClient } from '../../utils/supabase.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 
@@ -43,20 +44,31 @@ export async function getRecordingsAttachments(request, reply) {
     const userId = user.id;
 
     // ===== PERFORMANCE LOGGING =====
-    console.time('[getRecordingsAttachments] Total execution');
-    console.time('[getRecordingsAttachments] Fetch all recordings');
+    // console.time labels are process-global; concurrent requests need unique labels or timeEnd hits "No such label".
+    const perfId = randomUUID().slice(0, 8);
+    const perf = (phase) => `[getRecordingsAttachments] ${phase} [${perfId}]`;
+    const labelTotal = perf('Total execution');
+    const labelFetchRecordings = perf('Fetch all recordings');
+    const labelFetchStorage = perf('Fetch all storage files (parallel)');
 
-    // Get all recordings for this user with patientEncounter join
-    // RLS policy ensures user can only access their own recordings
-    const { data: recordingsData, error: recordingsError } = await supabase
-      .from(recordingTableName)
-      .select(`
+    console.time(labelTotal);
+    try {
+    console.time(labelFetchRecordings);
+    let recordingsData;
+    let recordingsError;
+    try {
+      const recRes = await supabase
+        .from(recordingTableName)
+        .select(`
         *,
         patientEncounters:patientEncounter_id (*)
       `)
-      .order('recording_file_path', { ascending: true });
-
-    console.timeEnd('[getRecordingsAttachments] Fetch all recordings');
+        .order('recording_file_path', { ascending: true });
+      recordingsData = recRes.data;
+      recordingsError = recRes.error;
+    } finally {
+      console.timeEnd(labelFetchRecordings);
+    }
 
     if (recordingsError) {
       console.error('Error fetching recordings:', recordingsError);
@@ -65,79 +77,75 @@ export async function getRecordingsAttachments(request, reply) {
 
     console.log(`[getRecordingsAttachments] Fetched ${recordingsData?.length || 0} recordings from DB`);
 
-    // Get all files from storage bucket for this user (parallel batch fetching)
-    console.time('[getRecordingsAttachments] Fetch all storage files (parallel)');
     const allStorageFiles = [];
     const pageSize = 100;
     const parallelBatches = 5; // Fetch 5 batches concurrently
     let currentOffset = 0;
     let hasMoreFiles = true;
 
-    while (hasMoreFiles) {
-      // Prepare up to parallelBatches requests
-      const batchPromises = [];
-      for (let i = 0; i < parallelBatches; i++) {
-        const offset = currentOffset + (i * pageSize);
-        batchPromises.push(
-          supabase.storage
-            .from('audio-files')
-            .list(userId, {
-              limit: pageSize,
-              offset: offset
-            })
-        );
-      }
-
-      // Execute all batches in parallel
-      const results = await Promise.all(batchPromises);
-
-      // Process results
-      let foundAnyData = false;
-      for (const { data: storageData, error: storageError } of results) {
-        if (storageError) {
-          console.error('Error fetching storage files:', storageError);
-          return reply.status(500).send({ error: storageError.message });
+    console.time(labelFetchStorage);
+    try {
+      while (hasMoreFiles) {
+        const batchPromises = [];
+        for (let i = 0; i < parallelBatches; i++) {
+          const offset = currentOffset + (i * pageSize);
+          batchPromises.push(
+            supabase.storage
+              .from('audio-files')
+              .list(userId, {
+                limit: pageSize,
+                offset: offset
+              })
+          );
         }
 
-        if (!storageData || storageData.length === 0) {
+        const results = await Promise.all(batchPromises);
+
+        let foundAnyData = false;
+        for (const { data: storageData, error: storageError } of results) {
+          if (storageError) {
+            console.error('Error fetching storage files:', storageError);
+            return reply.status(500).send({ error: storageError.message });
+          }
+
+          if (!storageData || storageData.length === 0) {
+            hasMoreFiles = false;
+            break;
+          }
+
+          foundAnyData = true;
+          allStorageFiles.push(...storageData);
+
+          if (storageData.length < pageSize) {
+            hasMoreFiles = false;
+            break;
+          }
+        }
+
+        if (!foundAnyData) {
           hasMoreFiles = false;
-          break;
         }
 
-        foundAnyData = true;
-        allStorageFiles.push(...storageData);
-
-        // If we got fewer files than requested, we've reached the end
-        if (storageData.length < pageSize) {
-          hasMoreFiles = false;
-          break;
-        }
+        currentOffset += parallelBatches * pageSize;
       }
-
-      // If no data was found in any batch, we're done
-      if (!foundAnyData) {
-        hasMoreFiles = false;
-      }
-
-      // Move offset for next parallel batch group
-      currentOffset += parallelBatches * pageSize;
+    } finally {
+      console.timeEnd(labelFetchStorage);
     }
 
-    console.timeEnd('[getRecordingsAttachments] Fetch all storage files (parallel)');
     console.log(`[getRecordingsAttachments] Fetched ${allStorageFiles.length} files from storage`);
 
     // Create a map of storage files by filename for quick lookup
-    console.time('[getRecordingsAttachments] Build storage file map');
+    console.time(perf('Build storage file map'));
     const storageFileMap = new Map();
     allStorageFiles.forEach(file => {
       const fullPath = `${userId}/${file.name}`;
       storageFileMap.set(fullPath, file);
     });
-    console.timeEnd('[getRecordingsAttachments] Build storage file map');
+    console.timeEnd(perf('Build storage file map'));
 
     if (attachedBool) {
       // Build attached recordings array WITHOUT decryption (faster)
-      console.time('[getRecordingsAttachments] Build attached recordings (no decryption)');
+      console.time(perf('Build attached recordings (no decryption)'));
       const attachedRecordings = recordingsData.map(recording => {
         const storageFile = storageFileMap.get(recording.recording_file_path);
         const missing = !storageFile;
@@ -155,10 +163,10 @@ export async function getRecordingsAttachments(request, reply) {
           db_updated_at: recording.updated_at
         };
       });
-      console.timeEnd('[getRecordingsAttachments] Build attached recordings (no decryption)');
+      console.timeEnd(perf('Build attached recordings (no decryption)'));
 
       // Apply sorting based on sortBy parameter
-      console.time('[getRecordingsAttachments] Sort attached recordings');
+      console.time(perf('Sort attached recordings'));
       attachedRecordings.sort((a, b) => {
         let valueA, valueB;
         
@@ -183,16 +191,16 @@ export async function getRecordingsAttachments(request, reply) {
         }
         return 0;
       });
-      console.timeEnd('[getRecordingsAttachments] Sort attached recordings');
+      console.timeEnd(perf('Sort attached recordings'));
 
       // Apply pagination BEFORE decryption (only decrypt what will be returned)
-      console.time('[getRecordingsAttachments] Slice pagination');
+      console.time(perf('Slice pagination'));
       const paginatedRecordings = attachedRecordings.slice(offsetNum, offsetNum + limitNum);
-      console.timeEnd('[getRecordingsAttachments] Slice pagination');
+      console.timeEnd(perf('Slice pagination'));
       console.log(`[getRecordingsAttachments] Paginated to ${paginatedRecordings.length} records (offset=${offsetNum}, limit=${limitNum})`);
 
       // Now decrypt only the paginated encounters
-      console.time('[getRecordingsAttachments] Decrypt paginated encounters');
+      console.time(perf('Decrypt paginated encounters'));
       const result = await Promise.all(paginatedRecordings.map(async recording => {
         let patientEncounterData = recording.patientEncounterData;
         
@@ -226,17 +234,16 @@ export async function getRecordingsAttachments(request, reply) {
           patientEncounter: patientEncounterData
         };
       }));
-      console.timeEnd('[getRecordingsAttachments] Decrypt paginated encounters');
+      console.timeEnd(perf('Decrypt paginated encounters'));
 
-      console.timeEnd('[getRecordingsAttachments] Total execution');
       return reply.status(200).send(result);
     } else {
       // Build unattached files array (files in storage but not in recordings table)
-      console.time('[getRecordingsAttachments] Build unattached Set');
+      console.time(perf('Build unattached Set'));
       const recordingPaths = new Set(recordingsData.map(r => r.recording_file_path));
-      console.timeEnd('[getRecordingsAttachments] Build unattached Set');
+      console.timeEnd(perf('Build unattached Set'));
       
-      console.time('[getRecordingsAttachments] Filter unattached files');
+      console.time(perf('Filter unattached files'));
       const unattachedFiles = [];
       for (const file of allStorageFiles) {
         const fullPath = `${userId}/${file.name}`;
@@ -249,11 +256,11 @@ export async function getRecordingsAttachments(request, reply) {
           });
         }
       }
-      console.timeEnd('[getRecordingsAttachments] Filter unattached files');
+      console.timeEnd(perf('Filter unattached files'));
       console.log(`[getRecordingsAttachments] Found ${unattachedFiles.length} unattached files`);
 
       // Apply sorting based on sortBy parameter
-      console.time('[getRecordingsAttachments] Sort unattached files');
+      console.time(perf('Sort unattached files'));
       unattachedFiles.sort((a, b) => {
         let valueA, valueB;
         
@@ -278,16 +285,19 @@ export async function getRecordingsAttachments(request, reply) {
         }
         return 0;
       });
-      console.timeEnd('[getRecordingsAttachments] Sort unattached files');
+      console.timeEnd(perf('Sort unattached files'));
 
       // Apply pagination to unattached files
-      console.time('[getRecordingsAttachments] Slice unattached pagination');
+      console.time(perf('Slice unattached pagination'));
       const paginatedUnattached = unattachedFiles.slice(offsetNum, offsetNum + limitNum);
-      console.timeEnd('[getRecordingsAttachments] Slice unattached pagination');
+      console.timeEnd(perf('Slice unattached pagination'));
       console.log(`[getRecordingsAttachments] Paginated unattached to ${paginatedUnattached.length} records`);
 
-      console.timeEnd('[getRecordingsAttachments] Total execution');
       return reply.status(200).send(paginatedUnattached);
+    }
+
+    } finally {
+      console.timeEnd(labelTotal);
     }
 
   } catch (error) {

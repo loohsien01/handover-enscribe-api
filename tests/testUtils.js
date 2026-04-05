@@ -287,7 +287,9 @@ export class TestRunner {
       results: this.results,
     };
 
-    fs.writeFileSync(outputFile, JSON.stringify(output, null, 2));
+    const jsonReplacer = (_, value) =>
+      typeof value === 'bigint' ? Number(value) : value;
+    fs.writeFileSync(outputFile, JSON.stringify(output, jsonReplacer, 2));
     return outputFile;
   }
 
@@ -330,9 +332,13 @@ export class TestRunner {
         }
       }
     } else {
-      // Fallback: show only executed tests with auto-generated numbers
+      // Prefer explicit result.testNumber when set (matches saved JSON); else array order 1..n
       this.results.forEach((result, index) => {
-        resultsToShow.push({ testNumber: index + 1, result });
+        const displayNum =
+          result.testNumber != null && result.testNumber !== ''
+            ? result.testNumber
+            : index + 1;
+        resultsToShow.push({ testNumber: displayNum, result });
       });
     }
 
@@ -341,17 +347,29 @@ export class TestRunner {
         console.log(`⊘ Test ${testNumber}: SKIPPED (dependency not met)\n`);
         skipCount++;
       } else {
+        const label = String(testNumber);
+
+        if (result.skipped) {
+          console.log(`⏭️  Test ${label} (skipped): ${result.name}`);
+          if (result.customMessage) {
+            console.log(`   ${result.customMessage}`);
+          }
+          skipCount++;
+          console.log();
+          return;
+        }
+
         const status = result.passed ? '✅' : '❌';
-        console.log(`${status} Test ${testNumber}: ${result.name}`);
-        
+        console.log(`${status} Test ${label}: ${result.name}`);
+
         if (result.customMessage) {
           console.log(`   ${result.customMessage}`);
         }
-        
+
         const responseBody = result.body || result.fullResponse || {};
         const responseStr = typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody);
         const truncated = responseStr.substring(0, 500);
-        
+
         if (!result.passed) {
           console.log(`   Expected: ${result.expectedStatus} | Got: ${result.status}`);
           failCount++;

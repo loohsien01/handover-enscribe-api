@@ -16,7 +16,7 @@ Authorization: Bearer <access_token>
 
 The server resolves the current user from the token; **`user_id` is never taken from the request body.** If the token is missing or invalid, the response is **`401`** with `{ "error": "..." }`.
 
-**Sign-up flows:** If email confirmation is required and sign-up returns no session, the client must complete verification and sign-in (or otherwise obtain an `access_token`) before calling these endpoints.
+**Sign-up flows:** You can send optional **`userProfile`** on **`POST /api/auth`** with **`action: sign-up`** to upsert the profile without a JWT (same fields as **`POST`** below). See **[AUTH_SIGN_UP_API.md](./AUTH_SIGN_UP_API.md)** for combined success/partial-failure behavior. If you skip that and email confirmation is required, complete verification and sign-in (or otherwise obtain an `access_token`) before calling these endpoints.
 
 ---
 

@@ -25,6 +25,22 @@ async function authRoutes(fastify, opts) {
     return accept.includes('application/json');
   };
 
+  /** Redact secrets for server logs (matches payload shape sent to FE). */
+  const redactSessionForLog = (session) => {
+    if (!session || typeof session !== 'object') return session;
+    const out = { ...session };
+    if (out.access_token) {
+      out.access_token = `${String(out.access_token).slice(0, 50)}...`;
+    }
+    if (out.refresh_token) {
+      out.refresh_token = '[REDACTED]';
+    }
+    return out;
+  };
+
+  const userSummaryForLog = (user) =>
+    user && typeof user === 'object' ? { id: user.id, email: user.email } : user;
+
   /**
    * POST /auth
    * Handles: sign-up, sign-in, sign-out, check-validity, resend
@@ -34,7 +50,8 @@ async function authRoutes(fastify, opts) {
    *   action: 'sign-up' | 'sign-in' | 'sign-out' | 'check-validity' | 'resend',
    *   email?: string,
    *   password?: string,
-   *   emailRedirectTo?: string
+   *   emailRedirectTo?: string,
+   *   userProfile?: { username: string, specialty: string }  // optional; same shape as POST /user-profile body
    * }
    */
   fastify.post('/auth', async (request, reply) => {
@@ -62,13 +79,25 @@ async function authRoutes(fastify, opts) {
         case 'sign-up': {
           validation = authSignUpRequestSchema.safeParse(request.body);
           if (!validation.success) {
-            return reply.status(400).send({ error: serializeZodError(validation.error) });
+            const errBody = { error: serializeZodError(validation.error) };
+            console.log('[sign-up] Response to FE', { status: 400, body: errBody });
+            return reply.status(400).send(errBody);
           }
-          const result = await authController.signUp(email, password);
+          const { userProfile: signUpUserProfile } = validation.data;
+          const result = await authController.signUp(email, password, {
+            userProfile: signUpUserProfile,
+          });
           
           if (!result.success) {
-            return reply.status(400).send({ error: result.error });
+            const errBody = { error: result.error };
+            console.log('[sign-up] Response to FE', { status: 400, body: errBody });
+            return reply.status(400).send(errBody);
           }
+
+          const signupProfileFields = {
+            ...(result.userProfile !== undefined ? { userProfile: result.userProfile } : {}),
+            ...(result.profileError !== undefined ? { profileError: result.profileError } : {}),
+          };
 
           if (result.session) {
             // User is logged in - create wrapper JWT with tid
@@ -96,25 +125,61 @@ async function authRoutes(fastify, opts) {
             
             if (isJsonClient(request)) {
               if (setCookie) reply.header('set-cookie', setCookie);
-              return reply.status(201).send({
+              const body = {
                 message: result.message,
                 user: result.user,
                 token: sessionForResponse,
+                ...signupProfileFields,
+              };
+              console.log('[sign-up] Response to FE', {
+                status: 201,
+                jsonClient: true,
+                setCookie: Boolean(setCookie),
+                body: {
+                  message: body.message,
+                  user: userSummaryForLog(body.user),
+                  token: redactSessionForLog(body.token),
+                  ...signupProfileFields,
+                },
               });
+              return reply.status(201).send(body);
             } else {
               if (setCookie) reply.header('set-cookie', setCookie);
-              return reply.status(201).send({
+              const body = {
                 user: result.user,
                 token: sessionForResponse,
+                ...signupProfileFields,
+              };
+              console.log('[sign-up] Response to FE', {
+                status: 201,
+                jsonClient: false,
+                setCookie: Boolean(setCookie),
+                body: {
+                  user: userSummaryForLog(body.user),
+                  token: redactSessionForLog(body.token),
+                  ...signupProfileFields,
+                },
               });
+              return reply.status(201).send(body);
             }
           } else {
             // Email confirmation required
-            return reply.status(201).send({
+            const body = {
               message: result.message,
               user: result.user,
               session: null,
+              ...signupProfileFields,
+            };
+            console.log('[sign-up] Response to FE', {
+              status: 201,
+              body: {
+                message: body.message,
+                user: userSummaryForLog(body.user),
+                session: body.session,
+                ...signupProfileFields,
+              },
             });
+            return reply.status(201).send(body);
           }
         }
 

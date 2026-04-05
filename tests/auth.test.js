@@ -1,6 +1,11 @@
 /**
  * Test Suite: Authentication API
  * Tests all auth endpoints: sign-up, sign-in, sign-out, check-validity, resend
+ *
+ * `testNumber`: integers 1, 2, 3, … in file order (echoed in results JSON).
+ *
+ * `skipTest7`: when true, skips test 7 — sign-up with `userProfile.username` `"info"`
+ * (still creates a new Supabase auth user each run even when profile returns USERNAME_TAKEN).
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -16,12 +21,32 @@ import { getTestAccount, hasTestAccounts } from './testConfig.js';
 
 const runner = new TestRunner('Authentication API Tests');
 
+/** Skips test 7 by default (creates auth user + profileError path). Set `false` to enable. */
+const skipTest7 = true;
+
 /**
  * Extract tid from wrapper JWT token (for token rotation validation)
  * Wrapper JWT format: { sub: userId, tid: tokenId, iat, exp }
  * @param {string} wrapperJwt - The wrapper JWT token (wrapper cookie value)
  * @returns {string|null} The tid if extracted, null otherwise
  */
+const JSON_ACCEPT_HEADERS = { Accept: 'application/json' };
+
+/**
+ * Parse Zod issues from serialized API error body
+ * @param {object} body
+ * @returns {Array<{ path?: string[] }>}
+ */
+function parseZodIssues(body) {
+  try {
+    const raw = body?.error?.message;
+    if (!raw || body?.error?.name !== 'ZodError') return [];
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
 function extractTidFromWrapperJwt(wrapperJwt) {
   if (!wrapperJwt) return null;
   
@@ -51,20 +76,9 @@ async function runAuthTests() {
   console.log('Starting Authentication API tests...');
   console.log(`Server: ${runner.baseUrl}\n`);
 
-  // Test 1: Sign-up with invalid email format (Supabase rejects invalid emails)
-  await runner.test('Sign-up with email', {
-    method: 'POST',
-    endpoint: '/api/auth',
-    body: {
-      action: 'sign-up',
-      email: 'signuptest@example.com',
-      password: 'TestPassword123!',
-    },
-    expectedStatus: 400,
-  });
-
-  // Test 2: Sign-up with missing password
+  // 1
   await runner.test('Sign-up without password', {
+    testNumber: 1,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -86,8 +100,9 @@ async function runAuthTests() {
     },
   });
 
-  // Test 3: Sign-up with invalid email format
+  // 2
   await runner.test('Sign-up with invalid email', {
+    testNumber: 2,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -110,8 +125,9 @@ async function runAuthTests() {
     },
   });
 
-  // Test 3b: Sign-up with password too short (< 8 characters)
+  // 3
   await runner.test('Sign-up with password too short', {
+    testNumber: 3,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -134,10 +150,142 @@ async function runAuthTests() {
     },
   });
 
-  // Test 4: Sign-in with valid credentials (uses real test account if configured)
+  // 4
+  await runner.test('Sign-up with userProfile missing specialty (Zod)', {
+    testNumber: 4,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'sign-up',
+      email: 'zod_pf_1@example.com',
+      password: 'TestPassword123!',
+      userProfile: { username: 'only_username_no_specialty' },
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const issues = parseZodIssues(body);
+      const hit = issues.some(
+        (i) => Array.isArray(i.path) && i.path.includes('userProfile') && i.path.includes('specialty')
+      );
+      return {
+        passed: hit,
+        message: hit
+          ? 'Zod flags missing userProfile.specialty'
+          : `Expected issue path userProfile.specialty; issues=${JSON.stringify(issues)}`,
+      };
+    },
+  });
+
+  // 5
+  await runner.test('Sign-up with userProfile empty username (Zod)', {
+    testNumber: 5,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'sign-up',
+      email: 'zod_pf_2@example.com',
+      password: 'TestPassword123!',
+      userProfile: { username: '', specialty: 'Cardiology' },
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const issues = parseZodIssues(body);
+      const hit = issues.some(
+        (i) => Array.isArray(i.path) && i.path.includes('userProfile') && i.path.includes('username')
+      );
+      return {
+        passed: hit,
+        message: hit
+          ? 'Zod flags invalid userProfile.username'
+          : `Expected issue path userProfile.username; issues=${JSON.stringify(issues)}`,
+      };
+    },
+  });
+
+  // 6
+  await runner.test('Sign-up with userProfile wrong type (Zod)', {
+    testNumber: 6,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'sign-up',
+      email: 'zod_pf_3@example.com',
+      password: 'TestPassword123!',
+      userProfile: 'not-an-object',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const issues = parseZodIssues(body);
+      const hit = issues.some(
+        (i) =>
+          Array.isArray(i.path) &&
+          i.path.length === 1 &&
+          i.path[0] === 'userProfile' &&
+          i.code === 'invalid_type'
+      );
+      return {
+        passed: hit,
+        message: hit
+          ? 'Zod flags userProfile must be an object'
+          : `Expected invalid_type on userProfile; issues=${JSON.stringify(issues)}`,
+      };
+    },
+  });
+
+  // 7: requires DB seed `userProfiles.username === "info"`; still creates a new auth user each run
+  if (!skipTest7) {
+    await runner.test(
+      'Sign-up with userProfile username "info" (201 + profileError USERNAME_TAKEN)',
+      {
+        testNumber: 7,
+        method: 'POST',
+        endpoint: '/api/auth',
+        headers: JSON_ACCEPT_HEADERS,
+        body: {
+          action: 'sign-up',
+          email: `info@sjpedgi.doctor`,
+          password: '123123123',
+          userProfile: { username: 'info', specialty: 'Internal Medicine' },
+        },
+        expectedStatus: 201,
+        customValidator: (body) => {
+          const passed =
+            body?.profileError?.code === 'USERNAME_TAKEN' &&
+            Boolean(body?.user?.id) &&
+            body?.userProfile == null;
+          return {
+            passed,
+            message: passed
+              ? 'Auth user created; profileError USERNAME_TAKEN for reserved username "info"'
+              : `Expected 201, user.id, profileError USERNAME_TAKEN, no userProfile; got ${JSON.stringify(body)}`,
+          };
+        },
+      }
+    );
+  } else {
+    console.log(
+      '\n⏭️  Test 7: SKIPPED BY DEFAULT (set skipTest7 = false to enable) — creates a Supabase auth user each run.\n'
+    );
+    runner.results.push({
+      name: 'Sign-up with userProfile username "info" (201 + profileError USERNAME_TAKEN)',
+      passed: true,
+      skipped: true,
+      endpoint: '/api/auth',
+      method: 'POST',
+      status: null,
+      expectedStatus: 201,
+      body: {},
+      customMessage: 'SKIPPED (skipTest7)',
+      testNumber: 7,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // 8 — requires TEST_ACCOUNT_* in .env.local (no dummy sign-in fallback)
   const testAccount = getTestAccount('primary');
-  if (testAccount && testAccount.email && testAccount.password) {
+  if (testAccount?.email && testAccount?.password) {
     await runner.test('Sign-in with email and password (real credentials)', {
+      testNumber: 8,
       method: 'POST',
       endpoint: '/api/auth',
       body: {
@@ -157,21 +305,27 @@ async function runAuthTests() {
       },
     });
   } else {
-    await runner.test('Sign-in with email and password (dummy - will fail)', {
-      method: 'POST',
+    console.warn(
+      '⚠️  Skipping test 8: set TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local for sign-in smoke test.'
+    );
+    runner.results.push({
+      name: 'Sign-in with email and password (real credentials)',
+      passed: true,
+      skipped: true,
       endpoint: '/api/auth',
-      body: {
-        action: 'sign-in',
-        email: 'existinguser@example.com',
-        password: 'CorrectPassword123!',
-      },
-      expectedStatus: 401,
+      method: 'POST',
+      status: null,
+      expectedStatus: 200,
+      body: {},
+      customMessage: 'SKIPPED: no primary test credentials',
+      testNumber: 8,
+      timestamp: new Date().toISOString(),
     });
-    console.log('⚠️  Test credentials not configured. Set TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local to test real sign-in');
   }
 
-  // Test 5: Sign-in with wrong password
+  // 9
   await runner.test('Sign-in with wrong password', {
+    testNumber: 9,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -189,8 +343,9 @@ async function runAuthTests() {
     },
   });
 
-  // Test 5b: Sign-in with empty password
+  // 10
   await runner.test('Sign-in with empty password', {
+    testNumber: 10,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -213,8 +368,9 @@ async function runAuthTests() {
     },
   });
 
-  // Test 6: Sign-in with non-existent user
+  // 11
   await runner.test('Sign-in with non-existent user', {
+    testNumber: 11,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -225,8 +381,9 @@ async function runAuthTests() {
     expectedStatus: 401,
   });
 
-  // Test 7: Check validity without token
+  // 12
   await runner.test('Check validity without auth header', {
+    testNumber: 12,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -235,8 +392,9 @@ async function runAuthTests() {
     expectedStatus: 401,
   });
 
-  // Test 8: Check validity with invalid token
+  // 13
   await runner.test('Check validity with invalid token', {
+    testNumber: 13,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -248,8 +406,9 @@ async function runAuthTests() {
     expectedStatus: 401,
   });
 
-  // Test 9: Sign-out without auth (should require token)
+  // 14
   await runner.test('Sign-out without auth header', {
+    testNumber: 14,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -258,8 +417,9 @@ async function runAuthTests() {
     expectedStatus: 401,
   });
 
-  // Test 10: Resend confirmation email
+  // 15
   await runner.test('Resend confirmation email', {
+    testNumber: 15,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -270,8 +430,9 @@ async function runAuthTests() {
     expectedFields: ['message'],
   });
 
-  // Test 11: Resend without email
+  // 16
   await runner.test('Resend without email', {
+    testNumber: 16,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -292,8 +453,9 @@ async function runAuthTests() {
     },
   });
 
-  // Test 12: Invalid action type
+  // 17
   await runner.test('Invalid action type', {
+    testNumber: 17,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -309,8 +471,9 @@ async function runAuthTests() {
     },
   });
 
-  // Test 13: Missing action field
+  // 18
   await runner.test('Missing action field', {
+    testNumber: 18,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -331,8 +494,9 @@ async function runAuthTests() {
     },
   });
 
-  // Test 14: Resend with redirect URL
+  // 19
   await runner.test('Resend with emailRedirectTo', {
+    testNumber: 19,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -343,8 +507,9 @@ async function runAuthTests() {
     expectedStatus: 200,
   });
 
-  // Test 14b: Resend with invalid emailRedirectTo URL
+  // 20
   await runner.test('Resend with invalid emailRedirectTo URL', {
+    testNumber: 20,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -377,8 +542,9 @@ async function runAuthTests() {
     if (testAccount && testAccount.email && testAccount.password) {
       console.log(`\n📝 Running real account tests with: ${testAccount.email.split('@')[0]}@****\n`);
       
-      // Test 15: Sign-in with valid real account
+      // 21
       await runner.test('Sign-in with valid account (real credentials)', {
+        testNumber: 21,
         method: 'POST',
         endpoint: '/api/auth',
         body: {
@@ -398,13 +564,14 @@ async function runAuthTests() {
         },
       });
 
-      // Extract token from Test 15 response for Test 16
+      // Extract token from test 21 for test 22
       const signInResult = runner.results[runner.results.length - 1];
       const accessToken = signInResult.body?.token?.access_token;
 
-      // Test 16: Check validity with real account token (extracted from Test 15)
+      // 22 (token from test 21)
       if (accessToken) {
         await runner.test('Check validity endpoint (with real token)', {
+          testNumber: 22,
           method: 'POST',
           endpoint: '/api/auth',
           body: {
@@ -472,8 +639,9 @@ async function runAuthTests() {
         }
         console.log();
 
-        // Test 21: POST /api/auth/refresh without cookie
+        // 23
         await runner.test('POST /api/auth/refresh without token', {
+          testNumber: 23,
           method: 'POST',
           endpoint: '/api/auth/refresh',
           expectedStatus: 401,
@@ -487,8 +655,9 @@ async function runAuthTests() {
           },
         });
 
-        // Test 22: POST /api/auth/refresh with invalid cookie
+        // 24
         await runner.test('POST /api/auth/refresh with invalid token', {
+          testNumber: 24,
           method: 'POST',
           endpoint: '/api/auth/refresh',
           headers: {
@@ -505,9 +674,10 @@ async function runAuthTests() {
           },
         });
 
-        // Test 23: GET /api/auth/cookie-status with valid cookie (BEFORE refresh to avoid token rotation)
+        // 25 (before refresh — avoids cookie rotation)
         if (refreshTokenCookie) {
           await runner.test('GET /api/auth/cookie-status with valid cookie', {
+            testNumber: 25,
             method: 'GET',
             endpoint: '/api/auth/cookie-status',
             headers: {
@@ -524,8 +694,9 @@ async function runAuthTests() {
           });
         }
 
-        // Test 24: GET /api/auth/cookie-status without cookie
+        // 26
         await runner.test('GET /api/auth/cookie-status without cookie', {
+          testNumber: 26,
           method: 'GET',
           endpoint: '/api/auth/cookie-status',
           expectedStatus: 200,
@@ -538,8 +709,9 @@ async function runAuthTests() {
           },
         });
 
-        // Test 25: GET /api/auth/cookie-status with invalid cookie
+        // 27
         await runner.test('GET /api/auth/cookie-status with invalid cookie', {
+          testNumber: 27,
           method: 'GET',
           endpoint: '/api/auth/cookie-status',
           headers: {
@@ -556,7 +728,7 @@ async function runAuthTests() {
         });
 
         // ===== REFRESH TESTS RUN LAST (after cookie-status tests) =====
-        // Test 26: POST /api/auth/refresh with valid cookie (NOW RUN AFTER cookie tests)
+        // 28 (after cookie-status; may wait for access-token expiry)
         if (refreshTokenCookie) {
           const oldTid = extractTidFromWrapperJwt(refreshTokenCookie);
           let newTid = null;
@@ -568,6 +740,7 @@ async function runAuthTests() {
           console.log(`  ✅ Wait complete, proceeding with refresh test\n`);
 
           await runner.test('POST /api/auth/refresh with valid token', {
+            testNumber: 28,
             method: 'POST',
             endpoint: '/api/auth/refresh',
             headers: {

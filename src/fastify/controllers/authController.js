@@ -2,6 +2,7 @@ import { getSupabaseClient } from '../../utils/supabase.js';
 import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
 import crypto from 'crypto';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
+import { upsertUserProfileForUser } from './userProfileController.js';
 
 // Refresh token storage settings
 const REFRESH_MAX_AGE_SECONDS = Number(process.env.REFRESH_MAX_AGE_SECONDS || 3 * 24 * 3600);
@@ -65,8 +66,9 @@ export function createRefreshWrapper(userId, tid) {
 
 /**
  * Sign up a new user
+ * @param {{ userProfile?: { username: string, specialty: string } }} [opts]
  */
-export async function signUp(email, password) {
+export async function signUp(email, password, opts = {}) {
   try {
     // Route validates email format and password requirements - trust the data
     const supabase = getSupabaseClient();
@@ -77,6 +79,19 @@ export async function signUp(email, password) {
     }
 
     console.log('[signUp] sign-up result', { hasSession: !!data?.session, hasUser: !!data?.user });
+
+    /** Optional profile row (service role); only set when client sent `userProfile`. */
+    const signupProfileExtras = {};
+    if (opts.userProfile && data?.user?.id) {
+      const admin = supabaseAdmin();
+      const prof = await upsertUserProfileForUser(admin, data.user.id, opts.userProfile);
+      if (prof.ok) {
+        signupProfileExtras.userProfile = prof.data;
+      } else {
+        console.error('[signUp] Optional profile save failed:', prof.payload);
+        signupProfileExtras.profileError = prof.payload;
+      }
+    }
 
     if (data?.session) {
       // Email confirmation disabled - user is immediately signed in
@@ -123,6 +138,7 @@ export async function signUp(email, password) {
         user: data.user,
         message: 'signed up and logged in',
         tid: tid,
+        ...signupProfileExtras,
       };
     } else if (data?.user) {
       // Email confirmation enabled
@@ -132,6 +148,7 @@ export async function signUp(email, password) {
         session: null,
         user: data.user,
         message: 'Email confirmation required',
+        ...signupProfileExtras,
       };
     }
 
