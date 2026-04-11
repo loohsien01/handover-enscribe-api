@@ -13,8 +13,10 @@
 
 import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
 import { getSupabaseClient } from '../../utils/supabase.js';
+import { patientEncounterCompleteBundle } from '../controllers/patientEncountersController.js';
 import * as claudeRequestBody from '../../utils/claudeRequestBody.js';
 import { transcribe_expand_mask } from '../controllers/transcribeController.js';
+import { mask_phi } from '../../utils/maskPhiHelper.js';
 import parseSoapNotes from '../../utils/parseSoapNotes.js';
 import { claudeAPIReq } from '../../utils/bedrockClient.js';
 import { getSystemMasterKey, getOrCreateUserMasterKey } from '../controllers/userSecurityConfigController.js';
@@ -117,6 +119,41 @@ async function updateJobStatus(jobId, status, updates = {}) {
 }
 
 /**
+ * Reuse transcript_text from another job for the same user + recording when that job
+ * already reached generating or complete (transcript persisted).
+ *
+ * @param {*} supabase - supabaseAdmin client
+ * @param {string} userId
+ * @param {string} recordingFilePath
+ * @param {string} excludeJobId - current job id
+ * @returns {Promise<string|null>}
+ */
+async function findTranscriptFromPriorJob(supabase, userId, recordingFilePath, excludeJobId) {
+  const { data, error } = await supabase
+    .from('jobs')
+    .select('transcript_text')
+    .eq('user_id', userId)
+    .eq('recording_file_path', recordingFilePath)
+    .in('status', ['generating', 'complete'])
+    .neq('id', excludeJobId)
+    .not('transcript_text', 'is', null)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.warn(`[findTranscriptFromPriorJob] ${excludeJobId}: ${error.message}`);
+    return null;
+  }
+
+  const t = data?.transcript_text;
+  if (typeof t === 'string' && t.length > 0) {
+    return t;
+  }
+  return null;
+}
+
+/**
  * Helper: Recursively unmask PHI tokens in a JSON object
  * Searches all string values for {{TYPE_ID}} tokens and replaces them with original text
  * 
@@ -175,8 +212,10 @@ function convertTemplateSectionsToSchema(sections) {
  * @param {string} userId - User UUID
  * @param {string} authorizationHeader - User's JWT token from initial request (e.g., 'Bearer ...')
  * @param {BigInt|string|null} noteTemplate_id - Optional note template ID to customize SOAP note schema
+ * @param {{ persistEncounterName?: string|null }} [options] - If set, after SOAP generation persist via create_patient_encounter_complete
  */
-export async function promptLlmProcessor(jobId, userId, authorizationHeader, noteTemplate_id = null) {
+export async function promptLlmProcessor(jobId, userId, authorizationHeader, noteTemplate_id = null, options = {}) {
+  const { persistEncounterName = null } = options || {};
   const startTime = Date.now();
   console.log(`[promptLlmProcessor] Starting job ${jobId} for user ${userId}`);
 
@@ -195,69 +234,96 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
 
     const { recording_file_path } = job;
 
-    // Step 1: Update status to transcribing
-    await updateJobStatus(jobId, 'transcribing');
-    console.log(`[promptLlmProcessor] ${jobId}: Started transcription`);
+    const internalRequest = {
+      headers: {
+        authorization: authorizationHeader,
+      },
+    };
 
-    // Get signed URL for recording (use service key client for internal operations)
-    const { data: signedUrlData, error: signedError } = await supabase.storage
-      .from('audio-files')
-      .createSignedUrl(recording_file_path, 60 * 60);
+    const templatePromise = noteTemplate_id
+      ? getCompleteTemplate(supabase, BigInt(noteTemplate_id), userId).catch(err => {
+          console.warn(`[promptLlmProcessor] ${jobId}: Template fetch error: ${err.message}`);
+          return null;
+        })
+      : Promise.resolve(null);
 
-    if (signedError) {
-      throw new Error(`Failed to create signed URL: ${signedError.message}`);
-    }
-
-    // Parallel execution: Transcribe AND fetch note template simultaneously
-    let transcriptResult;
+    let transcript;
+    let maskedTranscript;
+    let tokens;
     let templateResult = null;
     const transcribeStartTime = Date.now();
 
-    try {
-      const internalRequest = {
-        headers: {
-          authorization: authorizationHeader,
-        },
-      };
+    const reusedTranscript = await findTranscriptFromPriorJob(
+      supabase,
+      userId,
+      recording_file_path,
+      jobId
+    );
 
-      // Run both in parallel
-      const [transcriptRes, templateRes] = await Promise.all([
-        // Transcription
-        transcribe_expand_mask({
-          recording_file_signed_url: signedUrlData.signedUrl,
-          req: internalRequest,
-        }),
-        // Template fetch (if needed)
-        noteTemplate_id
-          ? getCompleteTemplate(supabase, BigInt(noteTemplate_id), userId).catch(err => {
-              console.warn(`[promptLlmProcessor] ${jobId}: Template fetch error: ${err.message}`);
-              return null;
-            })
-          : Promise.resolve(null),
-      ]);
+    if (reusedTranscript) {
+      console.log(
+        `[promptLlmProcessor] ${jobId}: Dedup — reusing transcript from a prior job for this recording (skipping transcribe)`
+      );
+      try {
+        const [maskResult, templateRes] = await Promise.all([
+          mask_phi(reusedTranscript),
+          templatePromise,
+        ]);
+        templateResult = templateRes;
+        transcript = reusedTranscript;
+        maskedTranscript = maskResult.masked_transcript;
+        tokens = maskResult.tokens;
+        if (!maskedTranscript || !maskResult.phi_entities) {
+          throw new Error('Mask result missing expected properties');
+        }
+      } catch (error) {
+        throw new Error(`Transcription failed: ${error?.message || 'Unknown error'}`);
+      }
+    } else {
+      await updateJobStatus(jobId, 'transcribing');
+      console.log(`[promptLlmProcessor] ${jobId}: Started transcription`);
 
-      transcriptResult = transcriptRes;
-      templateResult = templateRes;
-    } catch (error) {
-      throw new Error(`Transcription failed: ${error?.message || 'Unknown error'}`);
+      const { data: signedUrlData, error: signedError } = await supabase.storage
+        .from('audio-files')
+        .createSignedUrl(recording_file_path, 60 * 60);
+
+      if (signedError) {
+        throw new Error(`Failed to create signed URL: ${signedError.message}`);
+      }
+
+      let transcriptResult;
+      try {
+        const [transcriptRes, templateRes] = await Promise.all([
+          transcribe_expand_mask({
+            recording_file_signed_url: signedUrlData.signedUrl,
+            req: internalRequest,
+          }),
+          templatePromise,
+        ]);
+        transcriptResult = transcriptRes;
+        templateResult = templateRes;
+      } catch (error) {
+        throw new Error(`Transcription failed: ${error?.message || 'Unknown error'}`);
+      }
+
+      if (
+        !transcriptResult ||
+        !transcriptResult.cloudRunData?.transcript ||
+        !transcriptResult.maskResult?.masked_transcript ||
+        !transcriptResult.maskResult?.phi_entities
+      ) {
+        throw new Error('Transcription result missing expected properties');
+      }
+
+      transcript = transcriptResult.expandedTranscript;
+      maskedTranscript = transcriptResult.maskResult.masked_transcript;
+      tokens = transcriptResult.maskResult.tokens;
     }
 
-    // Validate transcription result
-    if (
-      !transcriptResult ||
-      !transcriptResult.cloudRunData?.transcript ||
-      !transcriptResult.maskResult?.masked_transcript ||
-      !transcriptResult.maskResult?.phi_entities
-    ) {
-      throw new Error('Transcription result missing expected properties');
-    }
-
-    const transcript = transcriptResult.expandedTranscript;
-    const maskedTranscript = transcriptResult.maskResult.masked_transcript;
-    const tokens = transcriptResult.maskResult.tokens;
     const transcribeEndTime = Date.now();
-
-    console.log(`[promptLlmProcessor] ${jobId}: Transcription complete (${(transcribeEndTime - transcribeStartTime) / 1000}s)`);
+    console.log(
+      `[promptLlmProcessor] ${jobId}: Transcribe/dedup stage done (${(transcribeEndTime - transcribeStartTime) / 1000}s)`
+    );
 
     // Step 2: Update status to generating with transcript
     await updateJobStatus(jobId, 'generating', {
@@ -285,7 +351,7 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
     }
 
     try {
-      soapNoteAndBillingReqBody = claudeRequestBody.getSoapNoteAndBillingRequestBody(maskedTranscript, noteTemplateSections);
+      soapNoteAndBillingReqBody = claudeRequestBody.getSoapNoteRequestBody(maskedTranscript, noteTemplateSections);
       
       // Log the final schema being sent to Claude (crucial for debugging LLM prompt)
       console.log(`[promptLlmProcessor] ${jobId}: Final JSON schema for Claude:`);
@@ -403,10 +469,36 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
     const soapEndTime = Date.now();
     console.log(`[promptLlmProcessor] ${jobId}: SOAP note complete (${(soapEndTime - soapStartTime) / 1000}s)`);
 
-    // Step 4: Update to complete status
+    // Step 4: Mark job complete with SOAP (always — allows manual save if persist fails)
     await updateJobStatus(jobId, 'complete', {
       soap_note_text: soapNoteText,
     });
+
+    if (persistEncounterName) {
+      try {
+        const userSupabase = getSupabaseClient(authorizationHeader);
+        const bundle = await patientEncounterCompleteBundle(
+          userSupabase,
+          { id: userId },
+          {
+            patientEncounter: { name: persistEncounterName },
+            recording: { recording_file_path },
+            note_text: soapNoteText,
+          }
+        );
+        await updateJobStatus(jobId, 'complete', {
+          note_id: bundle.note.id,
+        });
+        console.log(
+          `[promptLlmProcessor] ${jobId}: Persisted note id=${bundle.note.id} (patient encounter id=${bundle.patientEncounter.id})`
+        );
+      } catch (persistErr) {
+        console.error(
+          `[promptLlmProcessor] ${jobId}: Persist encounter after generation failed (SOAP remains on job):`,
+          persistErr?.message || persistErr
+        );
+      }
+    }
 
     console.log(`[promptLlmProcessor] ${jobId}: Complete (${(soapEndTime - startTime) / 1000}s total)`);
   } catch (error) {

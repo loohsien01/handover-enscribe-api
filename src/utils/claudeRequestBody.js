@@ -30,7 +30,7 @@ function escapeJsonString(str) {
 }
 
 /**
- * Generates Claude Bedrock request body for SOAP note and billing generation.
+ * Generates Claude Bedrock request body for SOAP note.
  * Uses claude-sonnet-4-6 model via AWS Bedrock.
  * 
  * Note: Claude doesn't support response_format parameter like OpenAI,
@@ -41,7 +41,7 @@ function escapeJsonString(str) {
  * @param {Array} noteTemplateSections - Optional note template sections with { name, layout, details }
  * @returns {object} Claude Bedrock request body for SOAP note generation
  */
-export function getSoapNoteAndBillingRequestBody(transcript, noteTemplateSections = null) {
+export function getSoapNoteRequestBody(transcript, noteTemplateSections = null) {
     // Build JSON schema based on whether we have a note template
     let jsonSchemaDescription;
     
@@ -59,25 +59,23 @@ ${sections}
         jsonSchemaDescription = `
 You MUST return a valid JSON object with this exact structure:
 {
-  "soap_note": {
-    "subjective": {
-      "Chief complaint": "string - Chief complaint of the patient",
-      "HPI": "string - History of Present Illnesses",
-      "History": "string - Past medical, surgical, family, and social history",
-      "ROS": "string - Review of Systems",
-      "Medications": "string - Current medications",
-      "Allergies": "string - Known allergies"
-    },
-    "objective": {
-      "HEENT": "string - HEENT (Head, Eyes, Ears, Nose, Throat) exam findings. If not mentioned, assume normal.",
-      "General": "string - General exam findings",
-      "Cardiovascular": "string - Cardiovascular exam findings",
-      "Musculoskeletal": "string - Musculoskeletal exam findings",
-      "Other": "string - Other objective findings (vitals, physical exam, lab results)"
-    },
-    "assessment": "string - Clinical assessment and diagnosis based on subjective and objective findings",
-    "plan": "string - Treatment plan, medications, follow-up instructions and next steps. Base solely on transcript - do not include assumptions. Only output data if present in transcript."
-  }
+  "Subjective": {
+    "Chief complaint": "string - Chief complaint of the patient",
+    "HPI": "string - History of Present Illnesses",
+    "History": "string - Past medical, surgical, family, and social history",
+    "ROS": "string - Review of Systems",
+    "Medications": "string - Current medications",
+    "Allergies": "string - Known allergies"
+  },
+  "Objective": {
+    "HEENT": "string - HEENT (Head, Eyes, Ears, Nose, Throat) exam findings. If not mentioned, assume normal.",
+    "General": "string - General exam findings",
+    "Cardiovascular": "string - Cardiovascular exam findings",
+    "Musculoskeletal": "string - Musculoskeletal exam findings",
+    "Other": "string - Other objective findings (vitals, physical exam, lab results)"
+  },
+  "Assessment": "string - Clinical assessment and diagnosis based on subjective and objective findings",
+  "Plan": "string - Treatment plan, medications, follow-up instructions and next steps. Base solely on transcript - do not include assumptions. Only output data if present in transcript."
 }`;
     }
 
@@ -103,7 +101,7 @@ You MUST return a valid JSON object with this exact structure:
 
 ${transcript}
 
-Generate SOAP note and billing suggestions. PHI information has been masked for privacy. Example (for reference only): Evan is 105 years old --> {{NAME_1}} is {{AGE_2}} years old.
+Generate SOAP note. PHI information has been masked for privacy. Example (for reference only): Evan is 105 years old --> {{NAME_1}} is {{AGE_2}} years old.
 Use bullet points (marked by '-' symbols, '•' is invalid symbol) and markdown formatting and "\\n" for clarity.
 
 IMPORTANT: Return ONLY valid JSON matching the structure above. Do not include any text before or after the JSON.`

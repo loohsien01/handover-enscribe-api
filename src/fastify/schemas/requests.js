@@ -167,6 +167,14 @@ export const promptLlmGenerateNoteRequestSchema = z.object({
 });
 
 /**
+ * POST /api/jobs/prompt-llm/generate-and-save-note
+ * Same as generate-note plus patient encounter display name for atomic save after generation.
+ */
+export const promptLlmGenerateAndSaveNoteRequestSchema = promptLlmGenerateNoteRequestSchema.extend({
+  patient_encounter_name: z.string().min(1, 'patient_encounter_name is required'),
+});
+
+/**
  * GET request query parameters for retrieving job status
  * Endpoint: GET /api/jobs/prompt-llm/:jobId
  * Query param: ?includeResult=true (optional, includes parsed SOAP note if complete)
