@@ -34,6 +34,29 @@ export const patientEncounterUpdateRequestSchema = z.object({
 });
 
 /**
+ * GET /api/patient-encounters
+ * decryptName: default false — omit decrypted name; encrypted fields stripped from response.
+ */
+export const patientEncountersListQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(500).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
+  decryptName: z.enum(['true', 'false']).optional().default('false'),
+}).transform((data) => ({
+  limit: data.limit ?? 50,
+  offset: data.offset ?? 0,
+  decryptName: data.decryptName === 'true',
+}));
+
+/**
+ * GET /api/patient-encounters/:id
+ */
+export const patientEncounterGetQuerySchema = z.object({
+  decryptName: z.enum(['true', 'false']).optional().default('false'),
+}).transform((data) => ({
+  decryptName: data.decryptName === 'true',
+}));
+
+/**
  * Schema for the transformed data before database operations
  * This is what gets validated before saving to DB
  */
@@ -57,6 +80,20 @@ export const recordingsAttachmentsQuerySchema = z.object({
   offset: z.coerce.number().int().nonnegative().default(0).optional(),
   sortBy: z.enum(['name', 'created_at', 'updated_at'], 'sortBy must be one of: name, created_at, updated_at').default('name').optional(),
   order: z.enum(['asc', 'desc'], 'order must be one of: asc, desc').default('asc').optional(),
+});
+
+/** POST /api/internal/cleanup/run — extend enum when new cleanup tasks are added */
+export const internalCleanupTaskSchema = z.enum(['unattached_storage']);
+
+/**
+ * POST /api/internal/cleanup/run
+ * Internal cron / ops: Bearer INTERNAL_CLEANUP_SECRET
+ */
+export const internalCleanupRunBodySchema = z.object({
+  tasks: z
+    .array(internalCleanupTaskSchema)
+    .min(1, 'tasks must include at least one item')
+    .max(32, 'tasks list is too long'),
 });
 
 /**
@@ -543,6 +580,23 @@ export const noteUpdateRequestSchema = z.object({
   (data) => Object.keys(data).length > 0,
   { message: 'At least one field (text) must be provided' }
 );
+
+function createNotesListQuerySchema(defaultLimit) {
+  return z.object({
+    limit: z.coerce.number().int().positive().max(500).default(defaultLimit),
+    offset: z.coerce.number().int().nonnegative().default(0),
+    sortBy: z.enum(['created_at', 'updated_at', 'id']).default('created_at'),
+    order: z.enum(['asc', 'desc']).default('desc'),
+  });
+}
+
+/** GET /api/notes — lightweight list */
+export const notesListQuerySchema = createNotesListQuerySchema(100);
+
+/**
+ * GET /api/notes/complete — same shape as GET /api/notes; default limit 50 (matches GET /api/patient-encounters).
+ */
+export const notesCompleteListQuerySchema = createNotesListQuerySchema(50);
 
 // ============================================================================
 // User profile (public."userProfiles")

@@ -195,7 +195,7 @@ async function setupTestRecordings(accessToken, supabase, userId) {
   const createdEncounters = [];
   
   try {
-    const fetchResponse = await fetch(`${getApiBaseUrl()}/api/patient-encounters`, {
+    const fetchResponse = await fetch(`${getApiBaseUrl()}/api/patient-encounters?decryptName=true`, {
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
@@ -449,7 +449,7 @@ async function setupPatientEncounters(accessToken) {
   
   try {
     // Fetch existing encounters
-    const response = await fetch(`${getApiBaseUrl()}/api/patient-encounters`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/patient-encounters?decryptName=true`, {
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
@@ -1013,7 +1013,7 @@ async function setupTestData() {
     }
 
     // Get all encounters for validation
-    const allEncounters = await fetch(`${getApiBaseUrl()}/api/patient-encounters`, {
+    const allEncounters = await fetch(`${getApiBaseUrl()}/api/patient-encounters?decryptName=true`, {
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',

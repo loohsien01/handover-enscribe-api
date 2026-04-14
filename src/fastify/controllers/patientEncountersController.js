@@ -25,9 +25,16 @@ function isValidBigInt(id) {
   }
 }
 
+function stripPatientEncounterEncryptionFields(encounter) {
+  delete encounter.encrypted_name;
+  delete encounter.encrypted_aes_key;
+  delete encounter.iv;
+}
+
 /**
  * Get all patient encounters for the authenticated user
  * GET /api/patient-encounters
+ * Query decryptName (default false): when true, decrypt patient name; otherwise strip encrypted fields only.
  */
 export async function getAllPatientEncounters(request, reply) {
   try {
@@ -38,9 +45,7 @@ export async function getAllPatientEncounters(request, reply) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    // Get query parameters for pagination/filtering
-    const limit = parseInt(request.query.limit) || 50;
-    const offset = parseInt(request.query.offset) || 0;
+    const { limit, offset, decryptName } = request.query;
 
     const { data, error } = await supabase
       .from(patientEncounterTable)
@@ -53,10 +58,15 @@ export async function getAllPatientEncounters(request, reply) {
       return reply.status(500).send({ error: error.message });
     }
 
-    // Decrypt sensitive fields and remove encryption keys
-    for (let encounter of data) {
+    for (const encounter of data) {
+      if (!decryptName) {
+        stripPatientEncounterEncryptionFields(encounter);
+        continue;
+      }
+
       if (!encounter.encrypted_aes_key || !encounter.iv) {
         console.error(`Missing encryption keys for encounter ${encounter.id}`);
+        stripPatientEncounterEncryptionFields(encounter);
         continue;
       }
 
@@ -69,8 +79,7 @@ export async function getAllPatientEncounters(request, reply) {
         );
         delete encounter.encrypted_name;
       }
-      
-      // Remove encryption fields from response (not relevant to frontend)
+
       delete encounter.encrypted_aes_key;
       delete encounter.iv;
     }
@@ -85,6 +94,7 @@ export async function getAllPatientEncounters(request, reply) {
 /**
  * Get a specific patient encounter by ID
  * GET /api/patient-encounters/:id
+ * Query decryptName (default false): when true, decrypt patient name; otherwise strip encrypted fields only.
  */
 export async function getPatientEncounter(request, reply) {
   try {
@@ -96,6 +106,7 @@ export async function getPatientEncounter(request, reply) {
     }
 
     const { id } = request.params;
+    const { decryptName } = request.query;
 
     // Validate bigint ID format
     if (!isValidBigInt(id)) {
@@ -115,7 +126,11 @@ export async function getPatientEncounter(request, reply) {
       return reply.status(500).send({ error: error.message });
     }
 
-    // Decrypt sensitive fields and remove encryption keys
+    if (!decryptName) {
+      stripPatientEncounterEncryptionFields(encounter);
+      return reply.status(200).send(encounter);
+    }
+
     if (encounter.encrypted_aes_key && encounter.iv && encounter.encrypted_name) {
       const aes_key = encryptionUtils.decryptAESKey(encounter.encrypted_aes_key);
       encounter.name = encryptionUtils.decryptText(
@@ -125,8 +140,7 @@ export async function getPatientEncounter(request, reply) {
       );
       delete encounter.encrypted_name;
     }
-    
-    // Remove encryption fields from response (not relevant to frontend)
+
     delete encounter.encrypted_aes_key;
     delete encounter.iv;
 

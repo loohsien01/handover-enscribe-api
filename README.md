@@ -96,6 +96,8 @@ Create a `.env.local` file with:
 SUPABASE_URL=
 SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
+# Optional: Bearer secret for POST /api/internal/cleanup/run (GitHub Actions cron)
+INTERNAL_CLEANUP_SECRET=
 GOOGLE_CLOUD_PROJECT_ID=
 GOOGLE_CLOUD_PRIVATE_KEY=
 GOOGLE_CLOUD_CLIENT_EMAIL=

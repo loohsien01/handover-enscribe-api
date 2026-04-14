@@ -1,6 +1,11 @@
 /**
  * Test Suite: Patient Encounters API
  * Tests all patient encounter endpoints: CRUD operations, batch, complete, filtering
+ *
+ * Test numbering (`testNumber`):
+ * - Every `runner.test` sets `testNumber` to a single integer from 1 to 26, in execution order.
+ * - Section banners (`// ===== TEST N: ... =====`) and the human-readable test name (`'Test N: …'`)
+ *   use that same index so comments, JSON results, and code stay aligned.
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -151,6 +156,7 @@ async function cleanupTestEncounters(accessToken) {
 async function runPatientEncounterTests() {
   console.log('Starting Patient Encounters API tests...');
   console.log(`Server: ${runner.baseUrl}\n`);
+  // testNumber runs 1–26 (see file header). Dependencies: e.g. tests 10–13 require test 8; test 15 requires 14.
 
   // Track suite-level count for cleanup verification
   let suiteCountBefore = null;
@@ -185,6 +191,7 @@ async function runPatientEncounterTests() {
 
   // ===== TEST 1: Get patient encounters without auth =====
   await runner.test('Test 1: Get patient encounters without auth', {
+    testNumber: 1,
     method: 'GET',
     endpoint: '/api/patient-encounters',
     expectedStatus: 401,
@@ -192,6 +199,7 @@ async function runPatientEncounterTests() {
 
   // ===== TEST 2: Get patient encounters with invalid token =====
   await runner.test('Test 2: Get patient encounters with invalid token', {
+    testNumber: 2,
     method: 'GET',
     endpoint: '/api/patient-encounters',
     headers: {
@@ -202,6 +210,7 @@ async function runPatientEncounterTests() {
 
   // ===== TEST 3: Create patient encounter without auth =====
   await runner.test('Test 3: Create patient encounter without auth', {
+    testNumber: 3,
     method: 'POST',
     endpoint: '/api/patient-encounters',
     body: mockEncounterData,
@@ -210,6 +219,7 @@ async function runPatientEncounterTests() {
 
   // ===== TEST 4: Create patient encounter with invalid token =====
   await runner.test('Test 4: Create patient encounter with invalid token', {
+    testNumber: 4,
     method: 'POST',
     endpoint: '/api/patient-encounters',
     body: mockEncounterData,
@@ -221,6 +231,7 @@ async function runPatientEncounterTests() {
 
   // ===== TEST 5: Create patient encounter with missing required name field =====
   await runner.test('Test 5: Create patient encounter with missing required name field', {
+    testNumber: 5,
     method: 'POST',
     endpoint: '/api/patient-encounters',
     body: {},
@@ -238,6 +249,7 @@ async function runPatientEncounterTests() {
 
   // ===== TEST 6: Get specific encounter without auth =====
   await runner.test('Test 6: Get specific encounter without auth', {
+    testNumber: 6,
     method: 'GET',
     endpoint: '/api/patient-encounters/test-id',
     expectedStatus: 401,
@@ -291,6 +303,7 @@ async function runPatientEncounterTests() {
       if (realAccessToken) {
         // ===== TEST 7: Get patient encounters (authenticated user) =====
         await runner.test('Test 7: Get patient encounters (authenticated user)', {
+          testNumber: 7,
           method: 'GET',
           endpoint: '/api/patient-encounters',
           headers: {
@@ -301,6 +314,7 @@ async function runPatientEncounterTests() {
 
         // ===== TEST 8: Create patient encounter (authenticated user) =====
         await runner.test('Test 8: Create patient encounter (authenticated user)', {
+          testNumber: 8,
           method: 'POST',
           endpoint: '/api/patient-encounters',
           body: {
@@ -323,6 +337,7 @@ async function runPatientEncounterTests() {
 
         // ===== TEST 9: Get patient encounters with query params =====
         await runner.test('Test 9: Get patient encounters with query params', {
+          testNumber: 9,
           method: 'GET',
           endpoint: '/api/patient-encounters?limit=5&offset=0',
           headers: {
@@ -331,10 +346,94 @@ async function runPatientEncounterTests() {
           expectedStatus: 200,
         });
 
-        // ===== TEST 10: PATCH encounter (DEPENDENT ON TEST 8) =====
-        let test10Passed = false;
+        // ===== TEST 10–13: decryptName list/GET behavior (depends on test 8) =====
         if (createdEncounterId) {
-          await runner.test('Test 10: PATCH encounter to update name (DEPENDENT ON TEST 8)', {
+          await runner.test('Test 10: List encounters without decryptName (no name or ciphertext)', {
+            testNumber: 10,
+            method: 'GET',
+            endpoint: '/api/patient-encounters',
+            headers: {
+              Authorization: `Bearer ${realAccessToken}`,
+            },
+            expectedStatus: 200,
+            customValidator: (data) => {
+              if (!Array.isArray(data)) return { passed: false, message: 'Expected array' };
+              const row = data.find((e) => String(e.id) === String(createdEncounterId));
+              if (!row) return { passed: false, message: 'Created encounter not in list' };
+              if ('name' in row && row.name !== undefined) {
+                return { passed: false, message: 'name should be omitted when decryptName is false' };
+              }
+              const bad = ['encrypted_name', 'encrypted_aes_key', 'iv'].filter((k) => k in row);
+              if (bad.length > 0) {
+                return { passed: false, message: `Should not expose encryption fields: ${bad.join(', ')}` };
+              }
+              return { passed: true };
+            },
+          });
+
+          await runner.test('Test 11: List encounters with decryptName=true includes name', {
+            testNumber: 11,
+            method: 'GET',
+            endpoint: '/api/patient-encounters?decryptName=true',
+            headers: {
+              Authorization: `Bearer ${realAccessToken}`,
+            },
+            expectedStatus: 200,
+            customValidator: (data) => {
+              if (!Array.isArray(data)) return { passed: false, message: 'Expected array' };
+              const row = data.find((e) => String(e.id) === String(createdEncounterId));
+              if (!row) return { passed: false, message: 'Created encounter not in list' };
+              if (row.name !== 'Integration Test Patient') {
+                return { passed: false, message: `Expected name "Integration Test Patient", got ${row.name}` };
+              }
+              return { passed: true };
+            },
+          });
+
+          await runner.test('Test 12: GET encounter by id without decryptName', {
+            testNumber: 12,
+            method: 'GET',
+            endpoint: `/api/patient-encounters/${createdEncounterId}`,
+            headers: {
+              Authorization: `Bearer ${realAccessToken}`,
+            },
+            expectedStatus: 200,
+            customValidator: (data) => {
+              if ('name' in data && data.name !== undefined) {
+                return { passed: false, message: 'name should be omitted when decryptName is false' };
+              }
+              const bad = ['encrypted_name', 'encrypted_aes_key', 'iv'].filter((k) => k in data);
+              if (bad.length > 0) {
+                return { passed: false, message: `Should not expose encryption fields: ${bad.join(', ')}` };
+              }
+              return { passed: true };
+            },
+          });
+
+          await runner.test('Test 13: GET encounter by id with decryptName=true', {
+            testNumber: 13,
+            method: 'GET',
+            endpoint: `/api/patient-encounters/${createdEncounterId}?decryptName=true`,
+            headers: {
+              Authorization: `Bearer ${realAccessToken}`,
+            },
+            expectedStatus: 200,
+            customValidator: (data) => {
+              if (data.name !== 'Integration Test Patient') {
+                return { passed: false, message: `Expected name "Integration Test Patient", got ${data.name}` };
+              }
+              return { passed: true };
+            },
+          });
+        } else {
+          console.log('⊘ Tests 10–13: SKIPPED (test 8 dependency failed - no encounter created)\n');
+        }
+
+        // ===== TEST 14: PATCH encounter (depends on test 8) =====
+        let test14PatchPassed = false;
+        if (createdEncounterId) {
+          await runner.test('Test 14: PATCH encounter to update name (depends on test 8)', {
+            testNumber: 14,
             method: 'PATCH',
             endpoint: `/api/patient-encounters/${createdEncounterId}`,
             body: {
@@ -346,16 +445,17 @@ async function runPatientEncounterTests() {
             expectedStatus: 200,
             expectedFields: ['id', 'name', 'updated_at'],
             onSuccess: () => {
-              test10Passed = true;
+              test14PatchPassed = true;
             },
           });
         } else {
-          console.log('⊘ Test 10: SKIPPED (Test 8 dependency failed - no encounter created)\n');
+          console.log('⊘ Test 14: SKIPPED (test 8 dependency failed - no encounter created)\n');
         }
 
-        // ===== TEST 11: DELETE encounter (DEPENDENT ON TEST 10) =====
-        if (createdEncounterId && test10Passed) {
-          await runner.test('Test 11: DELETE encounter (DEPENDENT ON TEST 10)', {
+        // ===== TEST 15: DELETE encounter (depends on test 14) =====
+        if (createdEncounterId && test14PatchPassed) {
+          await runner.test('Test 15: DELETE encounter (depends on test 14)', {
+            testNumber: 15,
             method: 'DELETE',
             endpoint: `/api/patient-encounters/${createdEncounterId}`,
             headers: {
@@ -364,11 +464,12 @@ async function runPatientEncounterTests() {
             expectedStatus: 200,
           });
         } else {
-          console.log('⊘ Test 11: SKIPPED (Test 10 dependency failed)\n');
+          console.log('⊘ Test 15: SKIPPED (test 14 dependency failed)\n');
         }
 
-        // ===== TEST 12: Get encounter with invalid ID format =====
-        await runner.test('Test 12: Get encounter with invalid ID format', {
+        // ===== TEST 16: Get encounter with invalid ID format =====
+        await runner.test('Test 16: Get encounter with invalid ID format', {
+          testNumber: 16,
           method: 'GET',
           endpoint: '/api/patient-encounters/invalid-id-format',
           headers: {
@@ -382,8 +483,9 @@ async function runPatientEncounterTests() {
           },
         });
 
-        // ===== TEST 13: Get non-existent encounter =====
-        await runner.test('Test 13: Get non-existent encounter', {
+        // ===== TEST 17: Get non-existent encounter =====
+        await runner.test('Test 17: Get non-existent encounter', {
+          testNumber: 17,
           method: 'GET',
           endpoint: '/api/patient-encounters/999999999999',
           headers: {
@@ -394,7 +496,7 @@ async function runPatientEncounterTests() {
 
 
 
-        // ===== TEST 14: Create complete patient encounter bundle (with recording and note) =====
+        // ===== TEST 18: Create complete patient encounter bundle (with recording and note) =====
         // This test creates a new encounter with recording and note in one request
         // First, fetch a real recording file from Supabase storage
         let realRecordingPath = null;
@@ -417,9 +519,9 @@ async function runPatientEncounterTests() {
         };
 
         if (!realRecordingPath) {
-          console.log('⊘ Test 14: SKIPPED (No real recording files found in Supabase storage)\n');
+          console.log('⊘ Test 18: SKIPPED (No real recording files found in Supabase storage)\n');
         } else {
-          // Update completeBundle with the real recording file for Test 14
+          // Update completeBundle with the real recording file for test 18
           completeBundle = {
             patientEncounter: {
               name: 'Complete Bundle Test Patient',
@@ -434,7 +536,8 @@ async function runPatientEncounterTests() {
           };
 
           let completeBundleEncounterId = null;
-          await runner.test('Test 14: Create complete patient encounter bundle (POST)', {
+          await runner.test('Test 18: Create complete patient encounter bundle (POST)', {
+            testNumber: 18,
             method: 'POST',
             endpoint: '/api/patient-encounters/complete',
             body: completeBundle,
@@ -473,9 +576,10 @@ async function runPatientEncounterTests() {
             },
           });
 
-          // ===== TEST 15: Get the created complete bundle (GET) =====
+          // ===== TEST 19: Get the created complete bundle (GET) =====
           if (completeBundleEncounterId) {
-            await runner.test('Test 15: Get complete patient encounter bundle (verify creation)', {
+            await runner.test('Test 19: Get complete patient encounter bundle (verify creation)', {
+              testNumber: 19,
               method: 'GET',
               endpoint: `/api/patient-encounters/complete/${completeBundleEncounterId}`,
               headers: {
@@ -485,7 +589,7 @@ async function runPatientEncounterTests() {
               expectedFields: ['patientEncounter', 'recording', 'notes'],
               customValidator: (data) => {
                 // Print full response for debugging
-                console.log(`\n    📋 Full Test 15 Response:\n${JSON.stringify(data, null, 2)}\n`);
+                console.log(`\n    📋 Full test 19 response:\n${JSON.stringify(data, null, 2)}\n`);
 
                 // Check for encryption fields that should be cleaned
                 if (data.patientEncounter) {
@@ -511,9 +615,9 @@ async function runPatientEncounterTests() {
                   return { passed: false, message: 'notes should be an array' };
                 }
 
-                // Should have at least one note (the one we created in Test 14)
+                // Should have at least one note (the one we created in test 18)
                 if (data.notes.length === 0) {
-                  return { passed: false, message: 'Expected at least one note in notes array (created in Test 14)' };
+                  return { passed: false, message: 'Expected at least one note in notes array (created in test 18)' };
                 }
 
                 // Check the first note has expected fields
@@ -579,12 +683,13 @@ async function runPatientEncounterTests() {
               },
             });
           } else {
-            console.log('⊘ Test 15: SKIPPED (Test 14 dependency failed - no complete bundle encounter created)\n');
+            console.log('⊘ Test 19: SKIPPED (test 18 dependency failed - no complete bundle encounter created)\n');
           }
 
-          // ===== TEST 16: DELETE complete encounter (DEPENDENT ON TEST 15) =====
+          // ===== TEST 20: DELETE complete encounter (depends on test 19) =====
           if (completeBundleEncounterId) {
-            await runner.test('Test 16: DELETE complete encounter (DEPENDENT ON TEST 15)', {
+            await runner.test('Test 20: DELETE complete encounter (depends on test 19)', {
+              testNumber: 20,
               method: 'DELETE',
               endpoint: `/api/patient-encounters/${completeBundleEncounterId}`,
               headers: {
@@ -593,12 +698,13 @@ async function runPatientEncounterTests() {
               expectedStatus: 200,
             });
           } else {
-            console.log('⊘ Test 16: SKIPPED (Test 15 dependency failed - no complete bundle encounter created)\n');
+            console.log('⊘ Test 20: SKIPPED (test 19 dependency failed - no complete bundle encounter created)\n');
           }
 
-          // ===== TEST 17: Missing required field validation =====
+          // ===== TEST 21: Missing required field validation =====
           // Attempts to create bundle without patient name (required field)
-          await runner.test('Test 17: Create complete encounter with missing patientEncounter.name (should fail)', {
+          await runner.test('Test 21: Create complete encounter with missing patientEncounter.name (should fail)', {
+            testNumber: 21,
             method: 'POST',
             endpoint: '/api/patient-encounters/complete',
             body: {
@@ -627,9 +733,10 @@ async function runPatientEncounterTests() {
             },
           });
 
-          // ===== TEST 18: Missing note_text field =====
+          // ===== TEST 22: Missing note_text field =====
           // Attempts to create bundle without note_text field
-          await runner.test('Test 18: Create complete encounter with missing note_text (should fail)', {
+          await runner.test('Test 22: Create complete encounter with missing note_text (should fail)', {
+            testNumber: 22,
             method: 'POST',
             endpoint: '/api/patient-encounters/complete',
             body: {
@@ -658,17 +765,19 @@ async function runPatientEncounterTests() {
             },
           });
 
-          // ===== TEST 19: Auth required for POST =====
+          // ===== TEST 23: Auth required for POST =====
           // Attempts to create bundle without JWT token
-          await runner.test('Test 19: Create complete encounter without auth (should fail)', {
+          await runner.test('Test 23: Create complete encounter without auth (should fail)', {
+            testNumber: 23,
             method: 'POST',
             endpoint: '/api/patient-encounters/complete',
             body: completeBundle,
             expectedStatus: 401,
           });
 
-          // ===== TEST 20: Invalid ID format on GET =====
-          await runner.test('Test 20: Get complete patient encounter (invalid ID format)', {
+          // ===== TEST 24: Invalid ID format on GET =====
+          await runner.test('Test 24: Get complete patient encounter (invalid ID format)', {
+            testNumber: 24,
             method: 'GET',
             endpoint: '/api/patient-encounters/complete/invalid-format',
             headers: {
@@ -682,8 +791,9 @@ async function runPatientEncounterTests() {
             },
           });
 
-          // ===== TEST 21: Non-existent encounter on GET =====
-          await runner.test('Test 21: Get complete patient encounter (non-existent)', {
+          // ===== TEST 25: Non-existent encounter on GET =====
+          await runner.test('Test 25: Get complete patient encounter (non-existent)', {
+            testNumber: 25,
             method: 'GET',
             endpoint: '/api/patient-encounters/complete/999999999999',
             headers: {
@@ -692,8 +802,9 @@ async function runPatientEncounterTests() {
             expectedStatus: 404,
           });
 
-          // ===== TEST 22: Auth required for GET =====
-          await runner.test('Test 22: Get complete patient encounter (no auth)', {
+          // ===== TEST 26: Auth required for GET =====
+          await runner.test('Test 26: Get complete patient encounter (no auth)', {
+            testNumber: 26,
             method: 'GET',
             endpoint: '/api/patient-encounters/complete/test-id',
             expectedStatus: 401,

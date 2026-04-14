@@ -59,11 +59,46 @@ function stripEncryptionFields(notes) {
 }
 
 /**
- * Get all notes for the authenticated user (with pagination and batched decryption)
+ * List note ids, encounter links, and updated_at (no decryption)
  * GET /api/notes
- * Query params: limit (default 100), offset (default 0), sortBy (default 'created_at'), order (default 'desc')
+ * Query: validated in route (notesListQuerySchema): limit (default 100), offset (default 0), sortBy, order
  */
 export async function getAllNotes(request, reply) {
+  try {
+    const supabase = getSupabaseClient(request.headers.authorization);
+    const user = request.user;
+
+    if (!user) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+
+    const { limit, offset, sortBy, order } = request.query;
+
+    const { data, error } = await supabase
+      .from(notesTable)
+      .select('id, patientEncounter_id, updated_at')
+      .eq('user_id', user.id)
+      .order(sortBy, { ascending: order === 'asc' })
+      .range(offset, offset + limit - 1);
+
+    if (error) {
+      console.error('Error fetching notes:', error);
+      return reply.status(500).send({ error: error.message });
+    }
+
+    return reply.status(200).send(data);
+  } catch (error) {
+    console.error('Error fetching notes:', error);
+    return reply.status(500).send({ error: error.message });
+  }
+}
+
+/**
+ * Get all notes for the authenticated user (with pagination and batched decryption)
+ * GET /api/notes/complete
+ * Query: validated in route (notesCompleteListQuerySchema): limit (default 50, like patient-encounters), offset, sortBy, order
+ */
+export async function getAllNotesComplete(request, reply) {
   try {
     const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
@@ -79,20 +114,7 @@ export async function getAllNotes(request, reply) {
     }
     const masterKey = keyResult.masterKey;
 
-    // Parse and validate query parameters
-    const { limit = 100, offset = 0, sortBy = 'created_at', order = 'desc' } = request.query;
-
-    // Validate limit is numeric and positive
-    const limitNum = parseInt(limit);
-    if (isNaN(limitNum) || limitNum <= 0) {
-      return reply.status(400).send({ error: 'Invalid limit parameter: must be a positive number' });
-    }
-
-    // Validate offset is numeric and non-negative
-    const offsetNum = parseInt(offset);
-    if (isNaN(offsetNum) || offsetNum < 0) {
-      return reply.status(400).send({ error: 'Invalid offset parameter: must be a non-negative number' });
-    }
+    const { limit, offset, sortBy, order } = request.query;
 
     // Fetch notes with user filter
     const { data, error } = await supabase
@@ -100,7 +122,7 @@ export async function getAllNotes(request, reply) {
       .select('*')
       .eq('user_id', user.id)
       .order(sortBy, { ascending: order === 'asc' })
-      .range(offsetNum, offsetNum + limitNum - 1);
+      .range(offset, offset + limit - 1);
 
     if (error) {
       console.error('Error fetching notes:', error);

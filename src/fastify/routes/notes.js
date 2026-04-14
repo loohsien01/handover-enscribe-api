@@ -5,18 +5,54 @@
  */
 import {
   getAllNotes,
+  getAllNotesComplete,
   getNote,
   createNote,
   updateNote,
   deleteNote,
 } from '../controllers/notesController.js';
-import { noteCreateRequestSchema, noteUpdateRequestSchema } from '../schemas/requests.js';
+import {
+  noteCreateRequestSchema,
+  noteUpdateRequestSchema,
+  notesListQuerySchema,
+  notesCompleteListQuerySchema,
+} from '../schemas/requests.js';
 
 export async function registerNotesRoutes(fastify) {
-  // GET /api/notes - Get all notes with pagination
+  // GET /api/notes/complete - Full notes with decryption (register before /notes/:id)
+  fastify.get('/notes/complete', {
+    preHandler: [fastify.authenticate],
+    handler: async (request, reply) => {
+      try {
+        const parseResult = notesCompleteListQuerySchema.safeParse(request.query);
+        if (!parseResult.success) {
+          return reply.status(400).send({ error: parseResult.error });
+        }
+        request.query = parseResult.data;
+        return getAllNotesComplete(request, reply);
+      } catch (error) {
+        console.error('Error in GET /notes/complete route:', error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  });
+
+  // GET /api/notes - Lightweight list (id, patientEncounter_id, updated_at)
   fastify.get('/notes', {
     preHandler: [fastify.authenticate],
-    handler: getAllNotes,
+    handler: async (request, reply) => {
+      try {
+        const parseResult = notesListQuerySchema.safeParse(request.query);
+        if (!parseResult.success) {
+          return reply.status(400).send({ error: parseResult.error });
+        }
+        request.query = parseResult.data;
+        return getAllNotes(request, reply);
+      } catch (error) {
+        console.error('Error in GET /notes route:', error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
   });
 
   // GET /api/notes/:id - Get single note by ID

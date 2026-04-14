@@ -11,7 +11,13 @@ import {
   getCompletePatientEncounter,
   completePatientEncounter,
 } from '../controllers/patientEncountersController.js';
-import { patientEncounterCreateRequestSchema, patientEncounterUpdateRequestSchema, patientEncounterCompleteCreateRequestSchema } from '../schemas/requests.js';
+import {
+  patientEncounterCreateRequestSchema,
+  patientEncounterUpdateRequestSchema,
+  patientEncounterCompleteCreateRequestSchema,
+  patientEncountersListQuerySchema,
+  patientEncounterGetQuerySchema,
+} from '../schemas/requests.js';
 
 /**
  * Register patient encounters routes
@@ -22,7 +28,19 @@ export async function registerPatientEncountersRoutes(fastify) {
   // Get all patient encounters for authenticated user
   fastify.get('/patient-encounters', {
     preHandler: [fastify.authenticate],
-    handler: getAllPatientEncounters,
+    handler: async (request, reply) => {
+      try {
+        const parseResult = patientEncountersListQuerySchema.safeParse(request.query);
+        if (!parseResult.success) {
+          return reply.status(400).send({ error: parseResult.error });
+        }
+        request.query = parseResult.data;
+        return getAllPatientEncounters(request, reply);
+      } catch (error) {
+        console.error('Error in GET /patient-encounters route:', error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
   });
 
   // POST /patient-encounters
@@ -52,7 +70,19 @@ export async function registerPatientEncountersRoutes(fastify) {
   // Get a specific patient encounter
   fastify.get('/patient-encounters/:id', {
     preHandler: [fastify.authenticate],
-    handler: getPatientEncounter,
+    handler: async (request, reply) => {
+      try {
+        const parseResult = patientEncounterGetQuerySchema.safeParse(request.query);
+        if (!parseResult.success) {
+          return reply.status(400).send({ error: parseResult.error });
+        }
+        request.query = parseResult.data;
+        return getPatientEncounter(request, reply);
+      } catch (error) {
+        console.error('Error in GET /patient-encounters/:id route:', error);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
   });
 
   // PATCH /patient-encounters/:id

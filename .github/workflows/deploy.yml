@@ -186,6 +186,7 @@ jobs:
           SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
           SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          INTERNAL_CLEANUP_SECRET=${{ secrets.INTERNAL_CLEANUP_SECRET }}
           FASTIFY_HOST=0.0.0.0
           FASTIFY_PORT=${{ secrets.FASTIFY_PORT }}
           NODE_ENV=production

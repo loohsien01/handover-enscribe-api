@@ -45,4 +45,4 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 # local commit message draft (not for version control)
-LOCAL_COMMIT_MESSAGE.txt
+API_COMMIT_MESSAGE.txt

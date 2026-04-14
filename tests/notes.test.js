@@ -1,6 +1,10 @@
 /**
  * Test Suite: Notes API
  * Tests all note endpoints: CRUD operations with pagination, encryption/decryption using master key
+ *
+ * Test numbering (`testNumber`):
+ * - Every `runner.test` sets `testNumber` to a single integer from 1 to 31, in execution order.
+ * - Section comments (`// Test N:`) use that same index so banners, JSON results, and `testNumber` stay aligned.
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -222,6 +226,7 @@ async function cleanupTestData(accessToken) {
 async function runNotesTests() {
   console.log('Starting Notes API tests...');
   console.log(`Server: ${runner.baseUrl}\n`);
+  // testNumber runs 1–31 (see file header). Some tests depend on prior steps (e.g. create note before update/delete).
 
   // Load test data first (created by setup)
   testData = loadTestData();
@@ -287,53 +292,72 @@ async function runNotesTests() {
     testNumber: 2,
   });
 
-  // Test 3: Get single note without auth (should fail)
-  await runner.test('Get note without auth', {
+  // Test 3: GET /api/notes/complete — without auth
+  await runner.test('Get all notes (complete) without auth', {
     method: 'GET',
-    endpoint: '/api/notes/1',
+    endpoint: '/api/notes/complete',
     expectedStatus: 401,
     testNumber: 3,
   });
 
-  // Test 4: Create note without auth (should fail)
+  // Test 4: GET /api/notes/complete — invalid token
+  await runner.test('Get all notes (complete) with invalid token', {
+    method: 'GET',
+    endpoint: '/api/notes/complete',
+    headers: {
+      Authorization: `Bearer ${MOCK_TOKEN}`,
+    },
+    expectedStatus: 401,
+    testNumber: 4,
+  });
+
+  // Test 5: Get single note without auth (should fail)
+  await runner.test('Get note without auth', {
+    method: 'GET',
+    endpoint: '/api/notes/1',
+    expectedStatus: 401,
+    testNumber: 5,
+  });
+
+  // Test 6: Create note without auth (should fail)
   await runner.test('Create note without auth', {
     method: 'POST',
     endpoint: '/api/notes',
     body: mockNoteData,
     expectedStatus: 401,
-    testNumber: 4,
+    testNumber: 6,
   });
 
-  // Test 5: Update note without auth (should fail)
+  // Test 7: Update note without auth (should fail)
   await runner.test('Update note without auth', {
     method: 'PATCH',
     endpoint: '/api/notes/1',
     body: mockNoteData,
     expectedStatus: 401,
-    testNumber: 5,
+    testNumber: 7,
   });
 
-  // Test 6: Delete note without auth (should fail)
+  // Test 8: Delete note without auth (should fail)
   await runner.test('Delete note without auth', {
     method: 'DELETE',
     endpoint: '/api/notes/1',
     expectedStatus: 401,
-    testNumber: 6,
+    testNumber: 8,
   });
 
   // ===== PAGINATION AND LIST TESTS =====
 
   if (realAccessToken) {
-    // Test 7: Get all notes with pagination (valid token)
-    await runner.test('Get all notes with pagination', {
+    // Test 9: Get all notes (complete) with pagination (valid token)
+    await runner.test('Get all notes (complete) with pagination', {
       method: 'GET',
-      endpoint: '/api/notes?limit=100&offset=0&sortBy=created_at&order=desc',
+      endpoint: '/api/notes/complete?limit=100&offset=0&sortBy=created_at&order=desc',
       headers: {
         Authorization: `Bearer ${realAccessToken}`,
       },
       expectedStatus: 200,
       expectedFields: [],
-      testNumber: 7,
+      testNumber: 9,
       onSuccess: (data) => {
         // Validate descending order by created_at
         if (Array.isArray(data) && data.length > 1) {
@@ -355,11 +379,11 @@ async function runNotesTests() {
       },
     });
 
-    // Test 8: Get all notes with different sort parameters (ascending by updated_at)
-    await runner.test('Get notes sorted by updated_at (ascending)', {
-      testNumber: 8,
+    // Test 10: Get all notes (complete) with different sort parameters (ascending by updated_at)
+    await runner.test('Get notes (complete) sorted by updated_at (ascending)', {
+      testNumber: 10,
       method: 'GET',
-      endpoint: '/api/notes?sortBy=updated_at&order=asc',
+      endpoint: '/api/notes/complete?sortBy=updated_at&order=asc',
       headers: {
         Authorization: `Bearer ${realAccessToken}`,
       },
@@ -385,15 +409,15 @@ async function runNotesTests() {
       },
     });
 
-    // Test 9: Pagination with limit and offset
-    await runner.test('Pagination: limit=2&offset=0 (first 2 records)', {
+    // Test 11: Pagination (complete) with limit and offset
+    await runner.test('Pagination (complete): limit=2&offset=0 (first 2 records)', {
       method: 'GET',
-      endpoint: '/api/notes?limit=2&offset=0',
+      endpoint: '/api/notes/complete?limit=2&offset=0',
       headers: {
         Authorization: `Bearer ${realAccessToken}`,
       },
       expectedStatus: 200,
-      testNumber: 9,
+      testNumber: 11,
       onSuccess: (data) => {
         if (Array.isArray(data)) {
           if (data.length !== 2) {
@@ -405,33 +429,94 @@ async function runNotesTests() {
       },
     });
 
-    // Test 10: Invalid limit (non-numeric)
-    await runner.test('Pagination: invalid limit parameter (non-numeric)', {
+    // Test 12: Invalid limit (non-numeric) on complete list
+    await runner.test('Pagination (complete): invalid limit parameter (non-numeric)', {
+      method: 'GET',
+      endpoint: '/api/notes/complete?limit=abc&offset=0',
+      headers: {
+        Authorization: `Bearer ${realAccessToken}`,
+      },
+      expectedStatus: 400,
+      testNumber: 12,
+    });
+
+    // Test 13: Invalid offset (negative) on complete list
+    await runner.test('Pagination (complete): invalid offset parameter (negative)', {
+      method: 'GET',
+      endpoint: '/api/notes/complete?limit=2&offset=-1',
+      headers: {
+        Authorization: `Bearer ${realAccessToken}`,
+      },
+      expectedStatus: 400,
+      testNumber: 13,
+    });
+
+    // Test 14: Invalid sortBy on complete list (Zod whitelist)
+    await runner.test('Pagination (complete): invalid sortBy parameter', {
+      method: 'GET',
+      endpoint: '/api/notes/complete?sortBy=encrypted_text&order=desc',
+      headers: {
+        Authorization: `Bearer ${realAccessToken}`,
+      },
+      expectedStatus: 400,
+      testNumber: 14,
+    });
+
+    // Test 15: Limit above max (500)
+    await runner.test('Pagination (complete): limit over max (501)', {
+      method: 'GET',
+      endpoint: '/api/notes/complete?limit=501&offset=0',
+      headers: {
+        Authorization: `Bearer ${realAccessToken}`,
+      },
+      expectedStatus: 400,
+      testNumber: 15,
+    });
+
+    // ===== GET /api/notes (lightweight) =====
+
+    // Test 16
+    await runner.test('GET /api/notes returns id, patientEncounter_id, and updated_at only', {
+      method: 'GET',
+      endpoint: '/api/notes?limit=50&offset=0',
+      headers: {
+        Authorization: `Bearer ${realAccessToken}`,
+      },
+      expectedStatus: 200,
+      testNumber: 16,
+      customValidator: (data) => {
+        if (!Array.isArray(data)) {
+          return { passed: false, message: 'Expected response body to be an array' };
+        }
+        for (let i = 0; i < data.length; i++) {
+          const keys = Object.keys(data[i]).sort().join(',');
+          if (keys !== 'id,patientEncounter_id,updated_at') {
+            return {
+              passed: false,
+              message: `Row ${i} must only include id, patientEncounter_id, and updated_at (got: ${keys || 'empty'})`,
+            };
+          }
+        }
+        return { passed: true };
+      },
+    });
+
+    // Test 17
+    await runner.test('GET /api/notes rejects invalid limit', {
       method: 'GET',
       endpoint: '/api/notes?limit=abc&offset=0',
       headers: {
         Authorization: `Bearer ${realAccessToken}`,
       },
       expectedStatus: 400,
-      testNumber: 10,
-    });
-
-    // Test 11: Invalid offset (negative)
-    await runner.test('Pagination: invalid offset parameter (negative)', {
-      method: 'GET',
-      endpoint: '/api/notes?limit=2&offset=-1',
-      headers: {
-        Authorization: `Bearer ${realAccessToken}`,
-      },
-      expectedStatus: 400,
-      testNumber: 11,
+      testNumber: 17,
     });
 
     // ===== CREATE TESTS =====
 
-    // Test 12: Create note template first (required for notes)
+    // Test 18: Create note template first (required for notes)
     if (realAccessToken) {
-      await runner.test('Create note template for testing', {        testNumber: 12,        method: 'POST',
+      await runner.test('Create note template for testing', {        testNumber: 18,        method: 'POST',
         endpoint: '/api/note-templates',
         headers: {
           Authorization: `Bearer ${realAccessToken}`,
@@ -450,7 +535,7 @@ async function runNotesTests() {
       });
     }
 
-    // Test 10: Create note with valid data
+    // Test 19: Create note with valid data
     if (testEncounterId && testTemplateId) {
       await runner.test('Create note with valid data', {
         method: 'POST',
@@ -465,7 +550,7 @@ async function runNotesTests() {
         },
         expectedStatus: 201,
         expectedFields: ['id', 'patientEncounter_id'],
-        testNumber: 13,
+        testNumber: 19,
         onSuccess: (data) => {
           // Store the created ID for retrieval and cleanup
           if (data.id) {
@@ -476,8 +561,8 @@ async function runNotesTests() {
         },
       });
 
-      // Test 14: Create note with non-existent encounter (should fail)
-      await runner.test('Create note with non-existent encounter', {        testNumber: 14,        method: 'POST',
+      // Test 20: Create note with non-existent encounter (should fail)
+      await runner.test('Create note with non-existent encounter', {        testNumber: 20,        method: 'POST',
         endpoint: '/api/notes',
         headers: {
           Authorization: `Bearer ${realAccessToken}`,
@@ -493,7 +578,7 @@ async function runNotesTests() {
       // ===== RETRIEVAL TESTS =====
 
       if (createdNoteId) {
-        // Test 15: Get single note by ID
+        // Test 21: Get single note by ID
         await runner.test('Get single note by ID', {
           method: 'GET',
           endpoint: `/api/notes/${createdNoteId}`,
@@ -502,10 +587,10 @@ async function runNotesTests() {
           },
           expectedStatus: 200,
           expectedFields: ['id', 'patientEncounter_id', 'text'],
-          testNumber: 15,
+          testNumber: 21,
         });
 
-        // Test 16: Get note with invalid ID format (should fail)
+        // Test 22: Get note with invalid ID format (should fail)
         await runner.test('Get note with invalid ID format', {
           method: 'GET',
           endpoint: '/api/notes/invalid-id',
@@ -513,10 +598,10 @@ async function runNotesTests() {
             Authorization: `Bearer ${realAccessToken}`,
           },
           expectedStatus: 400,
-          testNumber: 16,
+          testNumber: 22,
         });
 
-        // Test 17: Get note with non-existent ID (should fail)
+        // Test 23: Get note with non-existent ID (should fail)
         await runner.test('Get note with non-existent ID', {
           method: 'GET',
           endpoint: '/api/notes/99999999',
@@ -524,20 +609,20 @@ async function runNotesTests() {
             Authorization: `Bearer ${realAccessToken}`,
           },
           expectedStatus: 404,
-          testNumber: 17,
+          testNumber: 23,
         });
       }
 
       // ===== UPDATE TESTS =====
 
-      // Test 18: Update note with valid data
+      // Test 24: Update note with valid data
       const updatedNoteData = {
         text: 'Updated note: Patient condition improved. Continue with rest and fluids. Follow up next week.',
         status: 'paused',
       };
 
       if (!createdNoteId) {
-        console.log('  ⚠️  Test 13 (Create note) must pass first - Test 18 cannot run\n');
+        console.log('  ⚠️  Test 19 (Create note) must pass first - Test 24 cannot run\n');
       } else {
         await runner.test('Update note with valid data', {
           method: 'PATCH',
@@ -549,12 +634,12 @@ async function runNotesTests() {
           body: updatedNoteData,
           expectedStatus: 200,
           expectedFields: ['id', 'patientEncounter_id', 'text'],
-          testNumber: 18,
+          testNumber: 24,
         });
       }
 
-      // Test 19: Update note with invalid ID format (should fail)
-      await runner.test('Update note with invalid ID format', {        testNumber: 19,        method: 'PATCH',
+      // Test 25: Update note with invalid ID format (should fail)
+      await runner.test('Update note with invalid ID format', {        testNumber: 25,        method: 'PATCH',
         endpoint: '/api/notes/invalid-id',
         headers: {
           Authorization: `Bearer ${realAccessToken}`,
@@ -564,8 +649,8 @@ async function runNotesTests() {
         expectedStatus: 400,
       });
 
-      // Test 21: Update non-existent note (should fail)
-      await runner.test('Update non-existent note', {        testNumber: 22,        method: 'PATCH',
+      // Test 26: Update non-existent note (should fail)
+      await runner.test('Update non-existent note', {        testNumber: 26,        method: 'PATCH',
         endpoint: '/api/notes/99999999',
         headers: {
           Authorization: `Bearer ${realAccessToken}`,
@@ -575,7 +660,7 @@ async function runNotesTests() {
         expectedStatus: 404,
       });
 
-      // Test 22: Update note with invalid status enum (should fail)
+      // Test 27: Update note with invalid status enum (should fail)
       if (createdNoteId) {
         await runner.test('Update note with invalid status enum', {
           method: 'PATCH',
@@ -586,14 +671,14 @@ async function runNotesTests() {
           },
           body: { status: 'draft' },
           expectedStatus: 400,
-          testNumber: 23,
+          testNumber: 27,
         });
       }
 
       // ===== DELETE TESTS =====
 
-      // Test 23: Delete note with invalid ID format (should fail)
-      await runner.test('Delete note with invalid ID format', {        testNumber: 24,        method: 'DELETE',
+      // Test 28: Delete note with invalid ID format (should fail)
+      await runner.test('Delete note with invalid ID format', {        testNumber: 28,        method: 'DELETE',
         endpoint: '/api/notes/invalid-id',
         headers: {
           Authorization: `Bearer ${realAccessToken}`,
@@ -601,7 +686,7 @@ async function runNotesTests() {
         expectedStatus: 400,
       });
 
-      // Test 24: Delete non-existent note (should fail with 404)
+      // Test 29: Delete non-existent note (should fail with 404)
       await runner.test('Delete non-existent note', {
         method: 'DELETE',
         endpoint: '/api/notes/99999999',
@@ -609,12 +694,12 @@ async function runNotesTests() {
           Authorization: `Bearer ${realAccessToken}`,
         },
         expectedStatus: 404,
-        testNumber: 25,
+        testNumber: 29,
       });
 
-      // Test 25: Delete note successfully
+      // Test 30: Delete note successfully
       if (!createdNoteId) {
-        console.log('  ⚠️  Test 13 (Create note) must pass first - Test 25 cannot run\n');
+        console.log('  ⚠️  Test 19 (Create note) must pass first - Test 30 cannot run\n');
       } else {
         await runner.test('Delete note successfully', {
           method: 'DELETE',
@@ -624,10 +709,10 @@ async function runNotesTests() {
           },
           expectedStatus: 200,
           expectedFields: ['success', 'data'],
-          testNumber: 26,
+          testNumber: 30,
         });
 
-        // Test 26: Verify note was deleted
+        // Test 31: Verify note was deleted
         await runner.test('Verify note was deleted', {
           method: 'GET',
           endpoint: `/api/notes/${createdNoteId}`,
@@ -635,7 +720,7 @@ async function runNotesTests() {
             Authorization: `Bearer ${realAccessToken}`,
           },
           expectedStatus: 404,
-          testNumber: 27,
+          testNumber: 31,
         });
       }
     }
