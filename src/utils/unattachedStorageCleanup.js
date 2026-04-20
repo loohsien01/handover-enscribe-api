@@ -4,7 +4,7 @@
  */
 import { timingSafeEqual } from 'node:crypto';
 
-const AUDIO_BUCKET = 'audio-files';
+export const AUDIO_BUCKET = 'audio-files';
 const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_DELETES = 500;
 const PAGE_SIZE = 100;
@@ -135,7 +135,7 @@ export async function runUnattachedStorageCleanup(supabase, opts = {}) {
 /**
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  */
-async function listRootUserPrefixes(supabase) {
+export async function listRootUserPrefixes(supabase) {
   const dirs = new Set();
   let offset = 0;
   const rootPage = 1000;
@@ -168,7 +168,7 @@ async function listRootUserPrefixes(supabase) {
  * Users who have at least one recording row (covers edge cases where root list is incomplete).
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  */
-async function listDistinctRecordingUserIds(supabase) {
+export async function listDistinctRecordingUserIds(supabase) {
   const ids = new Set();
   const page = 1000;
   let from = 0;
@@ -204,7 +204,7 @@ async function listDistinctRecordingUserIds(supabase) {
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
  */
-async function listAllFilesInUserFolder(supabase, userId) {
+export async function listAllFilesInUserFolder(supabase, userId) {
   const allStorageFiles = [];
   let currentOffset = 0;
   let hasMoreFiles = true;

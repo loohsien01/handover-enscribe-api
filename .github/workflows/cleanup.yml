@@ -1,6 +1,7 @@
-# Scheduled orphan storage cleanup (GitHub-hosted timer → POST API on EC2).
-# Configure repository secrets: API_BASE_URL (e.g. https://api.example.com), INTERNAL_CLEANUP_SECRET.
-name: Cleanup unattached storage
+# Scheduled storage retention (manifest + archive to S3) — POST API on EC2.
+# Configure repository secrets: API_BASE_URL, INTERNAL_CLEANUP_SECRET.
+# The API host must have AWS_ARCHIVE_S3_BUCKET (and AWS creds / IAM) so storage_archive succeeds.
+name: Archive purge storage
 
 on:
   workflow_dispatch:
@@ -11,7 +12,7 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: POST internal cleanup
+      - name: POST archive-purge (storage_manifest + storage_archive)
         env:
           API_BASE_URL: ${{ secrets.API_BASE_URL }}
           INTERNAL_CLEANUP_SECRET: ${{ secrets.INTERNAL_CLEANUP_SECRET }}
@@ -22,16 +23,16 @@ jobs:
             exit 1
           fi
           base="${API_BASE_URL%/}"
-          url="${base}/api/internal/cleanup/run"
+          url="${base}/api/internal/archive-purge/run"
           for attempt in 1 2 3; do
             echo "Attempt ${attempt} → ${url}"
-            code=$(curl -sS -o /tmp/cleanup_body.json -w "%{http_code}" \
+            code=$(curl -sS -o /tmp/archive_purge_body.json -w "%{http_code}" \
               -X POST "$url" \
               -H "Authorization: Bearer ${INTERNAL_CLEANUP_SECRET}" \
               -H "Content-Type: application/json" \
-              -d '{"tasks":["unattached_storage"]}')
+              -d '{"tasks":["storage_manifest","storage_archive"]}')
             echo "HTTP ${code}"
-            cat /tmp/cleanup_body.json || true
+            cat /tmp/archive_purge_body.json || true
             if [ "$code" = "200" ]; then
               exit 0
             fi

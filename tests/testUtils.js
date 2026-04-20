@@ -118,9 +118,28 @@ export class TestRunner {
    * @param {number} config.testNumber - (Optional) Explicit test number for tracking skipped tests
    */
   async test(name, config) {
-    const { method, endpoint, body, headers, expectedStatus, expectedFields, customValidator, onSuccess, testNumber } = config;
+    const {
+      method,
+      endpoint,
+      body,
+      headers,
+      expectedStatus,
+      expectedFields,
+      customValidator,
+      onSuccess,
+      testNumber,
+      /** Called synchronously before fetch (use for progress logs when a request may hang). */
+      onBeforeRequest,
+    } = config;
 
     const url = `${this.baseUrl}${endpoint}`;
+    if (typeof onBeforeRequest === 'function') {
+      try {
+        onBeforeRequest({ name, method, url, body, headers });
+      } catch (e) {
+        console.error(`[TestRunner] onBeforeRequest error for "${name}":`, e?.message || e);
+      }
+    }
     const response = await makeRequest(method, url, { body, headers, expectedStatus });
 
     // Check status and expected fields

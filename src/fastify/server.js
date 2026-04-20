@@ -28,7 +28,7 @@ import { registerNoteTemplateSectionsRoutes } from './routes/noteTemplateSection
 import { registerNoteTemplatesRoutes } from './routes/noteTemplates.js';
 import { registerNoteTemplatesCompleteRoutes } from './routes/noteTemplatesComplete.js';
 import { registerNoteTemplateSectionOrdersRoutes } from './routes/noteTemplateSectionOrders.js';
-import { registerInternalCleanupRoutes } from './routes/internalCleanup.js';
+import { registerArchivePurgeRoutes } from './routes/archivePurge.js';
 import userProfileRoutes from './routes/userProfile.js';
 /**
  * Create and configure Fastify application
@@ -161,7 +161,7 @@ async function createFastifyApp(options = {}) {
     await apiScope.register(userProfileRoutes);
     await registerMaskPhiRoutes(apiScope);
     await registerTranscribeRoutes(apiScope);
-    await registerInternalCleanupRoutes(apiScope);
+    await registerArchivePurgeRoutes(apiScope);
   }, { prefix: '/api' });
 
   // Register job-based routes under /api/jobs

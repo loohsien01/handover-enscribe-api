@@ -46,3 +46,5 @@ yarn-error.log*
 next-env.d.ts
 # local commit message draft (not for version control)
 API_COMMIT_MESSAGE.txt
+
+/sql/migrations

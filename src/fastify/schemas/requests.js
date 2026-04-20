@@ -82,18 +82,73 @@ export const recordingsAttachmentsQuerySchema = z.object({
   order: z.enum(['asc', 'desc'], 'order must be one of: asc, desc').default('asc').optional(),
 });
 
-/** POST /api/internal/cleanup/run — extend enum when new cleanup tasks are added */
-export const internalCleanupTaskSchema = z.enum(['unattached_storage']);
+/**
+ * POST /api/internal/archive-purge/run
+ * Storage path: manifest (track rows) → archive (S3 + delete + mark). Run both for a full storage retention pass.
+ * Future: add e.g. `db_archive` + body for which Postgres tables (default = all tables listed in code).
+ */
+export const archivePurgeTaskSchema = z.enum([
+  'storage_manifest',
+  'storage_archive',
+  'encounter_archive',
+]);
 
 /**
- * POST /api/internal/cleanup/run
+ * POST /api/internal/archive-purge/run
  * Internal cron / ops: Bearer INTERNAL_CLEANUP_SECRET
  */
-export const internalCleanupRunBodySchema = z.object({
-  tasks: z
-    .array(internalCleanupTaskSchema)
-    .min(1, 'tasks must include at least one item')
-    .max(32, 'tasks list is too long'),
+export const archivePurgeRunBodySchema = z
+  .object({
+    tasks: z
+      .array(archivePurgeTaskSchema)
+      .min(1, 'tasks must include at least one item')
+      .max(32, 'tasks list is too long'),
+    /** Omit for default cap; null = no client `.limit()` on eligible rows (see archive purge util). */
+    maxObjectsPerRun: z.union([z.null(), z.number().int().positive()]).optional(),
+    /**
+     * When true, only `encounter_archive` is allowed (single task). Returns 202 + jobRunId; poll GET
+     * `/api/internal/archive-purge/jobs/:jobRunId` until status is success or failed.
+     */
+    async: z.boolean().optional(),
+    /**
+     * Max rows inserted into archive.patient_encounter_archive_queue for this job run.
+     * null = no cap (all eligible encounters for this cutoff); omit = server default (50).
+     */
+    maxEnqueue: z
+      .union([z.null(), z.coerce.number().int().positive().max(5000)])
+      .optional(),
+    /**
+     * Max queue rows fully processed (S3 + deletes) per job run.
+     * null = process all pending rows for this job_run_id in one run; omit = server default.
+     */
+    maxProcessPerJob: z
+      .union([z.null(), z.coerce.number().int().positive().max(500)])
+      .optional(),
+    /**
+     * Parallel encounter bundle pipelines per wave (claim batch size). 1 = sequential.
+     * Requires migration claim_patient_encounter_archive_queue_batch.
+     */
+    processConcurrency: z.coerce.number().int().min(1).max(50).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.async) {
+      if (data.tasks.length !== 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'async requires exactly one task',
+        });
+      } else if (data.tasks[0] !== 'encounter_archive') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'async is only supported for encounter_archive',
+        });
+      }
+    }
+  });
+
+/** GET /api/internal/archive-purge/jobs/:jobRunId */
+export const archivePurgeJobParamsSchema = z.object({
+  jobRunId: z.string().regex(uuidRegex, 'jobRunId must be a UUID'),
 });
 
 /**
