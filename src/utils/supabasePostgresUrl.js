@@ -20,13 +20,19 @@ function assertNoObviousSupabaseUrlPlaceholders(url) {
 
 /**
  * Builds a Postgres connection URL for the Supabase database (same instance as PostgREST).
- * Use for `psql`, future `pg` clients, or any direct SQL against `archive` and other schemas.
+ * Feeds `pg` in `supabasePostgresPool.js` and `npm run migrate:apply-psql` — any valid `postgresql://`
+ * URI works, including Supabase **Transaction pooler (Shared Pooler, IPv4)**:
+ * user `postgres.<project_ref>`, host `aws-0-<region>.pooler.supabase.com`, port **6543**.
+ * (The env name `SUPABASE_DB_DIRECT_URL` is historical; the value is often the pooler URI on IPv4 networks.)
  *
  * Resolution (first non-empty wins):
  * 1. `SUPABASE_DB_DIRECT_URL`
  * 2. `DATABASE_URL`
  * 3. `SUPABASE_DB_URL`
- * 4. Composed from `SUPABASE_DB_HOST` + `SUPABASE_DB_PASSWORD` (+ optional port/user/db/sslmode)
+ * 4. Composed from `SUPABASE_DB_HOST` + `SUPABASE_DB_PASSWORD` (+ optional port/user/db/sslmode).
+ *    For the pooler, set `SUPABASE_DB_USER=postgres.<project_ref>` and `SUPABASE_DB_PORT=6543`.
+ *
+ * TLS for `pg`: see `SUPABASE_DB_SSL_REJECT_UNAUTHORIZED` in `supabasePostgresPool.js`.
  *
  * @returns {string | null}
  */
@@ -39,7 +45,6 @@ export function getSupabasePostgresUrl() {
   const direct = fromEnv('SUPABASE_DB_DIRECT_URL');
   if (direct) {
     assertNoObviousSupabaseUrlPlaceholders(direct);
-    console.log('direct', direct);
     return direct;
   }
 

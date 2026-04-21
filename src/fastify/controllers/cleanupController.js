@@ -1,12 +1,10 @@
 /**
- * Internal maintenance endpoints (Bearer INTERNAL_CLEANUP_SECRET, not user JWT).
+ * Internal cleanup endpoints (Bearer INTERNAL_CLEANUP_SECRET, not user JWT).
  */
-import {
-  archivePurgeRunBodySchema,
-  archivePurgeJobParamsSchema,
-} from '../schemas/requests.js';
+import { cleanupRunBodySchema, cleanupJobParamsSchema } from '../schemas/requests.js';
 import supabaseAdmin from '../../utils/supabaseAdmin.js';
-import { safeEqualUtf8 } from '../../utils/unattachedStorageCleanup.js';
+import { safeEqualUtf8, runUnattachedStorageCleanup } from '../../utils/unattachedStorageCleanup.js';
+import { runUnattachedNoteTemplateSectionsCleanup } from '../../utils/unattachedNoteTemplateSectionsCleanup.js';
 import { runArchiveStorageManifestSync } from '../../utils/archiveStorageManifestSync.js';
 import { runArchiveStoragePurge } from '../../utils/archiveStoragePurge.js';
 import {
@@ -23,9 +21,9 @@ function extractBearerToken(authorizationHeader) {
 }
 
 /**
- * POST /api/internal/archive-purge/run
+ * POST /api/internal/cleanup/run
  */
-export async function postArchivePurgeRun(request, reply) {
+export async function postCleanupRun(request, reply) {
   const secret = process.env.INTERNAL_CLEANUP_SECRET;
   if (!secret) {
     return reply.status(503).send({ error: 'INTERNAL_CLEANUP_SECRET is not configured' });
@@ -36,7 +34,7 @@ export async function postArchivePurgeRun(request, reply) {
     return reply.status(401).send({ error: 'Unauthorized' });
   }
 
-  const parsed = archivePurgeRunBodySchema.safeParse(request.body);
+  const parsed = cleanupRunBodySchema.safeParse(request.body);
   if (!parsed.success) {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
@@ -48,6 +46,8 @@ export async function postArchivePurgeRun(request, reply) {
     maxEnqueue,
     maxProcessPerJob,
     processConcurrency,
+    maxDeletesPerRunUnattachedStorage,
+    maxDeletesPerRunUnattachedNoteTemplateSections,
   } = parsed.data;
   const tasks = [...new Set(rawTasks)];
   const purgeOpts =
@@ -57,6 +57,14 @@ export async function postArchivePurgeRun(request, reply) {
     ...(maxProcessPerJob !== undefined ? { maxProcessPerJob } : {}),
     ...(processConcurrency !== undefined ? { processConcurrency } : {}),
   };
+  const unattachedStorageOpts =
+    maxDeletesPerRunUnattachedStorage !== undefined
+      ? { maxDeletesPerRun: maxDeletesPerRunUnattachedStorage }
+      : {};
+  const unattachedNoteTemplateSectionsOpts =
+    maxDeletesPerRunUnattachedNoteTemplateSections !== undefined
+      ? { maxDeletesPerRun: maxDeletesPerRunUnattachedNoteTemplateSections }
+      : {};
 
   const supabase = supabaseAdmin();
 
@@ -73,10 +81,10 @@ export async function postArchivePurgeRun(request, reply) {
       const jobRunId = job.id;
       setImmediate(() => {
         runEncounterArchiveJob(supabase, jobRunId, encounterOpts).catch((err) => {
-          request.log.error({ err, jobRunId }, '[postArchivePurgeRun] encounter_archive async worker');
+          request.log.error({ err, jobRunId }, '[postCleanupRun] encounter_archive async worker');
         });
       });
-      const pollPath = `/api/internal/archive-purge/jobs/${jobRunId}`;
+      const pollPath = `/api/internal/cleanup/jobs/${jobRunId}`;
       return reply.status(202).send({
         ok: true,
         accepted: true,
@@ -85,7 +93,7 @@ export async function postArchivePurgeRun(request, reply) {
         message: `Poll GET ${pollPath} until job.status is success or failed.`,
       });
     } catch (err) {
-      request.log.error({ err }, '[postArchivePurgeRun] encounter_archive async enqueue failed');
+      request.log.error({ err }, '[postCleanupRun] encounter_archive async enqueue failed');
       return reply.status(500).send({
         error: err instanceof Error ? err.message : 'Failed to create archive job',
       });
@@ -102,10 +110,10 @@ export async function postArchivePurgeRun(request, reply) {
         results.storage_manifest = { status: 'ok', ...out };
       } catch (err) {
         anyError = true;
-        request.log.error({ err }, '[postArchivePurgeRun] storage_manifest failed');
+        request.log.error({ err }, '[postCleanupRun] storage_manifest failed');
         results.storage_manifest = {
           status: 'error',
-          message: err?.message || 'archive-purge failed',
+          message: err?.message || 'cleanup failed',
         };
       }
     } else if (task === 'storage_archive') {
@@ -114,10 +122,10 @@ export async function postArchivePurgeRun(request, reply) {
         results.storage_archive = { status: 'ok', ...out };
       } catch (err) {
         anyError = true;
-        request.log.error({ err }, '[postArchivePurgeRun] storage_archive failed');
+        request.log.error({ err }, '[postCleanupRun] storage_archive failed');
         results.storage_archive = {
           status: 'error',
-          message: err?.message || 'archive-purge failed',
+          message: err?.message || 'cleanup failed',
         };
       }
     } else if (task === 'encounter_archive') {
@@ -126,10 +134,34 @@ export async function postArchivePurgeRun(request, reply) {
         results.encounter_archive = { status: 'ok', ...out };
       } catch (err) {
         anyError = true;
-        request.log.error({ err }, '[postArchivePurgeRun] encounter_archive failed');
+        request.log.error({ err }, '[postCleanupRun] encounter_archive failed');
         results.encounter_archive = {
           status: 'error',
           message: err?.message || 'encounter_archive failed',
+        };
+      }
+    } else if (task === 'unattached_storage') {
+      try {
+        const out = await runUnattachedStorageCleanup(supabase, unattachedStorageOpts);
+        results.unattached_storage = { status: 'ok', ...out };
+      } catch (err) {
+        anyError = true;
+        request.log.error({ err }, '[postCleanupRun] unattached_storage failed');
+        results.unattached_storage = {
+          status: 'error',
+          message: err?.message || 'unattached_storage failed',
+        };
+      }
+    } else if (task === 'unattached_note_template_sections') {
+      try {
+        const out = await runUnattachedNoteTemplateSectionsCleanup(supabase, unattachedNoteTemplateSectionsOpts);
+        results.unattached_note_template_sections = { status: 'ok', ...out };
+      } catch (err) {
+        anyError = true;
+        request.log.error({ err }, '[postCleanupRun] unattached_note_template_sections failed');
+        results.unattached_note_template_sections = {
+          status: 'error',
+          message: err?.message || 'unattached_note_template_sections failed',
         };
       }
     }
@@ -143,10 +175,10 @@ export async function postArchivePurgeRun(request, reply) {
 }
 
 /**
- * GET /api/internal/archive-purge/jobs/:jobRunId
- * Poll archive.job_runs (encounter_archive async jobs, etc.).
+ * GET /api/internal/cleanup/jobs/:jobRunId
+ * Poll archive.job_runs (encounter_archive async jobs; unattached_* and other tasks also write rows).
  */
-export async function getArchivePurgeJobRun(request, reply) {
+export async function getCleanupJobRun(request, reply) {
   const secret = process.env.INTERNAL_CLEANUP_SECRET;
   if (!secret) {
     return reply.status(503).send({ error: 'INTERNAL_CLEANUP_SECRET is not configured' });
@@ -157,7 +189,7 @@ export async function getArchivePurgeJobRun(request, reply) {
     return reply.status(401).send({ error: 'Unauthorized' });
   }
 
-  const parsed = archivePurgeJobParamsSchema.safeParse(request.params);
+  const parsed = cleanupJobParamsSchema.safeParse(request.params);
   if (!parsed.success) {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
@@ -172,7 +204,7 @@ export async function getArchivePurgeJobRun(request, reply) {
     }
     return reply.status(200).send({ ok: true, job });
   } catch (err) {
-    request.log.error({ err, jobRunId }, '[getArchivePurgeJobRun] failed');
+    request.log.error({ err, jobRunId }, '[getCleanupJobRun] failed');
     return reply.status(500).send({
       error: err instanceof Error ? err.message : 'Failed to load job',
     });

@@ -1,5 +1,5 @@
 /**
- * Internal archive-purge API — auth and validation (full 200 paths only if INTERNAL_CLEANUP_SECRET is set).
+ * Internal cleanup API — auth and validation (full 200 paths only if INTERNAL_CLEANUP_SECRET is set).
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -11,12 +11,18 @@ dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
 import { TestRunner } from './testUtils.js';
 import { PATIENT_ENCOUNTER_ARCHIVE_QUEUE_STATUSES } from '../src/utils/encounterArchivePurge.js';
 
-const runner = new TestRunner('Internal archive-purge API');
+const runner = new TestRunner('Internal cleanup API');
 const secret = process.env.INTERNAL_CLEANUP_SECRET;
 const hasSecret = typeof secret === 'string' && secret.length > 0;
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Valid task for auth/body-only requests (avoid storage_* integration side effects). */
 const SAMPLE_TASK = 'encounter_archive';
+
+/** Skip test 11 by default (set to `false` in this file to enable integration run). */
+const skipTest11 = false;
 
 /**
  * JSON fetch against Fastify (same pattern as tests/prompt-llm.test.js).
@@ -25,7 +31,7 @@ const SAMPLE_TASK = 'encounter_archive';
  * @param {object | null} body
  * @param {Record<string, string>} [headers]
  */
-async function archivePurgeFetch(method, endpoint, body = null, headers = {}) {
+async function cleanupFetch(method, endpoint, body = null, headers = {}) {
   const url = `${runner.baseUrl}${endpoint}`;
   try {
     const response = await fetch(url, {
@@ -63,14 +69,14 @@ async function archivePurgeFetch(method, endpoint, body = null, headers = {}) {
 }
 
 /**
- * Poll GET /api/internal/archive-purge/jobs/:jobRunId until success | failed or timeout.
+ * Poll GET /api/internal/cleanup/jobs/:jobRunId until success | failed or timeout.
  * Logs each poll line and status transitions (mirrors prompt-llm polling style).
  *
  * @param {string} jobRunId
  * @param {string} internalBearerSecret
  * @param {number} [maxWaitMs]
  */
-async function pollArchivePurgeJobUntilTerminal(jobRunId, internalBearerSecret, maxWaitMs = 600000) {
+async function pollCleanupJobUntilTerminal(jobRunId, internalBearerSecret, maxWaitMs = 600000) {
   const startTime = Date.now();
   let pollInterval = 10000;
   const backoffCap = 45000;
@@ -79,9 +85,9 @@ async function pollArchivePurgeJobUntilTerminal(jobRunId, internalBearerSecret, 
 
   while (Date.now() - startTime < maxWaitMs) {
     const elapsed = Math.floor((Date.now() - startTime) / 1000);
-    const response = await archivePurgeFetch(
+    const response = await cleanupFetch(
       'GET',
-      `/api/internal/archive-purge/jobs/${jobRunId}`,
+      `/api/internal/cleanup/jobs/${jobRunId}`,
       null,
       auth
     );
@@ -244,55 +250,55 @@ function verifyEncounterArchiveAsyncJobFullySuccessful(job) {
   return { ok: true, message: '' };
 }
 
-export async function runArchivePurgeTests() {
-  console.log('Starting internal archive-purge API tests...');
+export async function runCleanupTests() {
+  console.log('Starting internal cleanup API tests...');
   console.log(`Server: ${runner.baseUrl}\n`);
 
   if (!hasSecret) {
-    await runner.test('POST /api/internal/archive-purge/run returns 503 when INTERNAL_CLEANUP_SECRET unset', {
+    await runner.test('POST /api/internal/cleanup/run returns 503 when INTERNAL_CLEANUP_SECRET unset', {
       testNumber: 1,
       method: 'POST',
-      endpoint: '/api/internal/archive-purge/run',
+      endpoint: '/api/internal/cleanup/run',
       body: { tasks: [SAMPLE_TASK] },
       headers: {},
       expectedStatus: 503,
     });
     runner.printResults();
-    runner.saveResults('archive-purge-tests.json');
+    runner.saveResults('cleanup-tests.json');
     return runner.getSummary();
   }
 
-  await runner.test('POST /api/internal/archive-purge/run without Authorization', {
+  await runner.test('POST /api/internal/cleanup/run without Authorization', {
     testNumber: 1,
     method: 'POST',
-    endpoint: '/api/internal/archive-purge/run',
+    endpoint: '/api/internal/cleanup/run',
     body: { tasks: [SAMPLE_TASK] },
     headers: {},
     expectedStatus: 401,
   });
 
-  await runner.test('POST /api/internal/archive-purge/run with wrong Bearer token', {
+  await runner.test('POST /api/internal/cleanup/run with wrong Bearer token', {
     testNumber: 2,
     method: 'POST',
-    endpoint: '/api/internal/archive-purge/run',
+    endpoint: '/api/internal/cleanup/run',
     body: { tasks: [SAMPLE_TASK] },
     headers: { Authorization: 'Bearer definitely-not-the-real-secret' },
     expectedStatus: 401,
   });
 
-  await runner.test('POST /api/internal/archive-purge/run with empty tasks', {
+  await runner.test('POST /api/internal/cleanup/run with empty tasks', {
     testNumber: 3,
     method: 'POST',
-    endpoint: '/api/internal/archive-purge/run',
+    endpoint: '/api/internal/cleanup/run',
     body: { tasks: [] },
     headers: { Authorization: `Bearer ${secret}` },
     expectedStatus: 400,
   });
 
-  await runner.test('POST /api/internal/archive-purge/run with invalid task name', {
+  await runner.test('POST /api/internal/cleanup/run with invalid task name', {
     testNumber: 4,
     method: 'POST',
-    endpoint: '/api/internal/archive-purge/run',
+    endpoint: '/api/internal/cleanup/run',
     body: { tasks: ['nope'] },
     headers: { Authorization: `Bearer ${secret}` },
     expectedStatus: 400,
@@ -300,16 +306,16 @@ export async function runArchivePurgeTests() {
 
   /*
   // Commented out: storage_manifest mutates archive.storage_objects / Storage listing — interferes with encounter_archive testing.
-  await runner.test('POST /api/internal/archive-purge/run storage_manifest returns 200', {
+  await runner.test('POST /api/internal/cleanup/run storage_manifest returns 200', {
     testNumber: 5,
     method: 'POST',
-    endpoint: '/api/internal/archive-purge/run',
+    endpoint: '/api/internal/cleanup/run',
     body: { tasks: ['storage_manifest'] },
     headers: { Authorization: `Bearer ${secret}` },
     expectedStatus: 200,
     onBeforeRequest: ({ url, method }) => {
       console.log(
-        `[archive-purge test 5] ${new Date().toISOString()} → ${method} ${url} (storage_manifest can take 2+ minutes; waiting for response…)`,
+        `[cleanup test 5] ${new Date().toISOString()} → ${method} ${url} (storage_manifest can take 2+ minutes; waiting for response…)`,
       );
     },
     customValidator: (body) => {
@@ -325,22 +331,22 @@ export async function runArchivePurgeTests() {
       return { passed: true };
     },
     onSuccess: () => {
-      console.log(`[archive-purge test 5] ${new Date().toISOString()} → finished OK`);
+      console.log(`[cleanup test 5] ${new Date().toISOString()} → finished OK`);
     },
   });
 
   const archiveBucket = process.env.AWS_ARCHIVE_S3_BUCKET;
   if (typeof archiveBucket === 'string' && archiveBucket.trim().length > 0) {
-    await runner.test('POST /api/internal/archive-purge/run storage_archive returns 200', {
+    await runner.test('POST /api/internal/cleanup/run storage_archive returns 200', {
       testNumber: 6,
       method: 'POST',
-      endpoint: '/api/internal/archive-purge/run',
+      endpoint: '/api/internal/cleanup/run',
       body: { tasks: ['storage_archive'] },
       headers: { Authorization: `Bearer ${secret}` },
       expectedStatus: 200,
       onBeforeRequest: ({ url, method }) => {
         console.log(
-          `[archive-purge test 6] ${new Date().toISOString()} → ${method} ${url} (storage_archive; waiting for response…)`,
+          `[cleanup test 6] ${new Date().toISOString()} → ${method} ${url} (storage_archive; waiting for response…)`,
         );
       },
       customValidator: (body) => {
@@ -356,7 +362,7 @@ export async function runArchivePurgeTests() {
         return { passed: true };
       },
       onSuccess: () => {
-        console.log(`[archive-purge test 6] ${new Date().toISOString()} → finished OK`);
+        console.log(`[cleanup test 6] ${new Date().toISOString()} → finished OK`);
       },
     });
   } else {
@@ -378,7 +384,7 @@ export async function runArchivePurgeTests() {
       name: 'POST encounter_archive async=true → poll job until success (happy path)',
       passed: true,
       skipped: true,
-      endpoint: '/api/internal/archive-purge/run → GET …/jobs/:jobRunId',
+      endpoint: '/api/internal/cleanup/run → GET /api/internal/cleanup/jobs/:jobRunId',
       method: 'POST → GET (polling)',
       status: null,
       expectedStatus: null,
@@ -389,12 +395,12 @@ export async function runArchivePurgeTests() {
     });
   } else {
     console.log(
-      '\n⏳ Test 5: POST encounter_archive with async=true (202), then poll GET /jobs/:jobRunId (10s interval, backoff to 45s on 5xx; max 10 min)…\n'
+      '\n⏳ Test 5: POST /api/internal/cleanup/run encounter_archive async=true (202), then poll GET /api/internal/cleanup/jobs/:jobRunId (10s interval, backoff to 45s on 5xx; max 10 min)…\n'
     );
 
-    const accept = await archivePurgeFetch(
+    const accept = await cleanupFetch(
       'POST',
-      '/api/internal/archive-purge/run',
+      '/api/internal/cleanup/run',
       {
         tasks: ['encounter_archive'],
         async: true,
@@ -407,7 +413,7 @@ export async function runArchivePurgeTests() {
     let test5Passed = false;
     let test5Message = '';
     let jobRunId = /** @type {string | null} */ (null);
-    /** @type {Awaited<ReturnType<typeof pollArchivePurgeJobUntilTerminal>> | null} */
+    /** @type {Awaited<ReturnType<typeof pollCleanupJobUntilTerminal>> | null} */
     let pollOutcome = null;
 
     if (!accept.ok || accept.status !== 202) {
@@ -416,37 +422,42 @@ export async function runArchivePurgeTests() {
       test5Message = '202 response missing ok:true or jobRunId';
     } else {
       jobRunId = String(accept.body.jobRunId);
-      console.log(`✅ Accepted async job: jobRunId=${jobRunId}`);
-      if (accept.body.pollPath) {
-        console.log(`   pollPath: ${accept.body.pollPath}`);
-      }
-
-      pollOutcome = await pollArchivePurgeJobUntilTerminal(jobRunId, secret);
-
-      if (pollOutcome.timedOut) {
-        test5Message = pollOutcome.error_message || 'Polling timed out';
-      } else if (pollOutcome.pollingFailed) {
-        test5Message = pollOutcome.error_message || 'Polling failed';
-      } else if (pollOutcome.finalStatus === 'failed') {
-        const err =
-          pollOutcome.job?.error_message ||
-          pollOutcome.job?.result?.message ||
-          'job status failed';
-        test5Message = `Job failed: ${err}`;
-      } else if (pollOutcome.finalStatus === 'success') {
-        const v = verifyEncounterArchiveAsyncJobFullySuccessful(pollOutcome.job);
-        if (!v.ok) {
-          test5Passed = false;
-          test5Message = `Job status success but incomplete: ${v.message} (elapsed ${pollOutcome.elapsed}s)`;
-        } else {
-          test5Passed = true;
-          const wn = Array.isArray(pollOutcome.job?.result?.warningRows)
-            ? pollOutcome.job.result.warningRows.length
-            : 0;
-          test5Message = `Verified in ${pollOutcome.elapsed}s: status=success, phase=done, failedRows=[], warningRows=${wn}, pendingRemaining=false`;
-        }
+      const expectedPollPath = `/api/internal/cleanup/jobs/${jobRunId}`;
+      if (accept.body.pollPath && accept.body.pollPath !== expectedPollPath) {
+        test5Message = `Expected pollPath ${expectedPollPath}, got ${accept.body.pollPath}`;
       } else {
-        test5Message = `Unexpected terminal state: ${pollOutcome.finalStatus}`;
+        console.log(`✅ Accepted async job: jobRunId=${jobRunId}`);
+        if (accept.body.pollPath) {
+          console.log(`   pollPath: ${accept.body.pollPath}`);
+        }
+
+        pollOutcome = await pollCleanupJobUntilTerminal(jobRunId, secret);
+
+        if (pollOutcome.timedOut) {
+          test5Message = pollOutcome.error_message || 'Polling timed out';
+        } else if (pollOutcome.pollingFailed) {
+          test5Message = pollOutcome.error_message || 'Polling failed';
+        } else if (pollOutcome.finalStatus === 'failed') {
+          const err =
+            pollOutcome.job?.error_message ||
+            pollOutcome.job?.result?.message ||
+            'job status failed';
+          test5Message = `Job failed: ${err}`;
+        } else if (pollOutcome.finalStatus === 'success') {
+          const v = verifyEncounterArchiveAsyncJobFullySuccessful(pollOutcome.job);
+          if (!v.ok) {
+            test5Passed = false;
+            test5Message = `Job status success but incomplete: ${v.message} (elapsed ${pollOutcome.elapsed}s)`;
+          } else {
+            test5Passed = true;
+            const wn = Array.isArray(pollOutcome.job?.result?.warningRows)
+              ? pollOutcome.job.result.warningRows.length
+              : 0;
+            test5Message = `Verified in ${pollOutcome.elapsed}s: status=success, phase=done, failedRows=[], warningRows=${wn}, pendingRemaining=false`;
+          }
+        } else {
+          test5Message = `Unexpected terminal state: ${pollOutcome.finalStatus}`;
+        }
       }
     }
 
@@ -455,7 +466,7 @@ export async function runArchivePurgeTests() {
     runner.results.push({
       name: 'POST encounter_archive async=true → poll job until success (happy path)',
       passed: test5Passed,
-      endpoint: '/api/internal/archive-purge/run',
+      endpoint: '/api/internal/cleanup/run → GET /api/internal/cleanup/jobs/:jobRunId',
       method: 'POST → GET (polling)',
       status: accept.status,
       expectedStatus: 202,
@@ -482,7 +493,7 @@ export async function runArchivePurgeTests() {
   await runner.test('POST async=true rejects multiple tasks', {
     testNumber: 6,
     method: 'POST',
-    endpoint: '/api/internal/archive-purge/run',
+    endpoint: '/api/internal/cleanup/run',
     body: { tasks: ['encounter_archive', 'storage_archive'], async: true },
     headers: { Authorization: `Bearer ${secret}` },
     expectedStatus: 400,
@@ -491,35 +502,177 @@ export async function runArchivePurgeTests() {
   await runner.test('POST async=true rejects non-encounter_archive task', {
     testNumber: 7,
     method: 'POST',
-    endpoint: '/api/internal/archive-purge/run',
+    endpoint: '/api/internal/cleanup/run',
     body: { tasks: ['storage_archive'], async: true },
     headers: { Authorization: `Bearer ${secret}` },
     expectedStatus: 400,
   });
 
-  await runner.test('GET /api/internal/archive-purge/jobs/:jobRunId without Authorization', {
+  await runner.test('GET /api/internal/cleanup/jobs/:jobRunId without Authorization', {
     testNumber: 8,
     method: 'GET',
-    endpoint: '/api/internal/archive-purge/jobs/00000000-0000-4000-8000-000000000001',
+    endpoint: '/api/internal/cleanup/jobs/00000000-0000-4000-8000-000000000001',
     headers: {},
     expectedStatus: 401,
   });
 
-  await runner.test('GET /api/internal/archive-purge/jobs/:jobRunId invalid uuid', {
+  await runner.test('GET /api/internal/cleanup/jobs/:jobRunId invalid uuid', {
     testNumber: 9,
     method: 'GET',
-    endpoint: '/api/internal/archive-purge/jobs/not-a-uuid',
+    endpoint: '/api/internal/cleanup/jobs/not-a-uuid',
     headers: { Authorization: `Bearer ${secret}` },
     expectedStatus: 400,
   });
 
-  runner.printResults(9);
-  runner.saveResults('archive-purge-tests.json');
+  await runner.test('POST async=true rejects unattached_note_template_sections', {
+    testNumber: 10,
+    method: 'POST',
+    endpoint: '/api/internal/cleanup/run',
+    body: { tasks: ['unattached_note_template_sections'], async: true },
+    headers: { Authorization: `Bearer ${secret}` },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const form = body?.error?.formErrors;
+      const ok =
+        Array.isArray(form) &&
+        form.some((msg) => typeof msg === 'string' && msg.includes('async is only supported for encounter_archive'));
+      if (!ok) {
+        return {
+          passed: false,
+          message:
+            'Expected Zod formErrors to include async is only supported for encounter_archive (restart API server if you see invalid task instead).',
+        };
+      }
+      return { passed: true };
+    },
+  });
+
+  await runner.test('POST async=true rejects unattached_storage', {
+    testNumber: 11,
+    method: 'POST',
+    endpoint: '/api/internal/cleanup/run',
+    body: { tasks: ['unattached_storage'], async: true },
+    headers: { Authorization: `Bearer ${secret}` },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const form = body?.error?.formErrors;
+      const ok =
+        Array.isArray(form) &&
+        form.some((msg) => typeof msg === 'string' && msg.includes('async is only supported for encounter_archive'));
+      if (!ok) {
+        return {
+          passed: false,
+          message:
+            'Expected Zod formErrors to include async is only supported for encounter_archive (restart API server if you see invalid task instead).',
+        };
+      }
+      return { passed: true };
+    },
+  });
+
+  if (!skipTest11) {
+    await runner.test('POST unattached_storage returns 200 (integration)', {
+      testNumber: 12,
+      method: 'POST',
+      endpoint: '/api/internal/cleanup/run',
+      body: { 
+        tasks: ['unattached_storage'],
+        maxDeletesPerRunUnattachedStorage: 10,
+      },
+      headers: { Authorization: `Bearer ${secret}` },
+      expectedStatus: 200,
+      customValidator: (body) => {
+        if (!body || body.ok !== true || !body.results?.unattached_storage) {
+          return { passed: false, message: 'Expected ok:true and results.unattached_storage' };
+        }
+        if (body.results.unattached_storage.status !== 'ok') {
+          return {
+            passed: false,
+            message: `Expected status ok, got ${body.results.unattached_storage.status}: ${body.results.unattached_storage.message || ''}`,
+          };
+        }
+        const stats = body.results.unattached_storage.stats;
+        if (!stats || typeof stats.deletedCount !== 'number') {
+          return { passed: false, message: 'Expected results.unattached_storage.stats.deletedCount' };
+        }
+        const jr = body.results.unattached_storage.jobRunId;
+        if (typeof jr !== 'string' || !UUID_RE.test(jr)) {
+          return { passed: false, message: 'Expected results.unattached_storage.jobRunId (uuid string)' };
+        }
+        if (!body.results.unattached_storage.cutoff) {
+          return { passed: false, message: 'Expected results.unattached_storage.cutoff from archive.job_runs' };
+        }
+        return { passed: true };
+      },
+    });
+  } else {
+    console.log('\n⏭️  Test 12 (unattached_storage): SKIPPED BY DEFAULT (set skipTest11 = false to enable)\n');
+    runner.results.push({
+      name: 'POST unattached_storage returns 200 (integration)',
+      passed: true,
+      skipped: true,
+      endpoint: '/api/internal/cleanup/run',
+      method: 'POST',
+      status: null,
+      expectedStatus: null,
+      body: {},
+      customMessage: 'Skipped: skipTest11 is true',
+      testNumber: 12,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  await runner.test('POST unattached_note_template_sections returns 200 (integration)', {
+    testNumber: 13,
+    method: 'POST',
+    endpoint: '/api/internal/cleanup/run',
+    body: {
+      tasks: ['unattached_note_template_sections'],
+      maxDeletesPerRunUnattachedNoteTemplateSections: 10,
+    },
+    headers: { Authorization: `Bearer ${secret}` },
+    expectedStatus: 200,
+    customValidator: (body) => {
+      if (!body || body.ok !== true || !body.results?.unattached_note_template_sections) {
+        return { passed: false, message: 'Expected ok:true and results.unattached_note_template_sections' };
+      }
+      if (body.results.unattached_note_template_sections.status !== 'ok') {
+        return {
+          passed: false,
+          message: `Expected status ok, got ${body.results.unattached_note_template_sections.status}: ${body.results.unattached_note_template_sections.message || ''}`,
+        };
+      }
+      const stats = body.results.unattached_note_template_sections.stats;
+      if (!stats || typeof stats.deletedCount !== 'number') {
+        return { passed: false, message: 'Expected results.unattached_note_template_sections.stats.deletedCount' };
+      }
+      if (!Array.isArray(body.results.unattached_note_template_sections.warnings)) {
+        return { passed: false, message: 'Expected warnings array on unattached_note_template_sections result' };
+      }
+      const jr = body.results.unattached_note_template_sections.jobRunId;
+      if (typeof jr !== 'string' || !UUID_RE.test(jr)) {
+        return {
+          passed: false,
+          message: 'Expected results.unattached_note_template_sections.jobRunId (uuid string)',
+        };
+      }
+      if (!body.results.unattached_note_template_sections.cutoff) {
+        return {
+          passed: false,
+          message: 'Expected results.unattached_note_template_sections.cutoff from archive.job_runs',
+        };
+      }
+      return { passed: true };
+    },
+  });
+
+  runner.printResults(13);
+  runner.saveResults('cleanup-tests.json');
   return runner.getSummary();
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  runArchivePurgeTests()
+  runCleanupTests()
     .then((summary) => process.exit(summary.failed > 0 ? 1 : 0))
     .catch((e) => {
       console.error(e);

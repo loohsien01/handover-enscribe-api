@@ -1,5 +1,5 @@
 /**
- * S3 client for retention / archive-purge uploads (Glacier-capable bucket in AWS).
+ * S3 client for retention / internal cleanup uploads (Glacier-capable bucket in AWS).
  * Auth: same as Bedrock on dev (env keys) vs IAM role on EC2 — see {@link ./awsSdkBaseClientConfig.js}.
  */
 

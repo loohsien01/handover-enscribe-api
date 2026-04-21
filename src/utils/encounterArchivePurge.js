@@ -5,7 +5,7 @@
  * audio and records an entry in `result.warningRows` (job still succeeds when `failedRows` is empty).
  *
  * Async + polling: POST creates archive.job_runs (queued), returns jobRunId; worker advances to
- * running/success/failed. GET /api/internal/archive-purge/jobs/:jobRunId reads job_runs.
+ * running/success/failed. GET /api/internal/cleanup/jobs/:jobRunId reads job_runs.
  * `job.result.queueRowsByStatus` lists queue row UUIDs per {@link PATIENT_ENCOUNTER_ARCHIVE_QUEUE_STATUSES}
  * (after enqueue and again when `phase` is `done`).
  */

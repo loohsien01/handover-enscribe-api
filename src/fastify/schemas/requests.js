@@ -83,31 +83,35 @@ export const recordingsAttachmentsQuerySchema = z.object({
 });
 
 /**
- * POST /api/internal/archive-purge/run
+ * POST /api/internal/cleanup/run
  * Storage path: manifest (track rows) → archive (S3 + delete + mark). Run both for a full storage retention pass.
+ * `unattached_storage`: Supabase Storage bucket `audio-files` — remove objects not referenced by recordings.recording_file_path (age-gated).
+ * `unattached_note_template_sections`: noteTemplateSections with no noteTemplateSectionOrders; updated_at (or created_at if updated_at null) older than 7 days.
  * Future: add e.g. `db_archive` + body for which Postgres tables (default = all tables listed in code).
  */
-export const archivePurgeTaskSchema = z.enum([
+export const cleanupTaskSchema = z.enum([
   'storage_manifest',
   'storage_archive',
   'encounter_archive',
+  'unattached_storage',
+  'unattached_note_template_sections',
 ]);
 
 /**
- * POST /api/internal/archive-purge/run
+ * POST /api/internal/cleanup/run
  * Internal cron / ops: Bearer INTERNAL_CLEANUP_SECRET
  */
-export const archivePurgeRunBodySchema = z
+export const cleanupRunBodySchema = z
   .object({
     tasks: z
-      .array(archivePurgeTaskSchema)
+      .array(cleanupTaskSchema)
       .min(1, 'tasks must include at least one item')
       .max(32, 'tasks list is too long'),
-    /** Omit for default cap; null = no client `.limit()` on eligible rows (see archive purge util). */
+    /** Omit for default cap; null = no client `.limit()` on eligible rows (see cleanup util). */
     maxObjectsPerRun: z.union([z.null(), z.number().int().positive()]).optional(),
     /**
      * When true, only `encounter_archive` is allowed (single task). Returns 202 + jobRunId; poll GET
-     * `/api/internal/archive-purge/jobs/:jobRunId` until status is success or failed.
+     * `/api/internal/cleanup/jobs/:jobRunId` until status is success or failed.
      */
     async: z.boolean().optional(),
     /**
@@ -129,6 +133,19 @@ export const archivePurgeRunBodySchema = z
      * Requires migration claim_patient_encounter_archive_queue_batch.
      */
     processConcurrency: z.coerce.number().int().min(1).max(50).optional(),
+    /**
+     * Max Storage objects removed when task `unattached_storage` runs. Omit = util default (500).
+     */
+    maxDeletesPerRunUnattachedStorage: z.coerce.number().int().positive().max(5000).optional(),
+    /**
+     * Max noteTemplateSections rows deleted when task `unattached_note_template_sections` runs. Omit = util default (500).
+     */
+    maxDeletesPerRunUnattachedNoteTemplateSections: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(5000)
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (data.async) {
@@ -146,8 +163,8 @@ export const archivePurgeRunBodySchema = z
     }
   });
 
-/** GET /api/internal/archive-purge/jobs/:jobRunId */
-export const archivePurgeJobParamsSchema = z.object({
+/** GET /api/internal/cleanup/jobs/:jobRunId */
+export const cleanupJobParamsSchema = z.object({
   jobRunId: z.string().regex(uuidRegex, 'jobRunId must be a UUID'),
 });
 

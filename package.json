@@ -29,7 +29,7 @@
     "test:note-templates": "node tests/note-templates.test.js",
     "test:note-templates-complete": "node tests/note-templates-complete.test.js",
     "test:note-template-section-orders": "node tests/note-template-section-orders.test.js",
-    "test:archive-purge": "node tests/archive-purge.test.js",
+    "test:cleanup": "node tests/cleanup.test.js",
     "migrate:apply-psql": "node sql/scripts/apply-psql-migration.mjs"
   },
   "dependencies": {

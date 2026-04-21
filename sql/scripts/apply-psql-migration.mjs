@@ -3,8 +3,8 @@
  * Apply a SQL file with psql using a DB URL from .env.local.
  *
  * URL resolution (see src/utils/supabasePostgresUrl.js):
- * - SUPABASE_DB_DIRECT_URL, DATABASE_URL, or SUPABASE_DB_URL (full postgresql://…), or
- * - SUPABASE_DB_HOST + SUPABASE_DB_PASSWORD (+ optional port/user/db/sslmode).
+ * - SUPABASE_DB_DIRECT_URL, DATABASE_URL, or SUPABASE_DB_URL (full postgresql://…; transaction pooler URI OK), or
+ * - SUPABASE_DB_HOST + SUPABASE_DB_PASSWORD (+ optional port/user/db/sslmode; pooler: user postgres.<ref>, port 6543).
  */
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -27,8 +27,8 @@ if (!dbUrl) {
   console.error(
     'Missing database URL. Set one of:\n' +
       '  SUPABASE_DB_DIRECT_URL / DATABASE_URL / SUPABASE_DB_URL (postgresql://…), or\n' +
-      '  SUPABASE_DB_HOST + SUPABASE_DB_PASSWORD and optional SUPABASE_DB_PORT (default 5432),\n' +
-      '  SUPABASE_DB_USER (default postgres), SUPABASE_DB_NAME (default postgres), SUPABASE_DB_SSLMODE (default require).'
+      '  SUPABASE_DB_HOST + SUPABASE_DB_PASSWORD and optional SUPABASE_DB_PORT (5432 direct, 6543 transaction pooler),\n' +
+      '  SUPABASE_DB_USER (default postgres; use postgres.<project_ref> for pooler), SUPABASE_DB_NAME, SUPABASE_DB_SSLMODE.'
   );
   process.exit(1);
 }

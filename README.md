@@ -96,15 +96,20 @@ Create a `.env.local` file with:
 SUPABASE_URL=
 SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
-# Direct Postgres (optional): same database as Supabase REST, for `npm run migrate:apply-psql` and future `pg` use on `archive`.
-# Either set SUPABASE_DB_DIRECT_URL (or DATABASE_URL) to a full postgresql://… URI, or set SUPABASE_DB_HOST + SUPABASE_DB_PASSWORD
-# plus optional SUPABASE_DB_PORT (default 5432), SUPABASE_DB_USER (postgres), SUPABASE_DB_NAME (postgres), SUPABASE_DB_SSLMODE (require).
-# SUPABASE_DB_DIRECT_URL=postgresql://postgres:…@…pooler.supabase.com:5432/postgres?sslmode=require
+# Postgres URI for `pg` (archive / encounter jobs) and `npm run migrate:apply-psql` — same DB as Supabase REST.
+# On IPv4-only networks use Dashboard → Database → "Use IPv4 connection (Shared Pooler)" → Transaction pooler URI:
+#   postgresql://postgres.<project_ref>:PASSWORD@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require
+# (Paste that into SUPABASE_DB_DIRECT_URL; the name is legacy — pooler URIs are valid here.)
+# Alternatively: SUPABASE_DB_HOST + SUPABASE_DB_PASSWORD + SUPABASE_DB_USER=postgres.<project_ref> + SUPABASE_DB_PORT=6543 for pooler.
+# Optional TLS for Node `pg` (encounter archive / archive schema): Supabase hosts (*.supabase.co, pooler.supabase.com)
+# default to relaxed cert verify; set SUPABASE_DB_SSL_REJECT_UNAUTHORIZED=true for strict verify.
+# After changing DB URL or SSL env, restart Fastify (or call closeSupabasePostgresPool if you wire hot reload).
+# SUPABASE_DB_DIRECT_URL=
 # SUPABASE_DB_HOST=
 # SUPABASE_DB_PASSWORD=
-# Optional: Bearer secret for POST /api/internal/archive-purge/run and GET .../archive-purge/jobs/:jobRunId (cron / polling)
+# Optional: Bearer secret for POST /api/internal/cleanup/run and GET .../cleanup/jobs/:jobRunId (cron / polling)
 INTERNAL_CLEANUP_SECRET=
-# Required for archive-purge task storage_archive (S3 bucket name for PutObject)
+# Required for cleanup task storage_archive (S3 bucket name for PutObject)
 AWS_ARCHIVE_S3_BUCKET=
 # Encounter archive (JSONL + recording under archive/encounter-bundles/{user_id}/{queue_id}/) uses the same bucket.
 GOOGLE_CLOUD_PROJECT_ID=
@@ -121,12 +126,12 @@ AWS_COMPREHEND_SECRET_ACCESS_KEY=
 OPENAI_API_KEY=
 ```
 
-### Internal archive-purge (cron / ops)
+### Internal cleanup (cron / ops)
 
 Header: `Authorization: Bearer INTERNAL_CLEANUP_SECRET`.
 
-- **POST** `/api/internal/archive-purge/run` — Body `tasks`: `storage_manifest`, `storage_archive`, and/or `encounter_archive`. Optional `maxObjectsPerRun`, `maxEnqueue`, `maxProcessPerJob`. Encounter sync: `{ "tasks": ["encounter_archive"] }`. Async + polling: `{ "tasks": ["encounter_archive"], "async": true }` returns **202** with `jobRunId` and `pollPath`.
-- **GET** `/api/internal/archive-purge/jobs/:jobRunId` — Poll `job.status` until `success` or `failed`.
+- **POST** `/api/internal/cleanup/run` — Body `tasks`: `storage_manifest`, `storage_archive`, `encounter_archive`, `unattached_storage`, and/or `unattached_note_template_sections` (sections with no `noteTemplateSectionOrders`, `updated_at` or `created_at` older than 7 days). Optional `maxObjectsPerRun`, `maxEnqueue`, `maxProcessPerJob`, `maxDeletesPerRunUnattachedStorage` (only `unattached_storage`), `maxDeletesPerRunUnattachedNoteTemplateSections` (only `unattached_note_template_sections`). Encounter sync: `{ "tasks": ["encounter_archive"] }`. Async + polling: `{ "tasks": ["encounter_archive"], "async": true }` returns **202** with `jobRunId` and `pollPath` (canonical poll URL under `/api/internal/cleanup/jobs/…`).
+- **GET** `/api/internal/cleanup/jobs/:jobRunId` — Poll `job.status` until `success` or `failed`.
 
 Apply `sql/migrations` for `archive` (including `enqueue_patient_encounter_archive_candidates`) before using `encounter_archive`.
 

@@ -3,7 +3,7 @@
  * list audio-files objects older than cutoff (Storage list metadata only — no object download),
  * upsert eligible paths into archive.storage_objects. Does not archive to S3 or delete Storage.
  *
- * `archive.*` reads/writes use direct Postgres (`SUPABASE_DB_DIRECT_URL` or equivalent).
+ * `archive.*` reads/writes use Postgres via `pg` (`SUPABASE_DB_DIRECT_URL` or equivalent; pooler URI OK).
  */
 import { querySupabasePostgres } from './supabasePostgresPool.js';
 import {

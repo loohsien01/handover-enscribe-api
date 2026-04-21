@@ -164,12 +164,12 @@ Optional: a small **`manifest.json`** beside them listing keys, etag, and `recor
 
 **How to run**
 
-* `POST /api/internal/archive-purge/run` with `{"tasks":["storage_manifest","storage_archive"]}` (manifest first).
+* `POST /api/internal/cleanup/run` with `{"tasks":["storage_manifest","storage_archive"]}` (manifest first).
 
 ### Encounter bundle archive/purge
 
 * [x] Migration: **`archive.patient_encounter_archive_queue`** — enum, indexes, **`archived_at`** immutability trigger (`sql/migrations/20260419120000_archive_patient_encounter_archive_queue_enum_indexes_immutable.sql`).
-* [x] Task(s): API `POST /api/internal/archive-purge/run` with `tasks: ["encounter_archive"]` (sync) or `async: true` + poll `GET /api/internal/archive-purge/jobs/:jobRunId` — enqueue RPC + worker in `src/utils/encounterArchivePurge.js` (apply RPC migration `20260419140000_…`).
+* [x] Task(s): API `POST /api/internal/cleanup/run` with `tasks: ["encounter_archive"]` (sync) or `async: true` + poll `GET /api/internal/cleanup/jobs/:jobRunId` — enqueue RPC + worker in `src/utils/encounterArchivePurge.js` (apply RPC migration `20260419140000_…`).
 * [x] S3 keys under **`archive/encounter-bundles/{user_id}/{bundle_id}/…`** (see `encounterArchivePurge.js`).
 * [x] Jobs cleanup by **`recording_file_path`** (+ `user_id`); jobs excluded from **`last_touched_at`** in SQL enqueue function.
 

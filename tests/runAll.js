@@ -18,7 +18,7 @@ import { runNoteTemplateTests } from './note-templates.test.js';
 import { runAwsTests } from './aws.test.js';
 import { runPromptLlmTests } from './prompt-llm.test.js';
 // Last suite when enabled (runs after Recordings). Uncomment import + block below to include in `npm test`.
-// import { runArchivePurgeTests } from './archive-purge.test.js';
+// import { runCleanupTests } from './cleanup.test.js';
 
 /**
  * Run all test suites
@@ -271,14 +271,14 @@ async function runAllTests() {
     results.push({ suite: 'Recordings', status: 'failed', error: error.message });
   }
 
-  // Internal archive-purge — keep last. Excluded from full run for now; use `npm run test:archive-purge`.
+  // Internal cleanup — keep last. Excluded from full run for now; use `npm run test:cleanup`.
   // try {
   //   console.log('\n' + '-'.repeat(70));
-  //   console.log('TEST SUITE 11: INTERNAL ARCHIVE-PURGE API');
+  //   console.log('TEST SUITE 11: INTERNAL CLEANUP API');
   //   console.log('-'.repeat(70) + '\n');
-  //   const icResult = await runArchivePurgeTests();
+  //   const icResult = await runCleanupTests();
   //   results.push({
-  //     suite: 'Internal archive-purge',
+  //     suite: 'Internal cleanup',
   //     status: 'completed',
   //     tests: icResult?.total || 0,
   //     passed: icResult?.passed || 0,
@@ -286,8 +286,8 @@ async function runAllTests() {
   //     passRate: icResult?.passRate || '0%',
   //   });
   // } catch (error) {
-  //   console.error('❌ Internal archive-purge tests failed:', error.message);
-  //   results.push({ suite: 'Internal archive-purge', status: 'failed', error: error.message });
+  //   console.error('❌ Internal cleanup tests failed:', error.message);
+  //   results.push({ suite: 'Internal cleanup', status: 'failed', error: error.message });
   // }
 
   // Generate consolidated report

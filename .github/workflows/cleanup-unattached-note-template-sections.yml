@@ -1,18 +1,18 @@
-# Scheduled storage retention (manifest + archive to S3) — POST API on EC2.
-# Configure repository secrets: API_BASE_URL, INTERNAL_CLEANUP_SECRET.
-# The API host must have AWS_ARCHIVE_S3_BUCKET (and AWS creds / IAM) so storage_archive succeeds.
-name: Internal cleanup (storage retention)
+# Unattached note template sections — POST /api/internal/cleanup/run (Tu / Th / Su UTC).
+# Secrets: API_BASE_URL, INTERNAL_CLEANUP_SECRET (same as other internal cleanup workflows).
+name: Cleanup unattached note template sections
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 8 * * *' # daily 08:00 UTC
+    # Sunday, Tuesday, Thursday 08:00 UTC
+    - cron: '0 8 * * 0,2,4'
 
 jobs:
-  cleanup:
+  unattached-sections:
     runs-on: ubuntu-latest
     steps:
-      - name: POST internal cleanup (storage_manifest + storage_archive)
+      - name: POST unattached_note_template_sections
         env:
           API_BASE_URL: ${{ secrets.API_BASE_URL }}
           INTERNAL_CLEANUP_SECRET: ${{ secrets.INTERNAL_CLEANUP_SECRET }}
@@ -26,13 +26,13 @@ jobs:
           url="${base}/api/internal/cleanup/run"
           for attempt in 1 2 3; do
             echo "Attempt ${attempt} → ${url}"
-            code=$(curl -sS -o /tmp/cleanup_body.json -w "%{http_code}" \
+            code=$(curl -sS -o /tmp/unattached_note_template_sections_body.json -w "%{http_code}" \
               -X POST "$url" \
               -H "Authorization: Bearer ${INTERNAL_CLEANUP_SECRET}" \
               -H "Content-Type: application/json" \
-              -d '{"tasks":["storage_manifest","storage_archive"]}')
+              -d '{"tasks":["unattached_note_template_sections"]}')
             echo "HTTP ${code}"
-            cat /tmp/cleanup_body.json || true
+            cat /tmp/unattached_note_template_sections_body.json || true
             if [ "$code" = "200" ]; then
               exit 0
             fi
