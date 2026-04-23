@@ -1,7 +1,9 @@
-# Scheduled storage retention (manifest + archive to S3) — POST API on EC2.
-# Configure repository secrets: API_BASE_URL, INTERNAL_CLEANUP_SECRET.
-# The API host must have AWS_ARCHIVE_S3_BUCKET (and AWS creds / IAM) so storage_archive succeeds.
-name: Internal cleanup (storage retention)
+# Daily internal cleanup — POST /api/internal/cleanup/run on the API host.
+# Secrets: API_BASE_URL, INTERNAL_CLEANUP_SECRET.
+# Tasks: encounter_archive (needs Supabase archive migrations + AWS_ARCHIVE_S3_BUCKET on API),
+#   unattached_storage (audio-files), unattached_note_template_sections.
+# Per-run caps at 10 (raise later if throughput is too low).
+name: Internal cleanup (encounter + unattached)
 
 on:
   workflow_dispatch:
@@ -12,7 +14,7 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: POST internal cleanup (storage_manifest + storage_archive)
+      - name: POST internal cleanup (encounter_archive, unattached_storage, unattached_note_template_sections)
         env:
           API_BASE_URL: ${{ secrets.API_BASE_URL }}
           INTERNAL_CLEANUP_SECRET: ${{ secrets.INTERNAL_CLEANUP_SECRET }}
@@ -30,7 +32,7 @@ jobs:
               -X POST "$url" \
               -H "Authorization: Bearer ${INTERNAL_CLEANUP_SECRET}" \
               -H "Content-Type: application/json" \
-              -d '{"tasks":["storage_manifest","storage_archive"]}')
+              -d '{"tasks":["encounter_archive","unattached_storage","unattached_note_template_sections"],"maxEnqueue":10,"maxDeletesPerRunUnattachedStorage":10,"maxDeletesPerRunUnattachedNoteTemplateSections":10}')
             echo "HTTP ${code}"
             cat /tmp/cleanup_body.json || true
             if [ "$code" = "200" ]; then

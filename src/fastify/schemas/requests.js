@@ -110,6 +110,11 @@ export const cleanupRunBodySchema = z
     /** Omit for default cap; null = no client `.limit()` on eligible rows (see cleanup util). */
     maxObjectsPerRun: z.union([z.null(), z.number().int().positive()]).optional(),
     /**
+     * Max Storage-derived candidate paths considered when task `storage_manifest` runs.
+     * Omit = util default (5000).
+     */
+    maxEligibleRowsStorageManifest: z.coerce.number().int().positive().max(5000).optional(),
+    /**
      * When true, only `encounter_archive` is allowed (single task). Returns 202 + jobRunId; poll GET
      * `/api/internal/cleanup/jobs/:jobRunId` until status is success or failed.
      */

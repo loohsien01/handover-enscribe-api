@@ -1,5 +1,6 @@
 # Unattached note template sections — POST /api/internal/cleanup/run (Tu / Th / Su UTC).
 # Secrets: API_BASE_URL, INTERNAL_CLEANUP_SECRET (same as other internal cleanup workflows).
+# maxDeletesPerRunUnattachedNoteTemplateSections: 10 per run (raise later if needed).
 name: Cleanup unattached note template sections
 
 on:
@@ -30,7 +31,7 @@ jobs:
               -X POST "$url" \
               -H "Authorization: Bearer ${INTERNAL_CLEANUP_SECRET}" \
               -H "Content-Type: application/json" \
-              -d '{"tasks":["unattached_note_template_sections"]}')
+              -d '{"tasks":["unattached_note_template_sections"],"maxDeletesPerRunUnattachedNoteTemplateSections":10}')
             echo "HTTP ${code}"
             cat /tmp/unattached_note_template_sections_body.json || true
             if [ "$code" = "200" ]; then

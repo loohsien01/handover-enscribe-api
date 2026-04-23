@@ -53,6 +53,7 @@ jobs:
         env:
           AWS_ACTIONS_ACCESS_KEY_ID: ${{ secrets.AWS_ACTIONS_ACCESS_KEY_ID }}
           AWS_ACTIONS_SECRET_ACCESS_KEY: ${{ secrets.AWS_ACTIONS_SECRET_ACCESS_KEY }}
+          AWS_ARCHIVE_S3_BUCKET: ${{ secrets.AWS_ARCHIVE_S3_BUCKET }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
           AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
@@ -70,6 +71,7 @@ jobs:
           GCP_ZONE: ${{ secrets.GCP_ZONE }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_API_URL: ${{ secrets.GEMINI_API_URL }}
+          INTERNAL_CLEANUP_SECRET: ${{ secrets.INTERNAL_CLEANUP_SECRET }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_URL: ${{ secrets.OPENAI_API_URL }}
           REFRESH_COOKIE_DOMAIN: ${{ secrets.REFRESH_COOKIE_DOMAIN }}
@@ -82,12 +84,19 @@ jobs:
           RSA_PRIVATE_KEY: ${{ secrets.RSA_PRIVATE_KEY }}
           RSA_PUBLIC_KEY: ${{ secrets.RSA_PUBLIC_KEY }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_DB_DIRECT_URL: ${{ secrets.SUPABASE_DB_DIRECT_URL }}
+          SUPABASE_DB_HOST: ${{ secrets.SUPABASE_DB_HOST }}
+          SUPABASE_DB_NAME: ${{ secrets.SUPABASE_DB_NAME }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_DB_PORT: ${{ secrets.SUPABASE_DB_PORT }}
+          SUPABASE_DB_USER: ${{ secrets.SUPABASE_DB_USER }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         run: |
           REQUIRED_SECRETS=(
             "AWS_ACTIONS_ACCESS_KEY_ID"
             "AWS_ACTIONS_SECRET_ACCESS_KEY"
+            "AWS_ARCHIVE_S3_BUCKET"
             "AWS_REGION"
             "AZURE_OPENAI_API_VERSION"
             "AZURE_OPENAI_DEPLOYMENT"
@@ -105,6 +114,7 @@ jobs:
             "GCP_ZONE"
             "GEMINI_API_KEY"
             "GEMINI_API_URL"
+            "INTERNAL_CLEANUP_SECRET"
             "OPENAI_API_KEY"
             "OPENAI_API_URL"
             "REFRESH_COOKIE_SAMESITE"
@@ -116,6 +126,12 @@ jobs:
             "RSA_PRIVATE_KEY"
             "RSA_PUBLIC_KEY"
             "SUPABASE_ANON_KEY"
+            "SUPABASE_DB_DIRECT_URL"
+            "SUPABASE_DB_HOST"
+            "SUPABASE_DB_NAME"
+            "SUPABASE_DB_PASSWORD"
+            "SUPABASE_DB_PORT"
+            "SUPABASE_DB_USER"
             "SUPABASE_SERVICE_ROLE_KEY"
             "SUPABASE_URL"
           )
@@ -183,41 +199,47 @@ jobs:
           ENV_START=$(date +%s)
           echo "Setting up environment variables..."
           cat > .env.local << 'ENVEOF'
-          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
-          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          INTERNAL_CLEANUP_SECRET=${{ secrets.INTERNAL_CLEANUP_SECRET }}
-          FASTIFY_HOST=0.0.0.0
-          FASTIFY_PORT=${{ secrets.FASTIFY_PORT }}
-          NODE_ENV=production
+          AWS_ARCHIVE_S3_BUCKET=${{ secrets.AWS_ARCHIVE_S3_BUCKET }}
+          AWS_REGION=${{ secrets.AWS_REGION }}
           AZURE_OPENAI_API_VERSION=${{ secrets.AZURE_OPENAI_API_VERSION }}
           AZURE_OPENAI_DEPLOYMENT=${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
           AZURE_OPENAI_ENDPOINT=${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_KEY=${{ secrets.AZURE_OPENAI_KEY }}
-          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_URL=${{ secrets.OPENAI_API_URL }}
+          CLOUD_RUN_TRANSCRIBE_URL=${{ secrets.CLOUD_RUN_TRANSCRIBE_URL }}
+          CPU_THRESHOLD=${{ secrets.CPU_THRESHOLD }}
+          DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}
+          FASTIFY_HOST=0.0.0.0
+          FASTIFY_PORT=${{ secrets.FASTIFY_PORT }}
           GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
           GCP_SERVICE_ACCOUNT_KEY=${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
-          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-          GEMINI_API_URL=${{ secrets.GEMINI_API_URL }}
-          GCP_ZONE=${{ secrets.GCP_ZONE }}
-          DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}
           GCP_VM_INSTANCE_NAME=${{ secrets.GCP_VM_INSTANCE_NAME }}
           GCP_VM_RATE_LIMIT_MAX_CALLS=${{ secrets.GCP_VM_RATE_LIMIT_MAX_CALLS }}
           GCP_VM_RATE_LIMIT_WINDOW_SEC=${{ secrets.GCP_VM_RATE_LIMIT_WINDOW_SEC }}
-          CLOUD_RUN_TRANSCRIBE_URL=${{ secrets.CLOUD_RUN_TRANSCRIBE_URL }}
-          DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}
-          AWS_REGION=${{ secrets.AWS_REGION }}
-          RSA_PRIVATE_KEY=${{ secrets.RSA_PRIVATE_KEY }}
-          RSA_PUBLIC_KEY=${{ secrets.RSA_PUBLIC_KEY }}
-          REFRESH_TOKEN_AES_KEY_HEX=${{ secrets.REFRESH_TOKEN_AES_KEY_HEX }}
-          REFRESH_TOKEN_SIGNING_KEY_HEX=${{ secrets.REFRESH_TOKEN_SIGNING_KEY_HEX }}
+          GCP_ZONE=${{ secrets.GCP_ZONE }}
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_URL=${{ secrets.GEMINI_API_URL }}
+          INTERNAL_CLEANUP_SECRET=${{ secrets.INTERNAL_CLEANUP_SECRET }}
+          NODE_ENV=production
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_URL=${{ secrets.OPENAI_API_URL }}
           REFRESH_COOKIE_DOMAIN=${{ secrets.REFRESH_COOKIE_DOMAIN }}
           REFRESH_COOKIE_SAMESITE=${{ secrets.REFRESH_COOKIE_SAMESITE }}
           REFRESH_COOKIE_SECURE=${{ secrets.REFRESH_COOKIE_SECURE }}
           REFRESH_INACTIVITY_LIMIT_SECONDS=${{ secrets.REFRESH_INACTIVITY_LIMIT_SECONDS }}
           REFRESH_MAX_AGE_SECONDS=${{ secrets.REFRESH_MAX_AGE_SECONDS }}
-          CPU_THRESHOLD=${{ secrets.CPU_THRESHOLD }}
+          REFRESH_TOKEN_AES_KEY_HEX=${{ secrets.REFRESH_TOKEN_AES_KEY_HEX }}
+          REFRESH_TOKEN_SIGNING_KEY_HEX=${{ secrets.REFRESH_TOKEN_SIGNING_KEY_HEX }}
+          RSA_PRIVATE_KEY=${{ secrets.RSA_PRIVATE_KEY }}
+          RSA_PUBLIC_KEY=${{ secrets.RSA_PUBLIC_KEY }}
+          SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_DB_DIRECT_URL=${{ secrets.SUPABASE_DB_DIRECT_URL }}
+          SUPABASE_DB_HOST=${{ secrets.SUPABASE_DB_HOST }}
+          SUPABASE_DB_NAME=${{ secrets.SUPABASE_DB_NAME }}
+          SUPABASE_DB_PASSWORD=${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_DB_PORT=${{ secrets.SUPABASE_DB_PORT }}
+          SUPABASE_DB_USER=${{ secrets.SUPABASE_DB_USER }}
+          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           ENVEOF
           ENV_END=$(date +%s)
           echo "✓ Environment variables set in $((ENV_END - ENV_START))s"

@@ -48,8 +48,13 @@ export async function postCleanupRun(request, reply) {
     processConcurrency,
     maxDeletesPerRunUnattachedStorage,
     maxDeletesPerRunUnattachedNoteTemplateSections,
+    maxEligibleRowsStorageManifest,
   } = parsed.data;
   const tasks = [...new Set(rawTasks)];
+  const manifestOpts =
+    maxEligibleRowsStorageManifest !== undefined
+      ? { maxEligibleRows: maxEligibleRowsStorageManifest }
+      : {};
   const purgeOpts =
     maxObjectsPerRun !== undefined ? { maxObjectsPerRun } : {};
   const encounterOpts = {
@@ -106,7 +111,7 @@ export async function postCleanupRun(request, reply) {
   for (const task of tasks) {
     if (task === 'storage_manifest') {
       try {
-        const out = await runArchiveStorageManifestSync(supabase);
+        const out = await runArchiveStorageManifestSync(supabase, manifestOpts);
         results.storage_manifest = { status: 'ok', ...out };
       } catch (err) {
         anyError = true;
