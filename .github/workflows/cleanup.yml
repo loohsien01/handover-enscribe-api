@@ -1,5 +1,5 @@
 # Daily internal cleanup — POST /api/internal/cleanup/run on the API host.
-# Secrets: API_BASE_URL, INTERNAL_CLEANUP_SECRET.
+# Config: API_BASE_URL (Actions variable or env), INTERNAL_CLEANUP_SECRET (Actions secret).
 # Tasks: encounter_archive (needs Supabase archive migrations + AWS_ARCHIVE_S3_BUCKET on API),
 #   unattached_storage (audio-files), unattached_note_template_sections.
 # Per-run caps at 10 (raise later if throughput is too low).
@@ -16,12 +16,14 @@ jobs:
     steps:
       - name: POST internal cleanup (encounter_archive, unattached_storage, unattached_note_template_sections)
         env:
-          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+          # Prefer a non-secret Actions variable. If you don't want to create one, you can
+          # replace this with a literal URL (e.g. https://api.example.com).
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
           INTERNAL_CLEANUP_SECRET: ${{ secrets.INTERNAL_CLEANUP_SECRET }}
         run: |
           set -euo pipefail
           if [ -z "${API_BASE_URL:-}" ] || [ -z "${INTERNAL_CLEANUP_SECRET:-}" ]; then
-            echo "Missing secrets: set API_BASE_URL and INTERNAL_CLEANUP_SECRET on this repository."
+            echo "Missing configuration: set Actions variable API_BASE_URL and secret INTERNAL_CLEANUP_SECRET on this repository."
             exit 1
           fi
           base="${API_BASE_URL%/}"
