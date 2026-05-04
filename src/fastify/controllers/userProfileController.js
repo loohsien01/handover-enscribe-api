@@ -1,5 +1,6 @@
 import { getSupabaseClient } from '../../utils/supabase.js';
 import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
+import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
 
 const userProfileTable = 'userProfiles';
 
@@ -174,6 +175,13 @@ export async function createOrUpdateUserProfile(request, reply) {
     });
     if (!result.ok) {
       return reply.status(result.status).send(result.payload);
+    }
+    if (result.created) {
+      try {
+        await ensurePersonalOrganization(userId, { name: username });
+      } catch (orgErr) {
+        console.error('[userProfile] ensurePersonalOrganization:', orgErr);
+      }
     }
     return reply.status(result.created ? 201 : 200).send(result.data);
   } catch (err) {

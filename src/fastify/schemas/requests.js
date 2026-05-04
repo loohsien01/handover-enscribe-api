@@ -632,6 +632,17 @@ export const authResendRequestSchema = z.object({
     .optional(),
 });
 
+/**
+ * POST request for auth forgot-password action
+ * Endpoint: POST /api/auth
+ * Action: forgot-password
+ */
+export const authForgotPasswordRequestSchema = z.object({
+  action: z.literal('forgot-password'),
+  email: z.string().email('Invalid email format').min(1, 'Email is required'),
+  redirectTo: z.string().url('redirectTo must be a valid URL').optional(),
+});
+
 // ============================================================================
 // Notes Schemas
 // ============================================================================

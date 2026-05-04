@@ -3,10 +3,19 @@ import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
 import crypto from 'crypto';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import { upsertUserProfileForUser } from './userProfileController.js';
+import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
 
 // Refresh token storage settings
 const REFRESH_MAX_AGE_SECONDS = Number(process.env.REFRESH_MAX_AGE_SECONDS || 3 * 24 * 3600);
 const refreshTokensTable = 'refreshTokens';
+
+/** App route for Supabase recovery (must be allowlisted in Supabase + match your SPA). */
+const PASSWORD_RESET_REDIRECT_PATH = '/auth/reset-password';
+
+function defaultPasswordResetRedirectTo() {
+  const base = process.env.FRONTEND_URL || process.env.APP_BASE_URL || 'http://localhost:3000';
+  return `${String(base).replace(/\/$/, '')}${PASSWORD_RESET_REDIRECT_PATH}`;
+}
 
 // Cookie options configurable via env
 const REFRESH_COOKIE_SAMESITE = (process.env.REFRESH_COOKIE_SAMESITE || 'lax').toLowerCase();
@@ -87,6 +96,15 @@ export async function signUp(email, password, opts = {}) {
       const prof = await upsertUserProfileForUser(admin, data.user.id, opts.userProfile);
       if (prof.ok) {
         signupProfileExtras.userProfile = prof.data;
+        if (prof.created) {
+          try {
+            await ensurePersonalOrganization(data.user.id, {
+              name: opts.userProfile.username,
+            });
+          } catch (orgErr) {
+            console.error('[signUp] ensurePersonalOrganization:', orgErr);
+          }
+        }
       } else {
         console.error('[signUp] Optional profile save failed:', prof.payload);
         signupProfileExtras.profileError = prof.payload;
@@ -342,6 +360,40 @@ export async function resendConfirmationEmail(email, emailRedirectTo = null) {
     return { success: true, error: null };
   } catch (err) {
     console.error('[resendConfirmationEmail] Error:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Send Supabase password recovery email.
+ * Security: caller should return a generic 200 regardless of whether the user exists.
+ * Uses optional client `redirectTo`, else `{FRONTEND_URL|APP_BASE_URL|localhost}${PASSWORD_RESET_REDIRECT_PATH}`.
+ * @param {string} email
+ * @param {{ redirectTo?: string }} [opts]
+ */
+export async function forgotPassword(email, opts = {}) {
+  try {
+    if (!email) return { success: false, error: 'Email is required' };
+    if (!email.includes('@')) return { success: false, error: `Invalid email format: ${email}` };
+
+    const explicit = typeof opts?.redirectTo === 'string' ? opts.redirectTo.trim() : '';
+    const redirectTo = explicit || defaultPasswordResetRedirectTo();
+
+    const supabase = getSupabaseClient();
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo,
+    });
+
+    if (error) {
+      // Do NOT leak to client; route returns generic success message.
+      console.error('[forgotPassword] Supabase error:', error.message);
+      return { success: false, error: error.message };
+    }
+
+    return { success: true, error: null };
+  } catch (err) {
+    console.error('[forgotPassword] Error:', err);
     return { success: false, error: err.message };
   }
 }

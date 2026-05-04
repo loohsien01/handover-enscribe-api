@@ -7,11 +7,12 @@ import {
   authSignOutRequestSchema,
   authCheckValidityRequestSchema,
   authResendRequestSchema,
+  authForgotPasswordRequestSchema,
 } from '../schemas/requests.js';
 
 /**
  * Fastify plugin for authentication routes
- * Handles: sign-up, sign-in, sign-out, check-validity, resend
+ * Handles: sign-up, sign-in, sign-out, check-validity, resend, forgot-password
  */
 async function authRoutes(fastify, opts) {
   // Extract auth header from request
@@ -43,14 +44,15 @@ async function authRoutes(fastify, opts) {
 
   /**
    * POST /auth
-   * Handles: sign-up, sign-in, sign-out, check-validity, resend
+   * Handles: sign-up, sign-in, sign-out, check-validity, resend, forgot-password
    * 
    * Body:
    * {
-   *   action: 'sign-up' | 'sign-in' | 'sign-out' | 'check-validity' | 'resend',
+   *   action: 'sign-up' | 'sign-in' | 'sign-out' | 'check-validity' | 'resend' | 'forgot-password',
    *   email?: string,
    *   password?: string,
    *   emailRedirectTo?: string,
+   *   redirectTo?: string, // optional for 'forgot-password'; default is FRONTEND_URL + /auth/reset-password
    *   userProfile?: { username: string, specialty: string }  // optional; same shape as POST /user-profile body
    * }
    */
@@ -306,9 +308,29 @@ async function authRoutes(fastify, opts) {
           });
         }
 
+        case 'forgot-password': {
+          validation = authForgotPasswordRequestSchema.safeParse(request.body);
+          if (!validation.success) {
+            return reply.status(400).send({ error: serializeZodError(validation.error) });
+          }
+
+          const result = await authController.forgotPassword(validation.data.email, {
+            redirectTo: validation.data.redirectTo,
+          });
+
+          // Security: never reveal whether an email exists. Always 200 on "handled".
+          if (!result.success) {
+            console.error('[forgot-password] Error:', result.error);
+          }
+
+          return reply.status(200).send({
+            message: 'If an account exists for that email, a password reset link has been sent.',
+          });
+        }
+
         default: {
           return reply.status(400).send({
-            error: `Unknown action: ${action}. Must be one of: sign-up, sign-in, sign-out, check-validity, resend`,
+            error: `Unknown action: ${action}. Must be one of: sign-up, sign-in, sign-out, check-validity, resend, forgot-password`,
           });
         }
       }
