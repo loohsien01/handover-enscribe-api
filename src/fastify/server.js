@@ -30,6 +30,7 @@ import { registerNoteTemplatesCompleteRoutes } from './routes/noteTemplatesCompl
 import { registerNoteTemplateSectionOrdersRoutes } from './routes/noteTemplateSectionOrders.js';
 import { registerCleanupRoutes } from './routes/cleanup.js';
 import userProfileRoutes from './routes/userProfile.js';
+import billingRoutes from './routes/billing.js';
 /**
  * Create and configure Fastify application
  * Handles all Fastify backend routes and middleware
@@ -159,6 +160,7 @@ async function createFastifyApp(options = {}) {
     await registerNoteTemplatesCompleteRoutes(apiScope);
     await registerNoteTemplateSectionOrdersRoutes(apiScope);
     await apiScope.register(userProfileRoutes);
+    await apiScope.register(billingRoutes);
     await registerMaskPhiRoutes(apiScope);
     await registerTranscribeRoutes(apiScope);
     await registerCleanupRoutes(apiScope);

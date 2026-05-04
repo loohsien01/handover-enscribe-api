@@ -394,6 +394,25 @@ export const userProfileResponseSchema = z.object({
 });
 
 // ============================================================================
+// Billing
+// ============================================================================
+
+export const billingOrganizationStatusSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  type: z.string(),
+  plan_key: z.string(),
+  subscription_status: z.string(),
+  current_period_end: z.string().datetime().nullable(),
+  cancel_at_period_end: z.boolean(),
+  stripe_customer_id: z.string().nullable(),
+});
+
+export const billingStatusResponseSchema = z.object({
+  organization: billingOrganizationStatusSchema,
+});
+
+// ============================================================================
 // User Security Configs Schemas
 // ============================================================================
 
