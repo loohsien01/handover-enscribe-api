@@ -31,6 +31,7 @@ import { registerNoteTemplateSectionOrdersRoutes } from './routes/noteTemplateSe
 import { registerCleanupRoutes } from './routes/cleanup.js';
 import userProfileRoutes from './routes/userProfile.js';
 import billingRoutes from './routes/billing.js';
+import stripeWebhookRoutes from './routes/stripeWebhook.js';
 /**
  * Create and configure Fastify application
  * Handles all Fastify backend routes and middleware
@@ -148,6 +149,17 @@ async function createFastifyApp(options = {}) {
 
   // Register route plugins
   await fastify.register(async (apiScope) => {
+    await apiScope.register(async function stripeWebhookScope(stripeScope) {
+      stripeScope.addContentTypeParser(
+        'application/json',
+        { parseAs: 'buffer' },
+        (_req, body, done) => {
+          done(null, body);
+        }
+      );
+      await stripeScope.register(stripeWebhookRoutes);
+    });
+
     await apiScope.register(authRoutes);
     await apiScope.register(dotPhrasesRoutes);
     await apiScope.register(patientEncountersRoutes);

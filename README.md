@@ -68,6 +68,8 @@ npm start
 
 ## API Endpoints
 
+Stripe subscriptions and organization billing (Fastify): see [docs/STRIPE_BILLING.md](docs/STRIPE_BILLING.md).
+
 Key API routes available in `/src/pages/api/`:
 
 - `auth.js` - Authentication endpoints

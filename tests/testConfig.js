@@ -52,6 +52,23 @@ export function hasTestAccounts() {
 }
 
 /**
+ * Confirmed user with profile (and ideally a personal org after billing migration).
+ * Used by `tests/billing-org.test.js` — avoids sign-up / email verification.
+ */
+export function getBillingTestAccount() {
+  const email = process.env.TEST_BILLING_ACCOUNT_EMAIL;
+  const password = process.env.TEST_BILLING_ACCOUNT_PASSWORD;
+  if (!email || !password) {
+    return null;
+  }
+  return { email, password, description: 'Billing + organization API tests' };
+}
+
+export function hasBillingTestAccount() {
+  return !!getBillingTestAccount();
+}
+
+/**
  * Get API base URL for tests
  * Can be overridden with API_BASE_URL environment variable
  * Default: http://localhost:3001 (local testing)

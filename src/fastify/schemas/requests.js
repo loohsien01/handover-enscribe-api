@@ -707,3 +707,14 @@ export const userProfilePatchRequestSchema = z.object({
   (data) => data.username !== undefined || data.specialty !== undefined,
   { message: 'At least one of username or specialty must be provided' }
 );
+
+// ============================================================================
+// Billing (Stripe Checkout + portal)
+// ============================================================================
+
+/**
+ * POST /api/billing/checkout-session
+ */
+export const billingCheckoutRequestSchema = z.object({
+  planKey: z.literal('pro'),
+});

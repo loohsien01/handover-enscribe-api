@@ -1,8 +1,14 @@
 import fp from 'fastify-plugin';
-import { getBillingStatus } from '../controllers/billingController.js';
+import { serializeZodError } from '../../utils/serializeZodError.js';
+import { billingCheckoutRequestSchema } from '../schemas/requests.js';
+import {
+  getBillingStatus,
+  createCheckoutSession,
+  createPortalSession,
+} from '../controllers/billingController.js';
 
 /**
- * Authenticated billing read routes.
+ * Authenticated billing routes (Stripe Checkout + Customer Portal).
  * Prefix: /api (registered from server).
  */
 export default fp(async function billingRoutes(fastify) {
@@ -13,6 +19,29 @@ export default fp(async function billingRoutes(fastify) {
       return getBillingStatus(request, reply);
     } catch (err) {
       fastify.log.error('GET /billing/status:', err);
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  fastify.post('/billing/checkout-session', preAuth, async (request, reply) => {
+    try {
+      const parseResult = billingCheckoutRequestSchema.safeParse(request.body);
+      if (!parseResult.success) {
+        return reply.status(400).send({ error: serializeZodError(parseResult.error) });
+      }
+      request.body = parseResult.data;
+      return createCheckoutSession(request, reply);
+    } catch (err) {
+      fastify.log.error('POST /billing/checkout-session:', err);
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  fastify.post('/billing/portal-session', preAuth, async (request, reply) => {
+    try {
+      return createPortalSession(request, reply);
+    } catch (err) {
+      fastify.log.error('POST /billing/portal-session:', err);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });

@@ -8,6 +8,7 @@ import { getApiBaseUrl } from './testConfig.js';
 import { runAuthTests } from './auth.test.js';
 import { runDotPhrasesTests } from './dot-phrases.test.js';
 import { runUserProfileTests } from './user-profile.test.js';
+import { runBillingOrgTests } from './billing-org.test.js';
 import { runPatientEncounterTests } from './patient-encounters.test.js';
 import { runRecordingsTests } from './recordings.test.js';
 import { runTranscriptsTests } from './transcripts.test.js';
@@ -98,6 +99,24 @@ async function runAllTests() {
   } catch (error) {
     console.error('❌ User Profile tests failed:', error.message);
     results.push({ suite: 'User Profile', status: 'failed', error: error.message });
+  }
+
+  try {
+    console.log('\n' + '-'.repeat(70));
+    console.log('TEST SUITE 2.6: BILLING + ORGANIZATION API');
+    console.log('-'.repeat(70) + '\n');
+    const billingResult = await runBillingOrgTests();
+    results.push({
+      suite: 'Billing + Organization',
+      status: 'completed',
+      tests: billingResult?.total || 0,
+      passed: billingResult?.passed || 0,
+      failed: billingResult?.failed || 0,
+      passRate: billingResult?.passRate || '0%',
+    });
+  } catch (error) {
+    console.error('❌ Billing + Organization tests failed:', error.message);
+    results.push({ suite: 'Billing + Organization', status: 'failed', error: error.message });
   }
 
   // Run Patient Encounters Tests
