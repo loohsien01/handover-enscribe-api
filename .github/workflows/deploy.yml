@@ -62,7 +62,9 @@ jobs:
           CLOUD_RUN_TRANSCRIBE_URL: ${{ secrets.CLOUD_RUN_TRANSCRIBE_URL }}
           CPU_THRESHOLD: ${{ secrets.CPU_THRESHOLD }}
           DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
           FASTIFY_PORT: ${{ secrets.FASTIFY_PORT }}
+          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
           GCP_VM_INSTANCE_NAME: ${{ secrets.GCP_VM_INSTANCE_NAME }}
@@ -83,6 +85,9 @@ jobs:
           REFRESH_TOKEN_SIGNING_KEY_HEX: ${{ secrets.REFRESH_TOKEN_SIGNING_KEY_HEX }}
           RSA_PRIVATE_KEY: ${{ secrets.RSA_PRIVATE_KEY }}
           RSA_PUBLIC_KEY: ${{ secrets.RSA_PUBLIC_KEY }}
+          STRIPE_PRICE_PRO_MONTHLY: ${{ secrets.STRIPE_PRICE_PRO_MONTHLY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           SUPABASE_DB_DIRECT_URL: ${{ secrets.SUPABASE_DB_DIRECT_URL }}
           SUPABASE_DB_HOST: ${{ secrets.SUPABASE_DB_HOST }}
@@ -208,8 +213,10 @@ jobs:
           CLOUD_RUN_TRANSCRIBE_URL=${{ secrets.CLOUD_RUN_TRANSCRIBE_URL }}
           CPU_THRESHOLD=${{ secrets.CPU_THRESHOLD }}
           DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}
+          APP_BASE_URL=${{ secrets.APP_BASE_URL }}
           FASTIFY_HOST=0.0.0.0
           FASTIFY_PORT=${{ secrets.FASTIFY_PORT }}
+          FRONTEND_URL=${{ secrets.FRONTEND_URL }}
           GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
           GCP_SERVICE_ACCOUNT_KEY=${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
           GCP_VM_INSTANCE_NAME=${{ secrets.GCP_VM_INSTANCE_NAME }}
@@ -231,6 +238,9 @@ jobs:
           REFRESH_TOKEN_SIGNING_KEY_HEX=${{ secrets.REFRESH_TOKEN_SIGNING_KEY_HEX }}
           RSA_PRIVATE_KEY=${{ secrets.RSA_PRIVATE_KEY }}
           RSA_PUBLIC_KEY=${{ secrets.RSA_PUBLIC_KEY }}
+          STRIPE_PRICE_PRO_MONTHLY=${{ secrets.STRIPE_PRICE_PRO_MONTHLY }}
+          STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }}
           SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
           SUPABASE_DB_DIRECT_URL=${{ secrets.SUPABASE_DB_DIRECT_URL }}
           SUPABASE_DB_HOST=${{ secrets.SUPABASE_DB_HOST }}
