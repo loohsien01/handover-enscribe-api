@@ -28,6 +28,7 @@ export class UnitTestRunner {
     this.startTime = Date.now();
     this.saveResults = options.saveResults ?? true;
     this.resultsDir = options.resultsDir || path.resolve(__dirname, '../test-results');
+    this.maxStringLength = options.maxStringLength ?? 100;
   }
 
   /**
@@ -42,9 +43,11 @@ export class UnitTestRunner {
     const { category = null, output = null } = options;
     let error = null;
     let passed = false;
+    let computedOutput = null;
 
     try {
-      testFn();
+      const result = testFn();
+      if (result !== undefined) computedOutput = result;
       passed = true;
     } catch (err) {
       error = err.message || String(err);
@@ -55,17 +58,23 @@ export class UnitTestRunner {
       category,
       passed,
       error,
-      output: output ? this.truncateOutput(output) : null,
+      output: output
+        ? this.truncateOutput(output)
+        : computedOutput !== null
+          ? this.truncateOutput(computedOutput)
+          : null,
       timestamp: Date.now(),
     });
   }
 
   /**
-   * Truncate long text fields in output (>100 chars)
+   * Truncate long text fields in output (>maxStringLength chars)
    */
   truncateOutput(obj) {
     if (typeof obj === 'string') {
-      return obj.length > 100 ? obj.substring(0, 100) + '...' : obj;
+      return obj.length > this.maxStringLength
+        ? obj.substring(0, this.maxStringLength) + '...'
+        : obj;
     }
     if (obj === null || obj === undefined) return obj;
     if (typeof obj !== 'object') return obj;
@@ -77,7 +86,10 @@ export class UnitTestRunner {
     const truncated = {};
     for (const [key, value] of Object.entries(obj)) {
       if (typeof value === 'string') {
-        truncated[key] = value.length > 100 ? value.substring(0, 100) + '...' : value;
+        truncated[key] =
+          value.length > this.maxStringLength
+            ? value.substring(0, this.maxStringLength) + '...'
+            : value;
       } else if (typeof value === 'object' && value !== null) {
         truncated[key] = this.truncateOutput(value);
       } else {

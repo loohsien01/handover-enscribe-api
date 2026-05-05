@@ -361,7 +361,26 @@ export async function deleteTranscript(request, reply) {
 // ============================================================================
 
 /**
+ * Strips ASR/prosody punctuation (comma, period, semicolon) for matching only.
+ * @param {string} text - Original transcript (casing preserved in source offsets)
+ * @returns {{ searchText: string, stripMap: Array<[number, number]> }} searchText is lowercased;
+ *   stripMap[i] is [origStart, origEnd) for the character at searchText[i]
+ */
+function stripProsodyPunctuationForSearch(text) {
+  const stripMap = [];
+  let searchText = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === ',' || c === '.' || c === ';') continue;
+    searchText += c.toLowerCase();
+    stripMap.push([i, i + 1]);
+  }
+  return { searchText, stripMap };
+}
+
+/**
  * Expands dot phrases in text using Aho-Corasick algorithm for efficient multi-pattern matching.
+ * Matching runs on text with comma, period, and semicolon removed (ASR prosody), then spans are mapped back to the original string.
  * Creates multiple versions of each trigger: original, no punctuation (except apostrophes), and expanded contractions.
  * Prioritizes longer matches over shorter ones.
  * 
@@ -389,9 +408,14 @@ export function expandDotPhrases(text, dotPhrases) {
 
   // Build Aho-Corasick automaton
   const automaton = buildAhoCorasick(allTriggers);
-  
-  // Find all matches using Aho-Corasick
-  const matches = findAllMatches(text.toLowerCase(), automaton, triggerMap);
+
+  const { searchText, stripMap } = stripProsodyPunctuationForSearch(text);
+  const rawMatches = findAllMatches(searchText, automaton, triggerMap);
+  const matches = rawMatches.map((m) => ({
+    ...m,
+    start: stripMap[m.start][0],
+    end: stripMap[m.end - 1][1],
+  }));
 
   if (matches.length === 0) {
     console.log('[expandDotPhrases] No dot phrase triggers found in text');
@@ -415,14 +439,14 @@ export function expandDotPhrases(text, dotPhrases) {
     const cleanExpansion = match.expansion;
     expandedText = expandedText.substring(0, match.start) + cleanExpansion + expandedText.substring(match.end);
     
-    // Notated expansion for LLM - only add prefix for explicit dot phrase triggers, not auto-expansions
+    // Notated expansion for LLM - only tag explicit dot phrase triggers, not auto-expansions
     let notatedExpansion;
     if (match.isAutoExpanded) {
       // Auto-expansions (from contractions/abbreviations) don't get the prefix
       notatedExpansion = cleanExpansion;
     } else {
-      // Explicit dot phrase triggers get the prefix
-      notatedExpansion = `{(This is the doctor's autofilled dotPhrase, place extra emphasis on this section of the transcript.) ${match.expansion}(end dotPhrase)}`;
+      // Explicit dot phrase triggers get a symmetric, easy-to-parse tag wrapper
+      notatedExpansion = `<dotphrase source="doctor" instruction="emphasize">${match.expansion}</dotphrase>`;
     }
     llmNotatedText = llmNotatedText.substring(0, match.start) + notatedExpansion + llmNotatedText.substring(match.end);
     
