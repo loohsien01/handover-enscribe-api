@@ -34,7 +34,7 @@ jobs:
               -X POST "$url" \
               -H "Authorization: Bearer ${INTERNAL_CLEANUP_SECRET}" \
               -H "Content-Type: application/json" \
-              -d '{"tasks":["encounter_archive","unattached_storage","unattached_note_template_sections"],"maxEnqueue":10,"maxDeletesPerRunUnattachedStorage":10,"maxDeletesPerRunUnattachedNoteTemplateSections":10}')
+              -d '{"tasks":["encounter_archive","unattached_storage","unattached_note_template_sections"],"maxEnqueue":100,"maxDeletesPerRunUnattachedStorage":100,"maxDeletesPerRunUnattachedNoteTemplateSections":100}')
             echo "HTTP ${code}"
             cat /tmp/cleanup_body.json || true
             if [ "$code" = "200" ]; then

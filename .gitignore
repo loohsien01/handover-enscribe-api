@@ -48,3 +48,6 @@ next-env.d.ts
 API_COMMIT_MESSAGE.txt
 
 /sql/migrations
+
+# Supabase audio-files inventory outputs (large / path metadata); keep sql/scripts/reports/audio-files-inventory/.gitkeep
+/sql/scripts/reports/

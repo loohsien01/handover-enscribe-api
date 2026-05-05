@@ -448,30 +448,31 @@ export async function getCompletePatientEncounter(request, reply) {
           .createSignedUrl(normalizedPath, expirySeconds);
         
         if (signedError) {
-          console.error('Signed URL error:', signedError);
-          return reply.status(500).send({ error: 'Failed to create signed URL: ' + signedError.message });
-        }
-        
-        const now = new Date();
-        const expiresAt = new Date(now.getTime() + expirySeconds * 1000).toISOString();
-        
-        recording.recording_file_signed_url = signedUrlData.signedUrl;
-        recording.recording_file_signed_url_expiry = expiresAt;
-        
-        // Update recording row in database
-        const { data: updateData, error: updateError } = await supabase
-          .from('recordings')
-          .update({
-            recording_file_signed_url: recording.recording_file_signed_url,
-            recording_file_signed_url_expiry: recording.recording_file_signed_url_expiry
-          })
-          .eq('id', recording.id)
-          .select()
-          .single();
-        
-        if (updateError) {
-          console.error('Error updating recording\'s file signed URL:', updateError.message);
-          return reply.status(500).send({ error: updateError.message });
+          // Missing object, wrong path, or storage outage — still return the bundle without a signed URL.
+          console.warn('Signed URL error (continuing without signed URL):', signedError?.message || signedError);
+          recording.recording_file_signed_url = null;
+          recording.recording_file_signed_url_expiry = null;
+        } else {
+          const now = new Date();
+          const expiresAt = new Date(now.getTime() + expirySeconds * 1000).toISOString();
+          
+          recording.recording_file_signed_url = signedUrlData.signedUrl;
+          recording.recording_file_signed_url_expiry = expiresAt;
+          
+          // Best-effort cache in DB; response still succeeds if this update fails.
+          const { error: updateError } = await supabase
+            .from('recordings')
+            .update({
+              recording_file_signed_url: recording.recording_file_signed_url,
+              recording_file_signed_url_expiry: recording.recording_file_signed_url_expiry
+            })
+            .eq('id', recording.id)
+            .select()
+            .single();
+          
+          if (updateError) {
+            console.warn('Error updating recording signed URL (continuing):', updateError?.message || updateError);
+          }
         }
       }
     }
