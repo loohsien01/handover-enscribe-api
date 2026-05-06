@@ -10,7 +10,7 @@ const REFRESH_MAX_AGE_SECONDS = Number(process.env.REFRESH_MAX_AGE_SECONDS || 3 
 const refreshTokensTable = 'refreshTokens';
 
 /** App route for Supabase recovery (must be allowlisted in Supabase + match your SPA). */
-const PASSWORD_RESET_REDIRECT_PATH = '/auth/reset-password';
+const PASSWORD_RESET_REDIRECT_PATH = '/reset-password';
 
 function defaultPasswordResetRedirectTo() {
   const base = process.env.FRONTEND_URL || process.env.APP_BASE_URL || 'http://localhost:3000';

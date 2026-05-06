@@ -135,7 +135,7 @@ archive/encounter-bundles/{user_id}/{bundle_id}/db-rows.jsonl
 
 * **`bundle_id`** = the queue row’s UUID (`id`).
 * **`recording{ext}`** — preserve original extension when possible (`.webm`, `.m4a`, …) for easier forensic replay.
-* **`db-rows.jsonl`** — one JSON object per line for tables in the bundle (encounter, notes, recordings, transcripts; optional job rows), as written at archive time.
+* **`db-rows.jsonl`** — one JSON object per line for tables in the bundle (encounter, notes, recordings, transcripts; optional job rows), as written at archive time. For **`table: "transcripts"`**, each **`row`** includes **`encryption_version: 2`** (user master key ciphertext in **`encrypted_transcript_text`** / **`iv`**; v1 was encounter-scoped keys). Older bundles may omit **`encryption_version`**.
 
 Optional: a small **`manifest.json`** beside them listing keys, etag, and `recording_file_path` for rebuild scripts.
 

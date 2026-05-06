@@ -120,7 +120,7 @@ async function updateJobStatus(jobId, status, updates = {}) {
 
 /**
  * Reuse transcript_text from another job for the same user + recording when that job
- * already reached generating or complete (transcript persisted).
+ * already reached generating or complete (transcript persisted; LLM-notated dotphrase form when available).
  *
  * @param {*} supabase - supabaseAdmin client
  * @param {string} userId
@@ -315,7 +315,7 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
         throw new Error('Transcription result missing expected properties');
       }
 
-      transcript = transcriptResult.expandedTranscript;
+      transcript = transcriptResult.llmNotatedTranscript ?? transcriptResult.expandedTranscript;
       maskedTranscript = transcriptResult.maskResult.masked_transcript;
       tokens = transcriptResult.maskResult.tokens;
     }

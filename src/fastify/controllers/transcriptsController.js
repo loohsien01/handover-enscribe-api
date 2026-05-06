@@ -4,77 +4,68 @@
  */
 import { getSupabaseClient } from '../../utils/supabase.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
+import * as userSecurityConfigController from './userSecurityConfigController.js';
 import { transcriptUpdateRequestSchema } from '../schemas/requests.js';
 
 const transcriptTable = 'transcripts';
 const BATCH_SIZE = 10; // Decrypt transcripts in batches of 10
 
 /**
- * Helper: Encrypts transcript_text for a transcript object
- * Fetches the encrypted AES key via recording_id -> patientEncounter
- * Returns { success, error, transcript }
+ * Removes ciphertext fields before sending a transcript to the client (same idea as notes).
  */
-async function encryptTranscriptText(supabase, transcript) {
-  // Get encrypted_aes_key by joining recording -> patientEncounter
-  const { data, error } = await supabase
-    .from('recordings')
-    .select(`
-      id,
-      patientEncounter:patientEncounter_id (
-        encrypted_aes_key
-      )
-    `)
-    .eq('id', transcript.recording_id)
-    .single();
-
-  if (error || !data || !data.patientEncounter?.encrypted_aes_key) {
-    return {
-      success: false,
-      error: 'Could not find recording or patient encounter for provided recording_id',
-      transcript: null,
-    };
-  }
-
-  const encryptedAESKey = data.patientEncounter.encrypted_aes_key;
-
-  // Encrypt transcript_text
-  const encryptionFieldResult = encryptionUtils.encryptField(
-    transcript,
-    'transcript_text',
-    encryptedAESKey
-  );
-
-  if (!encryptionFieldResult.success) {
-    console.error('Failed to encrypt transcript_text:', encryptionFieldResult.error);
-    return {
-      success: false,
-      error: 'Failed to encrypt transcript_text',
-      transcript: null,
-    };
-  }
-
-  return { success: true, error: null, transcript };
+function stripTranscriptEncryptionFields(transcript) {
+  if (!transcript) return;
+  delete transcript.encrypted_transcript_text;
+  delete transcript.iv;
 }
 
 /**
- * Helper: Decrypts transcript_text for a transcript object
- * Expects transcript to have recording.patientEncounter.encrypted_aes_key joined
- * Returns { success, error, transcript }
+ * Encrypts transcript_text using the user's master key (userSecurityConfigs), same AES path as notes.
+ * Mutates transcript: sets encrypted_transcript_text, iv; removes transcript_text.
+ * Returns { success, error }
  */
-async function decryptTranscriptText(transcript) {
-  const encryptedAESKey = transcript.recording?.patientEncounter?.encrypted_aes_key || null;
-  const decryptFieldResult = await encryptionUtils.decryptField(
-    transcript,
-    'transcript_text',
-    encryptedAESKey
-  );
+function encryptTranscriptText(transcript, masterKey) {
+  const notePayload = { text: transcript.transcript_text ?? '' };
+  const enc = encryptionUtils.encryptNoteText(notePayload, masterKey);
 
-  if (!decryptFieldResult.success) {
-    console.error('Failed to decrypt transcript:', transcript.id, '. Error:', decryptFieldResult.error);
-    return { success: false, error: decryptFieldResult.error };
+  if (!enc.success) {
+    console.error('Failed to encrypt transcript_text:', enc.error);
+    return {
+      success: false,
+      error: 'Failed to encrypt transcript_text',
+    };
   }
 
-  // Clean up joined fields
+  if (enc.value != null && enc.iv != null) {
+    transcript.encrypted_transcript_text = enc.value;
+    transcript.iv = enc.iv;
+  } else {
+    transcript.encrypted_transcript_text = null;
+    transcript.iv = null;
+  }
+  delete transcript.transcript_text;
+  return { success: true, error: null };
+}
+
+/**
+ * Decrypts transcript body with the user's master key (decryptNoteText + encrypted_transcript_text / iv).
+ * Mutates transcript: sets transcript_text; strips ciphertext fields.
+ * Returns { success, error, transcript }
+ */
+function decryptTranscriptText(transcript, masterKey) {
+  const shim = {
+    encrypted_text: transcript.encrypted_transcript_text,
+    text_iv: transcript.iv,
+  };
+  const decryptResult = encryptionUtils.decryptNoteText(shim, masterKey);
+
+  if (!decryptResult.success) {
+    console.error('Failed to decrypt transcript:', transcript.id, '. Error:', decryptResult.error);
+    return { success: false, error: decryptResult.error };
+  }
+
+  transcript.transcript_text = decryptResult.text ?? null;
+  stripTranscriptEncryptionFields(transcript);
   delete transcript.recording;
   return { success: true, transcript };
 }
@@ -92,36 +83,29 @@ export async function getAllTranscripts(request, reply) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    // Fetch all transcripts with recording + patientEncounter joins
+    const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, user.id);
+    if (!keyResult.success) {
+      return reply.status(500).send({ error: keyResult.error });
+    }
+    const masterKey = keyResult.masterKey;
+
     const { data, error } = await supabase
       .from(transcriptTable)
-      .select(`
-        *,
-        recording:recording_id (
-          id,
-          patientEncounter:patientEncounter_id (
-            encrypted_aes_key
-          )
-        )
-      `)
+      .select('*')
       .order('updated_at', { ascending: false });
 
     if (error) {
       return reply.status(500).send({ error: error.message });
     }
 
-    // Decrypt transcript_text in batches for performance
     for (let i = 0; i < data.length; i += BATCH_SIZE) {
       const batch = data.slice(i, i + BATCH_SIZE);
-      const decryptPromises = batch.map((transcript) => decryptTranscriptText(transcript));
-      const results = await Promise.all(decryptPromises);
-
-      for (let j = 0; j < results.length; j++) {
-        if (!results[j].success) {
-          return reply.status(400).send({ error: results[j].error });
+      for (let j = 0; j < batch.length; j++) {
+        const result = decryptTranscriptText(batch[j], masterKey);
+        if (!result.success) {
+          return reply.status(400).send({ error: result.error });
         }
-        // Update original array with decrypted data
-        batch[j] = results[j].transcript;
+        batch[j] = result.transcript;
       }
     }
 
@@ -151,18 +135,15 @@ export async function getTranscript(request, reply) {
       return reply.status(400).send({ error: 'Valid transcript ID is required' });
     }
 
-    // Fetch single transcript with joins
+    const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, user.id);
+    if (!keyResult.success) {
+      return reply.status(500).send({ error: keyResult.error });
+    }
+    const masterKey = keyResult.masterKey;
+
     const { data, error } = await supabase
       .from(transcriptTable)
-      .select(`
-        *,
-        recording:recording_id (
-          id,
-          patientEncounter:patientEncounter_id (
-            encrypted_aes_key
-          )
-        )
-      `)
+      .select('*')
       .eq('id', id)
       .single();
 
@@ -173,8 +154,7 @@ export async function getTranscript(request, reply) {
       return reply.status(500).send({ error: error.message });
     }
 
-    // Decrypt transcript_text
-    const decryptionResult = await decryptTranscriptText(data);
+    const decryptionResult = decryptTranscriptText(data, masterKey);
     if (!decryptionResult.success) {
       return reply.status(400).send({ error: decryptionResult.error });
     }
@@ -206,8 +186,12 @@ export async function createTranscript(request, reply) {
       return reply.status(400).send({ error: 'transcript_text and recording_id are required' });
     }
 
-    // Encrypt transcript_text
-    const encryptionResult = await encryptTranscriptText(supabase, transcript);
+    const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, user.id);
+    if (!keyResult.success) {
+      return reply.status(500).send({ error: keyResult.error });
+    }
+
+    const encryptionResult = encryptTranscriptText(transcript, keyResult.masterKey);
     if (!encryptionResult.success) {
       return reply.status(400).send({ error: encryptionResult.error });
     }
@@ -261,7 +245,11 @@ export async function updateTranscript(request, reply) {
       return reply.status(400).send({ error: 'transcript_text is required for update' });
     }
 
-    // Fetch existing transcript to get recording_id
+    const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, user.id);
+    if (!keyResult.success) {
+      return reply.status(500).send({ error: keyResult.error });
+    }
+
     const { data: existingTranscript, error: fetchError } = await supabase
       .from(transcriptTable)
       .select('recording_id')
@@ -281,8 +269,7 @@ export async function updateTranscript(request, reply) {
       recording_id: existingTranscript.recording_id,
     };
 
-    // Encrypt transcript_text
-    const encryptionResult = await encryptTranscriptText(supabase, transcriptToEncrypt);
+    const encryptionResult = encryptTranscriptText(transcriptToEncrypt, keyResult.masterKey);
     if (!encryptionResult.success) {
       return reply.status(400).send({ error: encryptionResult.error });
     }

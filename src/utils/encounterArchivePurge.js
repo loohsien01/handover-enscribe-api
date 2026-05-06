@@ -32,6 +32,12 @@ export const PATIENT_ENCOUNTER_ARCHIVE_QUEUE_STATUSES = Object.freeze([
   'failed',
 ]);
 
+/**
+ * Written on each `transcripts` line in `db-rows.jsonl` (alongside DB columns).
+ * v1 = encounter-scoped AES (legacy); v2 = user master key (`userSecurityConfigs`), same as notes.
+ */
+const TRANSCRIPT_ARCHIVE_ENCRYPTION_VERSION = 2;
+
 const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * Max queue rows inserted per job run (single RPC call). null = unlimited (all eligible
@@ -912,7 +918,10 @@ async function buildBundleJsonlLines(supabase, encounterId, userId) {
   if (recIds.length > 0) {
     const { data: tr, error: tErr } = await supabase.from('transcripts').select('*').in('recording_id', recIds);
     if (tErr) throw new Error(tErr.message);
-    for (const t of tr || []) lines.push(JSON.stringify({ table: 'transcripts', row: t }));
+    for (const t of tr || []) {
+      const row = { ...t, encryption_version: TRANSCRIPT_ARCHIVE_ENCRYPTION_VERSION };
+      lines.push(JSON.stringify({ table: 'transcripts', row }));
+    }
   }
 
   if (recs && recs[0]?.recording_file_path) {

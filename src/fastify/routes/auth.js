@@ -52,7 +52,7 @@ async function authRoutes(fastify, opts) {
    *   email?: string,
    *   password?: string,
    *   emailRedirectTo?: string,
-   *   redirectTo?: string, // optional for 'forgot-password'; default is FRONTEND_URL + /auth/reset-password
+   *   redirectTo?: string, // optional for 'forgot-password'; default is FRONTEND_URL + /reset-password
    *   userProfile?: { username: string, specialty: string }  // optional; same shape as POST /user-profile body
    * }
    */

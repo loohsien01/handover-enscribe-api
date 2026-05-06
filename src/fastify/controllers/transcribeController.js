@@ -22,7 +22,7 @@ import { getSupabaseClient } from '../../utils/supabase.js';
  * @param {string} opts.recording_file_signed_url - signed url to recording
  * @param {Object} opts.req - Fastify request object for authentication
  * @param {boolean} [opts.enableDotPhraseExpansion=true] - whether to perform dot phrase expansion
- * @returns {Promise<{ cloudRunData: any, dotPhrasesData: any, expandedTranscript: string, maskResult: any }>}
+ * @returns {Promise<{ cloudRunData: any, dotPhrasesData: any, expandedTranscript: string, llmNotatedTranscript: string, maskResult: any }>}
  */
 export async function transcribe_expand_mask({ 
   recording_file_signed_url, 
@@ -144,12 +144,12 @@ export async function transcribe_expand_mask({
     // attempt to normalize to JSON body if available
     if (typeof maskResult.json === 'function') {
       const body = await maskResult.json();
-      return { cloudRunData, dotPhrasesData, expandedTranscript, maskResult: body };
+      return { cloudRunData, dotPhrasesData, expandedTranscript, llmNotatedTranscript: llmNotatedText, maskResult: body };
     }
   }
 
   // Return structured result for callers
-  return { cloudRunData, dotPhrasesData, expandedTranscript, maskResult };
+  return { cloudRunData, dotPhrasesData, expandedTranscript, llmNotatedTranscript: llmNotatedText, maskResult };
 }
 
 /**
