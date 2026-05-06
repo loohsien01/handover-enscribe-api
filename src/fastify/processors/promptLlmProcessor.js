@@ -484,6 +484,7 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
             patientEncounter: { name: persistEncounterName },
             recording: { recording_file_path },
             note_text: soapNoteText,
+            transcript: { transcript_text: transcript },
           }
         );
         await updateJobStatus(jobId, 'complete', {

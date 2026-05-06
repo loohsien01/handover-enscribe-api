@@ -14,7 +14,8 @@ export const patientEncounterCreateRequestSchema = z.object({
 /**
  * POST request for creating a complete patient encounter bundle
  * Endpoint: POST /api/patient-encounters/complete
- * Requires patientEncounter, recording, and note_text objects
+ * Requires patientEncounter, recording, and note_text objects.
+ * Optional transcript (user master key encryption, same as /api/transcripts).
  */
 export const patientEncounterCompleteCreateRequestSchema = z.object({
   patientEncounter: z.object({
@@ -24,6 +25,11 @@ export const patientEncounterCompleteCreateRequestSchema = z.object({
     recording_file_path: z.string().min(1, 'Recording file path is required'),
   }),
   note_text: z.string().min(0, 'Note text can be empty'),
+  transcript: z
+    .object({
+      transcript_text: z.string(),
+    })
+    .optional(),
 });
 
 /**

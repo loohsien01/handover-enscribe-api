@@ -21,6 +21,16 @@ const UUID_RE =
 /** Valid task for auth/body-only requests (avoid storage_* integration side effects). */
 const SAMPLE_TASK = 'encounter_archive';
 
+/**
+ * Per-run limits on POST /api/internal/cleanup/run bodies in this suite.
+ * Keep in sync with `.github/workflows/cleanup.yml` where applicable.
+ */
+const CLEANUP_RUN_TEST_LIMITS = {
+  maxEnqueue: 100,
+  maxDeletesPerRunUnattachedStorage: 100,
+  maxDeletesPerRunUnattachedNoteTemplateSections: 10,
+};
+
 /** Skip test 11 by default (set to `false` in this file to enable integration run). */
 const skipTest11 = false;
 
@@ -76,7 +86,7 @@ async function cleanupFetch(method, endpoint, body = null, headers = {}) {
  * @param {string} internalBearerSecret
  * @param {number} [maxWaitMs]
  */
-async function pollCleanupJobUntilTerminal(jobRunId, internalBearerSecret, maxWaitMs = 600000) {
+async function pollCleanupJobUntilTerminal(jobRunId, internalBearerSecret, maxWaitMs = 1200000) {
   const startTime = Date.now();
   let pollInterval = 10000;
   const backoffCap = 45000;
@@ -404,7 +414,7 @@ export async function runCleanupTests() {
       {
         tasks: ['encounter_archive'],
         async: true,
-        maxEnqueue: 10,
+        maxEnqueue: CLEANUP_RUN_TEST_LIMITS.maxEnqueue,
         maxProcessPerJob: null,
       },
       { Authorization: `Bearer ${secret}` }
@@ -477,7 +487,7 @@ export async function runCleanupTests() {
       requestBody: {
         tasks: ['encounter_archive'],
         async: true,
-        maxEnqueue: 10,
+        maxEnqueue: CLEANUP_RUN_TEST_LIMITS.maxEnqueue,
         maxProcessPerJob: null,
       },
       customMessage: test5Message,
@@ -575,9 +585,9 @@ export async function runCleanupTests() {
       testNumber: 12,
       method: 'POST',
       endpoint: '/api/internal/cleanup/run',
-      body: { 
+      body: {
         tasks: ['unattached_storage'],
-        maxDeletesPerRunUnattachedStorage: 10,
+        maxDeletesPerRunUnattachedStorage: CLEANUP_RUN_TEST_LIMITS.maxDeletesPerRunUnattachedStorage,
       },
       headers: { Authorization: `Bearer ${secret}` },
       expectedStatus: 200,
@@ -628,7 +638,8 @@ export async function runCleanupTests() {
     endpoint: '/api/internal/cleanup/run',
     body: {
       tasks: ['unattached_note_template_sections'],
-      maxDeletesPerRunUnattachedNoteTemplateSections: 10,
+      maxDeletesPerRunUnattachedNoteTemplateSections:
+        CLEANUP_RUN_TEST_LIMITS.maxDeletesPerRunUnattachedNoteTemplateSections,
     },
     headers: { Authorization: `Bearer ${secret}` },
     expectedStatus: 200,

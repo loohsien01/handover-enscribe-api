@@ -6,11 +6,16 @@
 import { getSupabaseClient } from '../../utils/supabase.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import { getPatientEncounterWithDecryptedKey } from '../../utils/patientEncounterUtils.js';
+import {
+  encryptTranscriptPlaintextWithMasterKey,
+  decryptTranscriptRowWithMasterKey,
+} from '../../utils/transcriptTextCrypto.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 
 const patientEncounterTable = 'patientEncounters';
 const recordingTable = 'recordings';
 const notesTable = 'notes';
+const transcriptTable = 'transcripts';
 
 /**
  * Helper: Validates bigint ID format
@@ -354,6 +359,7 @@ export async function deletePatientEncounter(request, reply) {
  * Retrieves a patient encounter with all linked data:
  * - Patient encounter details
  * - Associated recording
+ * - Transcript for the recording (if present), decrypted with user master key
  * - All notes for the encounter
  * 
  * All encrypted fields are decrypted before returning
@@ -477,6 +483,34 @@ export async function getCompletePatientEncounter(request, reply) {
       }
     }
 
+    let transcript = null;
+    if (recording?.id) {
+      const { data: transcriptData, error: transcriptError } = await supabase
+        .from(transcriptTable)
+        .select('*')
+        .eq('recording_id', recording.id)
+        .maybeSingle();
+
+      if (transcriptError && transcriptError.code !== 'PGRST116') {
+        return reply.status(500).send({ error: transcriptError.message });
+      } else if (transcriptData) {
+        const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, encounterData.user_id);
+        if (keyResult.success) {
+          const dr = decryptTranscriptRowWithMasterKey(transcriptData, keyResult.masterKey);
+          if (!dr.success) {
+            return reply.status(400).send({ error: dr.error });
+          }
+          transcript = dr.transcript;
+        } else {
+          console.error('Failed to get master key for transcript decryption:', keyResult.error);
+          delete transcriptData.encrypted_transcript_text;
+          delete transcriptData.iv;
+          transcriptData.transcript_text = null;
+          transcript = transcriptData;
+        }
+      }
+    }
+
     // Step 2: Fetch notes for encounter
     console.log('Step 2: Fetching notes for encounterId:', encounterId);
     const { data: notesData, error: notesError } = await supabase
@@ -526,6 +560,7 @@ export async function getCompletePatientEncounter(request, reply) {
     return reply.status(200).send({
       patientEncounter: encounterData,
       recording: recording || null,
+      transcript: transcript || null,
       notes: encounterNotes,
     });
   } catch (error) {
@@ -535,13 +570,13 @@ export async function getCompletePatientEncounter(request, reply) {
 }
 
 /**
- * Build { patientEncounter, recording, note } for a note id — same shape as POST /api/patient-encounters/complete.
+ * Build { patientEncounter, recording, note, transcript } for a note id — same shape as POST /api/patient-encounters/complete.
  * Used by GET /api/jobs/prompt-llm/:jobId/encounter-bundle. Caller must use user-scoped Supabase (JWT).
  *
  * @param {*} supabase - Supabase client (user JWT)
  * @param {{ id: string }} user
  * @param {string|number|bigint} noteId
- * @returns {Promise<{ patientEncounter: object, recording: object|null, note: object }>}
+ * @returns {Promise<{ patientEncounter: object, recording: object|null, note: object, transcript: object|null }>}
  */
 export async function getPatientEncounterBundleByNoteId(supabase, user, noteId) {
   if (!user?.id) {
@@ -681,10 +716,43 @@ export async function getPatientEncounterBundleByNoteId(supabase, user, noteId) 
     delete noteOut.text_iv;
   }
 
+  let transcriptOut = null;
+  if (recording?.id) {
+    const { data: transcriptData, error: transcriptError } = await supabase
+      .from(transcriptTable)
+      .select('*')
+      .eq('recording_id', recording.id)
+      .maybeSingle();
+
+    if (transcriptError && transcriptError.code !== 'PGRST116') {
+      const err = new Error(transcriptError.message);
+      err.statusCode = 500;
+      throw err;
+    } else if (transcriptData) {
+      const tKey = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, encounterData.user_id);
+      if (tKey.success) {
+        const dr = decryptTranscriptRowWithMasterKey(transcriptData, tKey.masterKey);
+        if (!dr.success) {
+          const err = new Error(dr.error);
+          err.statusCode = 400;
+          throw err;
+        }
+        transcriptOut = dr.transcript;
+      } else {
+        console.error('Failed to get master key for transcript decryption:', tKey.error);
+        delete transcriptData.encrypted_transcript_text;
+        delete transcriptData.iv;
+        transcriptData.transcript_text = null;
+        transcriptOut = transcriptData;
+      }
+    }
+  }
+
   return {
     patientEncounter: encounterData,
     recording: recording || null,
     note: noteOut,
+    transcript: transcriptOut,
   };
 }
 
@@ -694,8 +762,8 @@ export async function getPatientEncounterBundleByNoteId(supabase, user, noteId) 
  *
  * @param {*} supabase - Supabase client (user JWT)
  * @param {{ id: string }} user
- * @param {{ patientEncounter: { name: string }, recording: { recording_file_path: string }, note_text: string }} body
- * @returns {Promise<{ patientEncounter: object, recording: object, note: object }>}
+ * @param {{ patientEncounter: { name: string }, recording: { recording_file_path: string }, note_text: string, transcript?: { transcript_text: string } }} body
+ * @returns {Promise<{ patientEncounter: object, recording: object, note: object, transcript: object|null }>}
  */
 export async function patientEncounterCompleteBundle(supabase, user, body) {
   if (!user?.id) {
@@ -704,7 +772,7 @@ export async function patientEncounterCompleteBundle(supabase, user, body) {
     throw err;
   }
 
-  const { patientEncounter, recording, note_text } = body;
+  const { patientEncounter, recording, note_text, transcript: transcriptBody } = body;
 
   if (!patientEncounter || !recording || note_text === undefined) {
     const err = new Error('Missing required fields: patientEncounter, recording, note_text');
@@ -737,6 +805,19 @@ export async function patientEncounterCompleteBundle(supabase, user, body) {
     throw err;
   }
 
+  let pTranscriptEnc = null;
+  let pTranscriptIv = null;
+  if (transcriptBody != null) {
+    const tEnc = encryptTranscriptPlaintextWithMasterKey(transcriptBody.transcript_text, masterKey);
+    if (!tEnc.success) {
+      const err = new Error(tEnc.error);
+      err.statusCode = 500;
+      throw err;
+    }
+    pTranscriptEnc = tEnc.encrypted_transcript_text;
+    pTranscriptIv = tEnc.iv;
+  }
+
   const recordingIV = encryptionUtils.generateRandomIVBase64();
 
   console.log('Calling create_patient_encounter_complete SQL function');
@@ -749,6 +830,8 @@ export async function patientEncounterCompleteBundle(supabase, user, body) {
     p_recording_iv: recordingIV,
     p_note_encrypted_text: noteEncryptResult.value,
     p_note_text_iv: noteEncryptResult.iv,
+    p_transcript_encrypted_text: pTranscriptEnc,
+    p_transcript_iv: pTranscriptIv,
   });
 
   if (error) {
@@ -782,6 +865,16 @@ export async function patientEncounterCompleteBundle(supabase, user, body) {
 
   delete data.recording.iv;
 
+  if (data.transcript) {
+    const tr = decryptTranscriptRowWithMasterKey(data.transcript, masterKey);
+    if (!tr.success) {
+      const err = new Error(tr.error);
+      err.statusCode = 400;
+      throw err;
+    }
+    data.transcript = tr.transcript;
+  }
+
   return data;
 }
 
@@ -795,7 +888,8 @@ export async function patientEncounterCompleteBundle(supabase, user, body) {
  * Request body: {
  *   patientEncounter: { name, ... },
  *   recording: { recording_file_path, ... },
- *   note_text: string (simple text note)
+ *   note_text: string (simple text note),
+ *   transcript?: { transcript_text } (optional; encrypted with user master key)
  * }
  */
 export async function completePatientEncounter(request, reply) {

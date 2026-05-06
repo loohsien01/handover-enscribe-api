@@ -516,6 +516,9 @@ async function runPatientEncounterTests() {
             recording_file_path: '/test-recordings/default.wav',
           },
           note_text: 'This is a test note for the complete bundle test. Patient is doing well.',
+          transcript: {
+            transcript_text: 'Complete bundle test transcript line one. Line two.',
+          },
         };
 
         if (!realRecordingPath) {
@@ -533,6 +536,9 @@ async function runPatientEncounterTests() {
               recording_file_path: realRecordingPath,
             },
             note_text: 'This is a test note for the complete bundle test. Patient is doing well.',
+            transcript: {
+              transcript_text: 'Complete bundle test transcript line one. Line two.',
+            },
           };
 
           let completeBundleEncounterId = null;
@@ -546,7 +552,7 @@ async function runPatientEncounterTests() {
               Authorization: `Bearer ${realAccessToken}`,
             },
             expectedStatus: 201,
-            expectedFields: ['patientEncounter', 'recording', 'note'],
+            expectedFields: ['patientEncounter', 'recording', 'note', 'transcript'],
             onSuccess: (data) => {
               // Extract and track the created encounter ID for dependent tests
               if (data.patientEncounter && data.patientEncounter.id) {
@@ -573,6 +579,16 @@ async function runPatientEncounterTests() {
                   console.log(`    ✅ Note encryption fields properly cleaned`);
                 }
               }
+
+              if (!data.transcript) {
+                console.log(`    ⚠️  Warning: POST response missing transcript field`);
+              } else if (
+                data.transcript.transcript_text !== 'Complete bundle test transcript line one. Line two.'
+              ) {
+                console.log(`    ⚠️  Transcript text mismatch after decrypt`);
+              } else {
+                console.log(`    ✅ POST response includes decrypted transcript`);
+              }
             },
           });
 
@@ -586,7 +602,7 @@ async function runPatientEncounterTests() {
                 Authorization: `Bearer ${realAccessToken}`,
               },
               expectedStatus: 200,
-              expectedFields: ['patientEncounter', 'recording', 'notes'],
+              expectedFields: ['patientEncounter', 'recording', 'transcript', 'notes'],
               customValidator: (data) => {
                 // Print full response for debugging
                 console.log(`\n    📋 Full test 19 response:\n${JSON.stringify(data, null, 2)}\n`);
@@ -636,6 +652,19 @@ async function runPatientEncounterTests() {
                 }
 
                 console.log(`    ✅ Found ${data.notes.length} note(s) with decrypted text`);
+
+                if (!data.transcript) {
+                  return { passed: false, message: 'Missing transcript in GET complete bundle' };
+                }
+                if (data.transcript.transcript_text !== 'Complete bundle test transcript line one. Line two.') {
+                  return {
+                    passed: false,
+                    message: `Transcript text mismatch. Expected complete bundle test string, got: "${data.transcript.transcript_text}"`,
+                  };
+                }
+                if (data.transcript.encrypted_transcript_text || data.transcript.iv) {
+                  return { passed: false, message: 'Transcript should not expose ciphertext fields' };
+                }
 
                 // ===== STRICT VALIDATION: Signed URL Generation =====
                 // Validate that the signed URL was generated and refreshed

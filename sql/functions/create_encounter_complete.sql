@@ -17,12 +17,15 @@
  *   p_recording_iv: IV for recording table
  *   p_note_encrypted_text: Note text (encrypted with user master key)
  *   p_note_text_iv: IV for note text encryption
+ *   p_transcript_encrypted_text: Transcript text (encrypted with user master key), or NULL to skip
+ *   p_transcript_iv: IV for transcript encryption, or NULL to skip
  *
  * Returns:
  *   JSON object containing:
  *   - patientEncounter: Complete encounter object
  *   - recording: Complete recording object  
  *   - note: Complete note object
+ *   - transcript: Transcript row JSON, or JSON null if skipped
  *
  * Transaction Behavior:
  *   - All or nothing: if any step fails, entire transaction is rolled back
@@ -34,7 +37,6 @@
  *   - All encryption handled in JavaScript before SQL call
  *   - Note uses user master key encryption (different from encounter encryption)
  */
-DROP FUNCTION IF EXISTS create_patient_encounter_complete(uuid, text, text, text, text, text, text, text);
 CREATE OR REPLACE FUNCTION create_patient_encounter_complete(
   -- Patient Encounter params
   p_user_id UUID,
@@ -48,7 +50,11 @@ CREATE OR REPLACE FUNCTION create_patient_encounter_complete(
 
   -- Note params
   p_note_encrypted_text TEXT,
-  p_note_text_iv TEXT
+  p_note_text_iv TEXT,
+
+  -- Transcript params (optional — both NULL skips insert)
+  p_transcript_encrypted_text TEXT,
+  p_transcript_iv TEXT
 ) RETURNS JSON
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -57,9 +63,11 @@ DECLARE
   v_encounter_id BIGINT;
   v_recording_id BIGINT;
   v_note_id BIGINT;
+  v_transcript_id BIGINT;
   v_encounter JSON;
   v_recording JSON;
   v_note JSON;
+  v_transcript JSON;
 BEGIN
 
   -- 1. Insert patient encounter with encrypted data
@@ -98,6 +106,31 @@ BEGIN
   )
   RETURNING id INTO v_recording_id;
 
+  -- 2b. Optional transcript (user master key ciphertext), linked to recording
+  v_transcript := NULL;
+  IF p_transcript_encrypted_text IS NOT NULL AND p_transcript_iv IS NOT NULL THEN
+    INSERT INTO transcripts (
+      user_id,
+      recording_id,
+      encrypted_transcript_text,
+      iv,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      p_user_id,
+      v_recording_id,
+      p_transcript_encrypted_text,
+      p_transcript_iv,
+      NOW(),
+      NOW()
+    )
+    RETURNING id INTO v_transcript_id;
+
+    SELECT row_to_json(t) INTO v_transcript
+    FROM transcripts t WHERE id = v_transcript_id;
+  END IF;
+
   -- 3. Insert note linked to encounter with user master key encryption
   INSERT INTO notes (
     "patientEncounter_id",
@@ -131,7 +164,8 @@ BEGIN
   RETURN json_build_object(
     'patientEncounter', v_encounter,
     'recording',        v_recording,
-    'note',             v_note
+    'note',             v_note,
+    'transcript',       v_transcript
   );
 
 -- Any error throws and Postgres automatically rolls back the whole transaction

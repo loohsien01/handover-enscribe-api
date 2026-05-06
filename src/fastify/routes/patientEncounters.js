@@ -116,14 +116,14 @@ export async function registerPatientEncountersRoutes(fastify) {
   });
 
   // GET /patient-encounters/complete/:id
-  // Get a complete patient encounter bundle with all linked data (recording, notes)
+  // Get a complete patient encounter bundle with all linked data (recording, transcript, notes)
   fastify.get('/patient-encounters/complete/:id', {
     preHandler: [fastify.authenticate],
     handler: getCompletePatientEncounter,
   });
 
   // POST /patient-encounters/complete
-  // Create a complete patient encounter bundle with recording and notes
+  // Create a complete patient encounter bundle with recording, optional transcript, and note
   fastify.post('/patient-encounters/complete', {
     preHandler: [fastify.authenticate],
     handler: async (request, reply) => {

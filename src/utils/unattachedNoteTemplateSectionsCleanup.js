@@ -4,6 +4,7 @@
  * (updated_at is null and created_at <= cutoff). Same 7-day window as unattached_storage.
  * Persists archive.job_runs for audit (frozen cutoff + bounded result).
  */
+import { loadCleanupExcludedUserIdSet } from './cleanupExcludedUserIds.js';
 import { querySupabasePostgres } from './supabasePostgresPool.js';
 
 const sectionsTable = 'noteTemplateSections';
@@ -70,7 +71,10 @@ export async function runUnattachedNoteTemplateSectionsCleanup(supabase, opts = 
     const failed = [];
     let pagesScanned = 0;
     let candidatesSeen = 0;
+    let skippedCleanupExemptRows = 0;
     let offset = 0;
+
+    const cleanupExcludedUserIds = await loadCleanupExcludedUserIdSet();
 
     /** PostgREST `or`: first branch must not be split as multiple OR operands. */
     const eligibilityOr = `and(updated_at.is.null,created_at.lte.${cutoffIso}),updated_at.lte.${cutoffIso}`;
@@ -96,7 +100,12 @@ export async function runUnattachedNoteTemplateSectionsCleanup(supabase, opts = 
       candidatesSeen += sections.length;
 
       const attached = await loadAttachedSectionIds(supabase, sections.map((s) => s.id));
-      const unattached = sections.filter((s) => !attached.has(String(s.id)));
+      let unattached = sections.filter((s) => !attached.has(String(s.id)));
+      const exemptBefore = unattached.length;
+      unattached = unattached.filter(
+        (s) => s.user_id == null || !cleanupExcludedUserIds.has(String(s.user_id))
+      );
+      skippedCleanupExemptRows += exemptBefore - unattached.length;
       const room = maxDeletesPerRun - deletedIds.length;
       const toDelete = unattached.slice(0, room);
 
@@ -137,6 +146,7 @@ export async function runUnattachedNoteTemplateSectionsCleanup(supabase, opts = 
     const stats = {
       pagesScanned,
       candidatesSeen,
+      skippedCleanupExemptRows,
       deletedCount: deletedIds.length,
       failedCount: failed.length,
       warningCount: warnings.length,

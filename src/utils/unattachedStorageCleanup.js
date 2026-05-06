@@ -4,6 +4,7 @@
  * Persists a row in archive.job_runs (frozen cutoff + result summary) like other internal cleanup tasks.
  */
 import { timingSafeEqual } from 'node:crypto';
+import { loadCleanupExcludedUserIdSet } from './cleanupExcludedUserIds.js';
 import { querySupabasePostgres } from './supabasePostgresPool.js';
 
 export const AUDIO_BUCKET = 'audio-files';
@@ -81,11 +82,19 @@ export async function runUnattachedStorageCleanup(supabase, opts = {}) {
     let skippedNoTimestamp = 0;
     let skippedTooNew = 0;
     let skippedAttached = 0;
+    let skippedCleanupExemptUsers = 0;
+
+    const cleanupExcludedUserIds = await loadCleanupExcludedUserIdSet();
 
     let remaining = maxDeletesPerRun;
 
     for (const userId of userPrefixes) {
       if (remaining <= 0) break;
+
+      if (cleanupExcludedUserIds.has(userId)) {
+        skippedCleanupExemptUsers++;
+        continue;
+      }
 
       const { data: rows, error: recErr } = await supabase
         .from(recordingTableName)
@@ -161,6 +170,7 @@ export async function runUnattachedStorageCleanup(supabase, opts = {}) {
       skippedNoTimestamp,
       skippedTooNew,
       skippedAttached,
+      skippedCleanupExemptUsers,
       mayHaveMore: hitCap,
     };
 

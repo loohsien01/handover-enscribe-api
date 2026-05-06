@@ -4,6 +4,10 @@
  */
 import { getSupabaseClient } from '../../utils/supabase.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
+import {
+  encryptTranscriptPlaintextWithMasterKey,
+  decryptTranscriptRowWithMasterKey,
+} from '../../utils/transcriptTextCrypto.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 import { transcriptUpdateRequestSchema } from '../schemas/requests.js';
 
@@ -11,33 +15,17 @@ const transcriptTable = 'transcripts';
 const BATCH_SIZE = 10; // Decrypt transcripts in batches of 10
 
 /**
- * Removes ciphertext fields before sending a transcript to the client (same idea as notes).
- */
-function stripTranscriptEncryptionFields(transcript) {
-  if (!transcript) return;
-  delete transcript.encrypted_transcript_text;
-  delete transcript.iv;
-}
-
-/**
  * Encrypts transcript_text using the user's master key (userSecurityConfigs), same AES path as notes.
  * Mutates transcript: sets encrypted_transcript_text, iv; removes transcript_text.
  * Returns { success, error }
  */
 function encryptTranscriptText(transcript, masterKey) {
-  const notePayload = { text: transcript.transcript_text ?? '' };
-  const enc = encryptionUtils.encryptNoteText(notePayload, masterKey);
-
+  const enc = encryptTranscriptPlaintextWithMasterKey(transcript.transcript_text, masterKey);
   if (!enc.success) {
-    console.error('Failed to encrypt transcript_text:', enc.error);
-    return {
-      success: false,
-      error: 'Failed to encrypt transcript_text',
-    };
+    return enc;
   }
-
-  if (enc.value != null && enc.iv != null) {
-    transcript.encrypted_transcript_text = enc.value;
+  if (enc.encrypted_transcript_text != null && enc.iv != null) {
+    transcript.encrypted_transcript_text = enc.encrypted_transcript_text;
     transcript.iv = enc.iv;
   } else {
     transcript.encrypted_transcript_text = null;
@@ -53,21 +41,11 @@ function encryptTranscriptText(transcript, masterKey) {
  * Returns { success, error, transcript }
  */
 function decryptTranscriptText(transcript, masterKey) {
-  const shim = {
-    encrypted_text: transcript.encrypted_transcript_text,
-    text_iv: transcript.iv,
-  };
-  const decryptResult = encryptionUtils.decryptNoteText(shim, masterKey);
-
-  if (!decryptResult.success) {
-    console.error('Failed to decrypt transcript:', transcript.id, '. Error:', decryptResult.error);
-    return { success: false, error: decryptResult.error };
+  const result = decryptTranscriptRowWithMasterKey(transcript, masterKey);
+  if (!result.success) {
+    return { success: false, error: result.error };
   }
-
-  transcript.transcript_text = decryptResult.text ?? null;
-  stripTranscriptEncryptionFields(transcript);
-  delete transcript.recording;
-  return { success: true, transcript };
+  return { success: true, transcript: result.transcript };
 }
 
 /**
