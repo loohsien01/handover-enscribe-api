@@ -81,6 +81,43 @@ export function getApiBaseUrl() {
 }
 
 /**
+ * Redis URL from .env.local (same variable the Fastify server uses for Nova sessions).
+ * @returns {string}
+ */
+export function getRedisUrlForTests() {
+  return (process.env.REDIS_URL || '').trim();
+}
+
+/**
+ * Verifies REDIS_URL is set and a Redis server accepts PING (for Nova integration tests).
+ * @returns {Promise<{ ok: true } | { ok: false, message: string }>}
+ */
+export async function checkRedisReachableForTests() {
+  const url = getRedisUrlForTests();
+  if (!url) {
+    return { ok: false, message: 'REDIS_URL is not set in .env.local.' };
+  }
+  try {
+    const { createClient } = await import('redis');
+    const client = createClient({
+      url,
+      socket: { connectTimeout: 8000 },
+    });
+    client.on('error', () => {});
+    await client.connect();
+    const pong = await client.ping();
+    await client.quit();
+    if (pong !== 'PONG') {
+      return { ok: false, message: `Unexpected PING reply: ${String(pong)}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    const msg = err && typeof err.message === 'string' ? err.message : String(err);
+    return { ok: false, message: msg };
+  }
+}
+
+/**
  * Log test account status (safe - only shows email prefix)
  */
 export function logTestAccountStatus() {

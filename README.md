@@ -126,7 +126,13 @@ DEEPGRAM_API_KEY=
 AWS_COMPREHEND_ACCESS_KEY_ID=
 AWS_COMPREHEND_SECRET_ACCESS_KEY=
 OPENAI_API_KEY=
+# Optional: Redis (local: redis://127.0.0.1:6379; prod: rediss://… when TLS). Omit to run without Redis.
+REDIS_URL=
+# Optional: Nova AI Redis session TTL in seconds (default 3600; min 60 max 86400).
+# NOVA_REDIS_SESSION_TTL_SEC=3600
 ```
+
+Nova (Redis hot sessions, Bearer JWT): `POST /api/nova/chat-sessions`, `GET /api/nova/chat-sessions/:chatId`, `PATCH /api/nova/chat-sessions/:chatId` (requires `REDIS_URL`). Integration tests: `npm run test:nova-chat-sessions` (server + Redis + `REDIS_URL` + `TEST_ACCOUNT_*`).
 
 ### Internal cleanup (cron / ops)
 

@@ -7,6 +7,7 @@ import path from 'path';
 import { getApiBaseUrl } from './testConfig.js';
 import { runAuthTests } from './auth.test.js';
 import { runDotPhrasesTests } from './dot-phrases.test.js';
+import { runNovaChatSessionsTests } from './nova-chat-sessions.test.js';
 import { runUserProfileTests } from './user-profile.test.js';
 import { runBillingOrgTests } from './billing-org.test.js';
 import { runPatientEncounterTests } from './patient-encounters.test.js';
@@ -80,6 +81,24 @@ async function runAllTests() {
   } catch (error) {
     console.error('❌ Dot Phrases tests failed:', error.message);
     results.push({ suite: 'Dot Phrases', status: 'failed', error: error.message });
+  }
+
+  try {
+    console.log('\n' + '-'.repeat(70));
+    console.log('TEST SUITE 2.1: NOVA CHAT SESSIONS (REDIS)');
+    console.log('-'.repeat(70) + '\n');
+    const novaResult = await runNovaChatSessionsTests();
+    results.push({
+      suite: 'Nova Chat Sessions',
+      status: 'completed',
+      tests: novaResult?.total || 0,
+      passed: novaResult?.passed || 0,
+      failed: novaResult?.failed || 0,
+      passRate: novaResult?.passRate || '0%',
+    });
+  } catch (error) {
+    console.error('❌ Nova Chat Sessions tests failed:', error.message);
+    results.push({ suite: 'Nova Chat Sessions', status: 'failed', error: error.message });
   }
 
   // Run User Profile Tests

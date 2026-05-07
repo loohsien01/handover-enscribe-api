@@ -28,6 +28,9 @@ tests/fixtures/*
 .DS_Store
 *.pem
 
+# Redis local persistence snapshot (default filename when Redis saves to cwd)
+dump.rdb
+
 # debug
 npm-debug.log*
 yarn-debug.log*
