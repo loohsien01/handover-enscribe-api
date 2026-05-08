@@ -6,6 +6,18 @@ This document defines the architecture for a HIPAA-compliant AI assistant built 
 
 The system is built around a **stateless LLM with stateful application memory layers**.
 
+### Implementation status (this repository)
+
+| Area | Status |
+|------|--------|
+| Redis hot session cache | **Done** — keys `nova:chat:{userId}:{chatId}`, TTL `NOVA_REDIS_SESSION_TTL_SEC`; optional `REDIS_URL` (Nova returns 503 if cache unavailable). |
+| Supabase session + message persistence | **Done** — tables `chat_sessions`, `chat_messages`; summary and message bodies encrypted with the user’s wrapped master key (same pattern as notes); RLS + `organization_id` (personal org via `ensurePersonalOrganization`). |
+| Reload Redis from Supabase | **Done** — GET misses cache: decrypt from Postgres, repopulate Redis. |
+| Token usage rows + session aggregate | **Done** — `chat_token_usage` + `POST .../token-usage`; `total_tokens` on `chat_sessions` incremented per event (per-seat `user_id` for metering). |
+| AWS Bedrock orchestration (chat turn) | **Not yet** — wiring TBD; `claudeRequestBody` and related helpers exist for other flows. |
+| Background worker (async summarization, batch token sync) | **Not yet** — persistence is synchronous on Nova PATCH today; no outbox. |
+| Redis failure → regenerate summary | **Partial** — history reloads from Supabase; rolling summary is whatever was last persisted (no automatic LLM re-summarize on rebuild). |
+
 ---
 
 ## Core Design Principles
@@ -41,10 +53,9 @@ LLM Orchestration Layer
 │ Supabase (Postgres)          │ ← source of truth
 └──────────────────────────────┘
    ↓
-Background Worker
-- token logging
-- summarization
-- persistence sync
+Background Worker (planned)
+- async summarization
+- optional batch / retry paths
 ```
 
 ---
@@ -71,11 +82,13 @@ Each conversation is a **chat session**:
 
 Redis stores real-time working memory.
 
-### Key format
+### Key format (implemented)
 
 ```
-chat:{chat_id}
+nova:chat:{user_id}:{chat_id}
 ```
+
+Scoped by Supabase `user_id` so a `chat_id` UUID alone cannot access another user’s cache.
 
 ### Stored structure
 
@@ -115,34 +128,36 @@ Supabase is the **immutable audit log**.
 - Store session metadata
 - Enable recovery of Redis state
 
-### Tables
+### Tables (implemented)
 
 #### chat_sessions
 
-- chat_id
-- user_id
-- created_at
-- last_active
-- total_tokens
+- `id` (uuid, same as API `chat_id`)
+- `user_id` (auth user; session owner)
+- `organization_id` (billing / tenancy; personal org ensured on create)
+- `encrypted_summary`, `summary_iv` (AES via user master key; empty summary stored as null ciphertext)
+- `token_estimate` (runtime hint, mirrored in Redis)
+- `total_tokens` (running sum; incremented when token-usage rows are recorded)
+- `created_at`, `updated_at`, `last_active_at`
 
 #### chat_messages
 
-- id
-- chat_id
-- role
-- content
-- timestamp
+- `id` (uuid)
+- `chat_id`, `user_id` (owner; per-seat attribution)
+- `role` (`user` | `assistant` | `system`)
+- `encrypted_content`, `content_iv`
+- `sort_order` (conversation order)
+- `created_at`
 
 #### chat_token_usage
 
-- id
-- chat_id
-- input_tokens
-- output_tokens
-- total_tokens
-- cost_usd
-- model
-- timestamp
+- `id` (uuid)
+- `chat_id`, `user_id`, `organization_id`
+- `input_tokens`, `output_tokens`, `total_tokens` (constraint: sum of in + out)
+- `cost_usd`, `model` (optional)
+- `created_at`
+
+API: `POST /api/nova/chat-sessions/:chatId/token-usage` with a Bearer JWT (RLS-enforced).
 
 ---
 
@@ -241,12 +256,12 @@ Captured from AWS Bedrock response:
 
 ### 5. Save response
 
-- Redis (immediate update)
-- Supabase (async persistence)
+- Redis (immediate update after successful Postgres write for Nova routes today)
+- Supabase (synchronous persist on create / PATCH for `chat_sessions` + `chat_messages`)
 
 ### 6. Token logging
 
-- stored in Supabase
+- Supabase row in `chat_token_usage` (+ bump `chat_sessions.total_tokens`) via dedicated API; Bedrock response wiring when the chat LLM route lands
 
 ---
 
@@ -254,8 +269,8 @@ Captured from AWS Bedrock response:
 
 ### Redis failure
 
-- Rebuild session from Supabase
-- Regenerate summary
+- Rebuild session from Supabase (decrypt and repopulate cache on GET)
+- Regenerate summary (optional product behavior; not automatic in API today)
 
 ### Supabase failure
 
@@ -280,7 +295,8 @@ Captured from AWS Bedrock response:
 ### Supabase
 
 - Row Level Security (RLS)
-- Encrypted storage at rest
+- Encrypted storage at rest (provider)
+- Chat message bodies and session summary: **application-layer encryption** with the user’s master key (same model as clinical notes); Redis holds decrypted payloads only for the active hot cache.
 
 ### General
 
@@ -352,7 +368,7 @@ These are not blockers for the architecture; they refine product and compliance 
 
 1. **BAA coverage** — Confirm BAAs (or equivalent) for every subprocessors in the path: AWS (Bedrock, ElastiCache), Supabase (HIPAA add-on if required), and any logging/observability that might see message bodies.
 2. **PHI in prompts** — Define policy for when chat content is clinical PHI vs internal ops (e.g. billing templates); whether system prompts and summaries are allowed to echo identifiers, and whether de-identification is required for any analytics.
-3. **Identity and tenancy** — Map `user_id` to existing auth (e.g. this repo’s signup/profile model); clarify org-level vs individual-doctor RLS and whether sessions are shareable or strictly private.
+3. **Identity and tenancy** — **Partially settled in code:** `user_id` is the Supabase auth user; sessions are private to that user (RLS). `organization_id` is set from the user’s personal org for billing alignment; clinic-wide pools vs personal org for Nova may still be a product choice.
 4. **Idempotency and ordering** — Client-generated message IDs vs server-assigned; how duplicate POSTs and out-of-order async writes to Supabase are detected and reconciled.
 5. **Integration with scribe/encounters** — Whether Nova sessions can attach to `patient_encounter` (or similar) for audit context, or remain strictly standalone general chat.
 6. **Summary regeneration** — After Redis loss, whether to re-summarize from full history in one shot, cap history length, or replay through a dedicated “rebuild” job with rate limits.

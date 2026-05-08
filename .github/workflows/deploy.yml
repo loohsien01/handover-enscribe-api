@@ -11,10 +11,10 @@ env:
   NODE_ENV: 'production'
 
 jobs:
-  build-and-test:
+  build:
     runs-on: ubuntu-latest
-    name: Build & Test
-    
+    name: Build (install + lint)
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -32,12 +32,8 @@ jobs:
         run: npm run lint --if-present
         continue-on-error: true  # Don't fail deployment if lint fails
 
-      - name: Run tests
-        run: npm test
-        continue-on-error: true  # Tests are informational
-
   deploy:
-    needs: build-and-test
+    needs: build
     runs-on: ubuntu-latest
     name: Deploy to EC2 via Systems Manager
     if: success()

@@ -2,6 +2,8 @@
  * Test Suite: Nova AI — Redis chat sessions API
  * Requires: Fastify server, Redis, REDIS_URL in .env.local (same as server)
  * Requires: TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local
+ * Requires: Supabase migrations including chat_sessions / chat_messages / chat_token_usage
+ *   (`sql/migrations/20260507_nova_chat_sessions.sql`) and organizations billing tables.
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -108,7 +110,7 @@ export async function runNovaChatSessionsTests() {
   });
 
   if (!accessToken) {
-    console.warn('\n⚠️  Skipping Tests 2–8: No valid access token available');
+    console.warn('\n⚠️  Skipping Tests 2–11: No valid access token available');
     console.log('To run the full suite: set TEST_ACCOUNT_* in .env.local and ensure the server is running.\n');
     runner.printResults();
     const resultsFile = runner.saveResults('nova-chat-sessions-tests.json');
@@ -147,7 +149,7 @@ export async function runNovaChatSessionsTests() {
   });
 
   if (!cachedChatId) {
-    console.warn('\n⚠️  Skipping Tests 4–8: session creation (Test 2) did not return chatId');
+    console.warn('\n⚠️  Skipping Tests 4–11: session creation (Test 2) did not return chatId');
     runner.printResults();
     const resultsFile = runner.saveResults('nova-chat-sessions-tests.json');
     console.log(`✅ Test results saved to: ${resultsFile}\n`);
@@ -217,6 +219,37 @@ export async function runNovaChatSessionsTests() {
       appendMessages: [{ role: 'assistant', content: 'x' }],
     },
     expectedStatus: 400,
+  });
+
+  await runner.test('Test 9: POST token-usage without authentication', {
+    method: 'POST',
+    endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/token-usage`,
+    headers: { 'Content-Type': 'application/json' },
+    body: { input_tokens: 1, output_tokens: 1 },
+    expectedStatus: 401,
+  });
+
+  await runner.test('Test 10: POST token-usage invalid body (400)', {
+    method: 'POST',
+    endpoint: `/api/nova/chat-sessions/${cachedChatId}/token-usage`,
+    headers: { ...authHeaders, 'Content-Type': 'application/json' },
+    body: { input_tokens: -1, output_tokens: 0 },
+    expectedStatus: 400,
+  });
+
+  await runner.test('Test 11: POST token-usage records usage (201)', {
+    method: 'POST',
+    endpoint: `/api/nova/chat-sessions/${cachedChatId}/token-usage`,
+    headers: { ...authHeaders, 'Content-Type': 'application/json' },
+    body: { input_tokens: 10, output_tokens: 5, model: 'test-model' },
+    expectedStatus: 201,
+    expectedFields: ['ok', 'total_tokens'],
+    customValidator: (data) => {
+      if (data?.ok !== true || data?.total_tokens !== 15) {
+        return { passed: false, message: 'Expected ok true and total_tokens 15' };
+      }
+      return { passed: true, message: '' };
+    },
   });
 
   runner.printResults();

@@ -3,19 +3,22 @@ import { serializeZodError } from '../../utils/serializeZodError.js';
 import {
   novaChatSessionIdParamsSchema,
   novaChatSessionPatchRequestSchema,
+  novaChatTokenUsageRequestSchema,
 } from '../schemas/novaChatRequests.js';
 import {
   createNovaChatSession,
   getNovaChatSession,
   patchNovaChatSession,
+  postNovaChatTokenUsage,
 } from '../controllers/novaChatSessionsController.js';
 
 /**
- * Nova AI — Redis-backed chat session (hot cache). Supabase persistence comes later.
+ * Nova AI — Redis hot cache + Supabase encrypted persistence (chat_sessions / chat_messages).
  *
  * - POST   /api/nova/chat-sessions
  * - GET    /api/nova/chat-sessions/:chatId
  * - PATCH  /api/nova/chat-sessions/:chatId
+ * - POST   /api/nova/chat-sessions/:chatId/token-usage
  */
 export default fp(async function novaChatSessionsRoutes(fastify) {
   const preAuth = { preHandler: [fastify.authenticate] };
@@ -60,6 +63,27 @@ export default fp(async function novaChatSessionsRoutes(fastify) {
       return patchNovaChatSession(request, reply);
     } catch (err) {
       fastify.log.error('PATCH /nova/chat-sessions/:chatId:', err);
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  fastify.post('/nova/chat-sessions/:chatId/token-usage', preAuth, async (request, reply) => {
+    try {
+      const paramsResult = novaChatSessionIdParamsSchema.safeParse(request.params);
+      if (!paramsResult.success) {
+        return reply.status(400).send({ error: serializeZodError(paramsResult.error) });
+      }
+      request.params = paramsResult.data;
+
+      const bodyResult = novaChatTokenUsageRequestSchema.safeParse(request.body);
+      if (!bodyResult.success) {
+        return reply.status(400).send({ error: serializeZodError(bodyResult.error) });
+      }
+      request.body = bodyResult.data;
+
+      return postNovaChatTokenUsage(request, reply);
+    } catch (err) {
+      fastify.log.error('POST /nova/chat-sessions/:chatId/token-usage:', err);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });

@@ -132,7 +132,7 @@ REDIS_URL=
 # NOVA_REDIS_SESSION_TTL_SEC=3600
 ```
 
-Nova (Redis hot sessions, Bearer JWT): `POST /api/nova/chat-sessions`, `GET /api/nova/chat-sessions/:chatId`, `PATCH /api/nova/chat-sessions/:chatId` (requires `REDIS_URL`). Integration tests: `npm run test:nova-chat-sessions` (server + Redis + `REDIS_URL` + `TEST_ACCOUNT_*`).
+Nova (Redis hot cache + Supabase persistence, Bearer JWT): `POST /api/nova/chat-sessions`, `GET /api/nova/chat-sessions/:chatId`, `PATCH /api/nova/chat-sessions/:chatId`, `POST /api/nova/chat-sessions/:chatId/token-usage` (requires `REDIS_URL`). Message bodies and summaries are encrypted in Postgres with the same user master key pattern as notes; Redis holds plaintext for the active session. Apply `sql/migrations/20260507_nova_chat_sessions.sql` after organizations billing. Integration tests: `npm run test:nova-chat-sessions` (server + Redis + `REDIS_URL` + `TEST_ACCOUNT_*` + migrated DB).
 
 ### Internal cleanup (cron / ops)
 

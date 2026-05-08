@@ -33,7 +33,7 @@ import userProfileRoutes from './routes/userProfile.js';
 import billingRoutes from './routes/billing.js';
 import stripeWebhookRoutes from './routes/stripeWebhook.js';
 import novaChatSessionsRoutes from './routes/novaChatSessions.js';
-import { closeRedisClient, getRedisClient } from '../utils/redisClient.js';
+import { closeRedisClient, getRedisClient, getRedisUrl } from '../utils/redisClient.js';
 /**
  * Create and configure Fastify application
  * Handles all Fastify backend routes and middleware
@@ -249,8 +249,12 @@ async function startServer() {
     if (redis) {
       const pong = await redis.ping();
       fastify.log.info({ redis: pong }, 'Redis connected');
+    } else if (getRedisUrl()) {
+      fastify.log.info(
+        'REDIS_URL is set but Redis is not reachable (or still in retry cooldown) — Nova hot-cache disabled; API otherwise up'
+      );
     } else {
-      fastify.log.debug('REDIS_URL not set; Redis features disabled until configured');
+      fastify.log.info('REDIS_URL not set — Nova hot-cache disabled until you configure Redis');
     }
 
     const shutdown = async (signal) => {

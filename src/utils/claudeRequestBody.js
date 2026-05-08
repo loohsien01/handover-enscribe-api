@@ -144,7 +144,7 @@ Rules:
     system: [
       {
         type: 'text',
-        text: 'You are a clinical documentation expert. Analyze medical note template documents and extract their section structure as structured JSON data.',
+        text: 'You are a clinical documentation expert. Analyze clinical note template documents and extract their section structure as structured JSON data.',
         cache_control: { type: 'ephemeral' },
       },
       {
@@ -167,7 +167,7 @@ Rules:
           },
           {
             type: 'text',
-            text: `Analyze this medical note template document and extract all its sections.
+            text: `Analyze this clinical note template document and extract all its sections.
 
 For each section:
 - Identify the section name as it appears in the document.

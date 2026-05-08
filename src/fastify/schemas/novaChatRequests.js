@@ -28,3 +28,12 @@ export const novaChatSessionPatchRequestSchema = z
 export const novaChatSessionIdParamsSchema = z.object({
   chatId: z.string().regex(uuidRegex, 'Invalid chat id'),
 });
+
+export const novaChatTokenUsageRequestSchema = z
+  .object({
+    input_tokens: z.number().int().nonnegative(),
+    output_tokens: z.number().int().nonnegative(),
+    model: z.string().max(200).optional(),
+    cost_usd: z.number().nonnegative().optional(),
+  })
+  .strict();
