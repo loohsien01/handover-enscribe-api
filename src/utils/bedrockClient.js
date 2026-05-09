@@ -15,19 +15,23 @@
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { getAwsSdkBaseClientConfig } from './awsSdkBaseClientConfig.js';
 
-export async function claudeAPIReq(reqBody) {
+/**
+ * @param {object} reqBody
+ * @returns {Promise<{ text: string, usage: { input_tokens: number, output_tokens: number } | null, modelId: string, stopReason?: string }>}
+ */
+export async function claudeInvokeModel(reqBody) {
   const isDev = process.env.NODE_ENV !== 'production';
   const clientConfig = getAwsSdkBaseClientConfig('Claude Bedrock');
 
   if (isDev) {
-    console.log('[claudeAPIReq] Development mode: Using explicit AWS Bedrock credentials from env vars');
+    console.log('[claudeInvokeModel] Development mode: Using explicit AWS Bedrock credentials from env vars');
   } else {
-    console.log('[claudeAPIReq] Production mode: Using IAM role attached to EC2 instance');
+    console.log('[claudeInvokeModel] Production mode: Using IAM role attached to EC2 instance');
   }
 
   const client = new BedrockRuntimeClient(clientConfig);
 
-  console.log(`[claudeAPIReq] Using Claude model: ${reqBody.modelId}`);
+  console.log(`[claudeInvokeModel] Using Claude model: ${reqBody.modelId}`);
 
   const requestBody = {
     anthropic_version: 'bedrock-2023-05-31',
@@ -44,9 +48,7 @@ export async function claudeAPIReq(reqBody) {
 
   const response = await client.send(command);
 
-  const responseBody = JSON.parse(
-    Buffer.from(response.body).toString('utf-8')
-  );
+  const responseBody = JSON.parse(Buffer.from(response.body).toString('utf-8'));
 
   if (!responseBody.content || !Array.isArray(responseBody.content) || responseBody.content.length === 0) {
     throw new Error('Invalid response from Claude Bedrock API');
@@ -57,10 +59,29 @@ export async function claudeAPIReq(reqBody) {
     throw new Error('Invalid response format from Claude Bedrock API');
   }
 
+  let usage = null;
   if (responseBody.usage) {
-    console.log(`[claudeAPIReq] Input tokens: ${responseBody.usage.input_tokens}`);
-    console.log(`[claudeAPIReq] Output tokens: ${responseBody.usage.output_tokens}`);
+    usage = {
+      input_tokens: Number(responseBody.usage.input_tokens) || 0,
+      output_tokens: Number(responseBody.usage.output_tokens) || 0,
+    };
+    console.log(`[claudeInvokeModel] Input tokens: ${usage.input_tokens}`);
+    console.log(`[claudeInvokeModel] Output tokens: ${usage.output_tokens}`);
   }
 
-  return firstContent.text;
+  return {
+    text: firstContent.text,
+    usage,
+    modelId: reqBody.modelId,
+    stopReason: responseBody.stop_reason,
+  };
+}
+
+/**
+ * @param {object} reqBody
+ * @returns {Promise<string>}
+ */
+export async function claudeAPIReq(reqBody) {
+  const { text } = await claudeInvokeModel(reqBody);
+  return text;
 }

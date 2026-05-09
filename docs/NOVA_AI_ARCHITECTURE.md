@@ -14,7 +14,7 @@ The system is built around a **stateless LLM with stateful application memory la
 | Supabase session + message persistence | **Done** — tables `chat_sessions`, `chat_messages`; summary and message bodies encrypted with the user’s wrapped master key (same pattern as notes); RLS + `organization_id` (personal org via `ensurePersonalOrganization`). |
 | Reload Redis from Supabase | **Done** — GET misses cache: decrypt from Postgres, repopulate Redis. |
 | Token usage rows + session aggregate | **Done** — `chat_token_usage` + `POST .../token-usage`; `total_tokens` on `chat_sessions` incremented per event (per-seat `user_id` for metering). |
-| AWS Bedrock orchestration (chat turn) | **Not yet** — wiring TBD; `claudeRequestBody` and related helpers exist for other flows. |
+| AWS Bedrock orchestration (chat turn) | **Done** — `POST /api/nova/chat-sessions/:chatId/completions` with presets `haiku` \| `sonnet` \| `opus` (`getNovaChatCompletionRequestBody` + `claudeInvokeModel`); token usage recorded when Bedrock returns `usage`. |
 | Background worker (async summarization, batch token sync) | **Not yet** — persistence is synchronous on Nova PATCH today; no outbox. |
 | Redis failure → regenerate summary | **Partial** — history reloads from Supabase; rolling summary is whatever was last persisted (no automatic LLM re-summarize on rebuild). |
 
@@ -261,7 +261,7 @@ Captured from AWS Bedrock response:
 
 ### 6. Token logging
 
-- Supabase row in `chat_token_usage` (+ bump `chat_sessions.total_tokens`) via dedicated API; Bedrock response wiring when the chat LLM route lands
+- Supabase row in `chat_token_usage` (+ bump `chat_sessions.total_tokens`) via `POST .../completions` when Bedrock returns usage, or via `POST .../token-usage` for client-reported usage
 
 ---
 

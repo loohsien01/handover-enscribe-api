@@ -1,6 +1,6 @@
 /**
  * Test Suite: Nova AI — Redis chat sessions API
- * Requires: Fastify server, Redis, REDIS_URL in .env.local (same as server)
+ * Requires: Fastify server, Redis, REDIS_URL in .env.local (same as server); optional REDIS_AUTH_TOKEN
  * Requires: TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local
  * Requires: Supabase migrations including chat_sessions / chat_messages / chat_token_usage
  *   (`sql/migrations/20260507_nova_chat_sessions.sql`) and organizations billing tables.

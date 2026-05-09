@@ -1,0 +1,50 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { resolveNovaBedrockModelId } from '../src/utils/bedrockClaudeModels.js';
+import { getNovaChatCompletionRequestBody } from '../src/utils/claudeRequestBody.js';
+
+test('resolveNovaBedrockModelId returns defaults for presets', () => {
+  assert.match(resolveNovaBedrockModelId('haiku'), /haiku/i);
+  assert.match(resolveNovaBedrockModelId('sonnet'), /sonnet/i);
+  assert.match(resolveNovaBedrockModelId('opus'), /opus/i);
+  assert.equal(resolveNovaBedrockModelId('unknown'), null);
+});
+
+test('getNovaChatCompletionRequestBody builds messages and system', () => {
+  const body = getNovaChatCompletionRequestBody({
+    modelId: 'us.anthropic.claude-haiku-test',
+    summary: 'Prior topics: vitals.',
+    priorMessages: [
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi there' },
+    ],
+    userMessage: 'Next question?',
+    max_tokens: 1000,
+  });
+
+  assert.equal(body.modelId, 'us.anthropic.claude-haiku-test');
+  assert.equal(body.max_tokens, 1000);
+  assert.ok(Array.isArray(body.system));
+  assert.ok(body.system.some((b) => b.type === 'text' && String(b.text).includes('vitals')));
+  assert.equal(body.messages.length, 3);
+  assert.deepEqual(body.messages[2], { role: 'user', content: 'Next question?' });
+});
+
+test('getNovaChatCompletionRequestBody hoists system-role history into system blocks', () => {
+  const body = getNovaChatCompletionRequestBody({
+    modelId: 'm',
+    summary: '',
+    priorMessages: [
+      { role: 'system', content: 'Custom rule: be brief.' },
+      { role: 'user', content: 'Q' },
+    ],
+    userMessage: 'Follow-up',
+  });
+
+  const systemText = body.system.map((b) => b.text).join('\n');
+  assert.ok(systemText.includes('Custom rule'));
+  assert.deepEqual(body.messages, [
+    { role: 'user', content: 'Q' },
+    { role: 'user', content: 'Follow-up' },
+  ]);
+});

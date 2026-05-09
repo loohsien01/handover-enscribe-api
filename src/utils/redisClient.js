@@ -4,12 +4,16 @@
  * Set REDIS_URL in .env.local (e.g. redis://127.0.0.1:6379). If unset, {@link getRedisClient}
  * returns null so the rest of the API can run without Redis.
  *
+ * Optional REDIS_AUTH_TOKEN: merged into the URL as the password when REDIS_URL has no userinfo
+ * password (so you can keep the token out of REDIS_URL). If the URL already includes a password,
+ * REDIS_AUTH_TOKEN is ignored.
+ *
  * If REDIS_URL is set but the server is unreachable, {@link getRedisClient} returns null after
  * a failed connect (no process crash). Retries are throttled so Nova routes return 503 without
  * reconnect spam. Set REDIS_VERBOSE=1 to log transient client errors (throttled).
  *
- * Production: use rediss:// with ElastiCache when TLS is enabled; auth belongs in the URL
- * or use ElastiCache IAM auth when you wire that path.
+ * Production: use rediss:// with ElastiCache when TLS is enabled. Auth: REDIS_AUTH_TOKEN and/or
+ * credentials in REDIS_URL (not both password sources unless URL has no password).
  */
 
 import { createClient } from 'redis';
@@ -36,12 +40,34 @@ export function getRedisUrl() {
 }
 
 /**
+ * Connection URL: {@link getRedisUrl} plus optional `REDIS_AUTH_TOKEN` when the URL has no
+ * password (ElastiCache AUTH token, etc.).
+ * @returns {string}
+ */
+export function getRedisConnectionUrl() {
+  const base = getRedisUrl();
+  if (!base) return '';
+  const token =
+    typeof process.env.REDIS_AUTH_TOKEN === 'string' ? process.env.REDIS_AUTH_TOKEN.trim() : '';
+  if (!token) return base;
+  let parsed;
+  try {
+    parsed = new URL(base);
+  } catch {
+    return base;
+  }
+  if (parsed.password) return base;
+  parsed.password = token;
+  return parsed.toString();
+}
+
+/**
  * Shared Redis client, or null if REDIS_URL is not configured or Redis is unavailable.
  * Never throws; safe to call from request handlers.
  * @returns {Promise<import('redis').RedisClientType | null>}
  */
 export async function getRedisClient() {
-  const url = getRedisUrl();
+  const url = getRedisConnectionUrl();
   if (!url) return null;
 
   if (client?.isOpen) return client;

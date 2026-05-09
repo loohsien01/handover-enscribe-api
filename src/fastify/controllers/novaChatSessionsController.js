@@ -15,6 +15,9 @@ import {
 } from '../../utils/novaChatPersistence.js';
 import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
+import { getNovaChatCompletionRequestBody } from '../../utils/claudeRequestBody.js';
+import { claudeInvokeModel } from '../../utils/bedrockClient.js';
+import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
 
 async function redisOr503(reply) {
   const redis = await getRedisClient();
@@ -244,5 +247,122 @@ export async function postNovaChatTokenUsage(request, reply) {
   return reply.status(201).send({
     ok: true,
     total_tokens: result.total_tokens,
+  });
+}
+
+/**
+ * POST /api/nova/chat-sessions/:chatId/completions
+ * One user turn: Bedrock Claude → append user + assistant messages, persist, record token usage.
+ */
+export async function postNovaChatCompletion(request, reply) {
+  const redis = await redisOr503(reply);
+  if (!redis) return;
+
+  const userId = request.user.id;
+  const { chatId } = request.params;
+  const body = request.body;
+
+  const modelId = resolveNovaBedrockModelId(body.model);
+  if (!modelId) {
+    return reply.status(400).send({ error: 'Invalid model', code: 'NOVA_MODEL_INVALID' });
+  }
+
+  const masterKey = await userMasterKeyOr500(request, reply);
+  if (!masterKey) return;
+
+  let session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
+  if (!session) {
+    return reply.status(404).send({ error: 'Chat session not found or expired', code: 'NOVA_SESSION_NOT_FOUND' });
+  }
+
+  const supabase = getSupabaseClient(request.headers.authorization);
+
+  const { data: orgRow, error: orgErr } = await supabase
+    .from('chat_sessions')
+    .select('organization_id')
+    .eq('id', chatId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (orgErr || !orgRow) {
+    return reply.status(404).send({ error: 'Chat session not found', code: 'NOVA_SESSION_NOT_FOUND' });
+  }
+
+  const priorMessages = session.messages || [];
+  const reqBody = getNovaChatCompletionRequestBody({
+    modelId,
+    summary: session.summary ?? '',
+    priorMessages,
+    userMessage: body.message,
+  });
+
+  let inv;
+  try {
+    inv = await claudeInvokeModel(reqBody);
+  } catch (err) {
+    console.error('[postNovaChatCompletion] Bedrock invoke failed:', err);
+    return reply.status(502).send({
+      error: 'Model request failed',
+      code: 'NOVA_BEDROCK_FAILED',
+      detail: process.env.NODE_ENV !== 'production' ? String(err?.message || err) : undefined,
+    });
+  }
+
+  const assistantText = inv.text;
+  const appendedPlain = [
+    { role: 'user', content: body.message },
+    { role: 'assistant', content: assistantText },
+  ];
+  session.messages = [...priorMessages, ...appendedPlain];
+
+  if (inv.usage) {
+    const add = inv.usage.input_tokens + inv.usage.output_tokens;
+    session.token_estimate = (session.token_estimate ?? 0) + add;
+  }
+
+  const persistResult = await persistNovaChatSession(supabase, {
+    chatId,
+    userId,
+    session,
+    masterKey,
+    messageSync: 'append',
+    appendedMessages: appendedPlain,
+  });
+  if (!persistResult.success) {
+    return reply.status(500).send({
+      error: persistResult.error || 'Failed to persist chat session',
+      code: 'NOVA_SESSION_PERSIST_FAILED',
+    });
+  }
+
+  if (inv.usage) {
+    const tokenResult = await insertChatTokenUsageRow(supabase, {
+      chatId,
+      userId,
+      organizationId: orgRow.organization_id,
+      input_tokens: inv.usage.input_tokens,
+      output_tokens: inv.usage.output_tokens,
+      model: inv.modelId,
+      cost_usd: undefined,
+    });
+    if (!tokenResult.success) {
+      console.error('[postNovaChatCompletion] token usage insert failed:', tokenResult.error);
+    }
+  }
+
+  const ttl = novaSessionTtlSeconds();
+  await novaSessionSave(redis, userId, session, ttl);
+
+  return reply.send({
+    assistant: { role: 'assistant', content: assistantText },
+    usage: inv.usage
+      ? {
+          input_tokens: inv.usage.input_tokens,
+          output_tokens: inv.usage.output_tokens,
+          total_tokens: inv.usage.input_tokens + inv.usage.output_tokens,
+          model: inv.modelId,
+        }
+      : null,
+    session,
   });
 }

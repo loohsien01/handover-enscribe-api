@@ -4,12 +4,14 @@ import {
   novaChatSessionIdParamsSchema,
   novaChatSessionPatchRequestSchema,
   novaChatTokenUsageRequestSchema,
+  novaChatCompletionRequestSchema,
 } from '../schemas/novaChatRequests.js';
 import {
   createNovaChatSession,
   getNovaChatSession,
   patchNovaChatSession,
   postNovaChatTokenUsage,
+  postNovaChatCompletion,
 } from '../controllers/novaChatSessionsController.js';
 
 /**
@@ -19,6 +21,7 @@ import {
  * - GET    /api/nova/chat-sessions/:chatId
  * - PATCH  /api/nova/chat-sessions/:chatId
  * - POST   /api/nova/chat-sessions/:chatId/token-usage
+ * - POST   /api/nova/chat-sessions/:chatId/completions (Bedrock: haiku | sonnet | opus)
  */
 export default fp(async function novaChatSessionsRoutes(fastify) {
   const preAuth = { preHandler: [fastify.authenticate] };
@@ -63,6 +66,27 @@ export default fp(async function novaChatSessionsRoutes(fastify) {
       return patchNovaChatSession(request, reply);
     } catch (err) {
       fastify.log.error('PATCH /nova/chat-sessions/:chatId:', err);
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  fastify.post('/nova/chat-sessions/:chatId/completions', preAuth, async (request, reply) => {
+    try {
+      const paramsResult = novaChatSessionIdParamsSchema.safeParse(request.params);
+      if (!paramsResult.success) {
+        return reply.status(400).send({ error: serializeZodError(paramsResult.error) });
+      }
+      request.params = paramsResult.data;
+
+      const bodyResult = novaChatCompletionRequestSchema.safeParse(request.body);
+      if (!bodyResult.success) {
+        return reply.status(400).send({ error: serializeZodError(bodyResult.error) });
+      }
+      request.body = bodyResult.data;
+
+      return postNovaChatCompletion(request, reply);
+    } catch (err) {
+      fastify.log.error('POST /nova/chat-sessions/:chatId/completions:', err);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });

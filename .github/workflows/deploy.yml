@@ -8,7 +8,6 @@ on:
 
 env:
   NODE_VERSION: '22'
-  NODE_ENV: 'production'
 
 jobs:
   build:
@@ -29,7 +28,12 @@ jobs:
         run: npm ci
 
       - name: Run linter
-        run: npm run lint --if-present
+        # `npm run --if-present lint` keeps `--if-present` as an npm flag (not forwarded to the script).
+        # `package.json` uses `eslint .` because Next.js 16 CLI no longer exposes `next lint` (it was
+        # being interpreted as project dir `./lint`). NODE_ENV=development avoids tools that warn on production.
+        env:
+          NODE_ENV: development
+        run: npm run --if-present lint
         continue-on-error: true  # Don't fail deployment if lint fails
 
   deploy:
@@ -72,6 +76,8 @@ jobs:
           INTERNAL_CLEANUP_SECRET: ${{ secrets.INTERNAL_CLEANUP_SECRET }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_URL: ${{ secrets.OPENAI_API_URL }}
+          REDIS_AUTH_TOKEN: ${{ secrets.REDIS_AUTH_TOKEN }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
           REFRESH_COOKIE_DOMAIN: ${{ secrets.REFRESH_COOKIE_DOMAIN }}
           REFRESH_COOKIE_SAMESITE: ${{ secrets.REFRESH_COOKIE_SAMESITE }}
           REFRESH_COOKIE_SECURE: ${{ secrets.REFRESH_COOKIE_SECURE }}
@@ -118,6 +124,7 @@ jobs:
             "INTERNAL_CLEANUP_SECRET"
             "OPENAI_API_KEY"
             "OPENAI_API_URL"
+            "REDIS_URL"
             "REFRESH_COOKIE_SAMESITE"
             "REFRESH_COOKIE_SECURE"
             "REFRESH_INACTIVITY_LIMIT_SECONDS"
@@ -209,6 +216,8 @@ jobs:
           CLOUD_RUN_TRANSCRIBE_URL=${{ secrets.CLOUD_RUN_TRANSCRIBE_URL }}
           CPU_THRESHOLD=${{ secrets.CPU_THRESHOLD }}
           DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}
+          REDIS_AUTH_TOKEN=${{ secrets.REDIS_AUTH_TOKEN }}
+          REDIS_URL=${{ secrets.REDIS_URL }}
           APP_BASE_URL=${{ secrets.APP_BASE_URL }}
           FASTIFY_HOST=0.0.0.0
           FASTIFY_PORT=${{ secrets.FASTIFY_PORT }}

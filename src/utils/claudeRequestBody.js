@@ -6,6 +6,8 @@
  * requirements are embedded directly in the system message.
  */
 
+import { defaultHaikuBedrockModelId } from './bedrockClaudeModels.js';
+
 const SchemaType = {
     OBJECT: "object",
     STRING: "string"
@@ -31,7 +33,7 @@ function escapeJsonString(str) {
 
 /**
  * Generates Claude Bedrock request body for SOAP note.
- * Uses claude-sonnet-4-6 model via AWS Bedrock.
+ * Uses default Haiku profile (`defaultHaikuBedrockModelId()`).
  * 
  * Note: Claude doesn't support response_format parameter like OpenAI,
  * so the JSON schema is specified in the system prompt and we trust
@@ -80,8 +82,7 @@ You MUST return a valid JSON object with this exact structure:
     }
 
     return {
-        // modelId: "us.anthropic.claude-sonnet-4-6",
-        modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        modelId: defaultHaikuBedrockModelId(),
         system: [
             {
                 type: "text",
@@ -140,7 +141,7 @@ Rules:
 - Do NOT include any text, explanation, or markdown outside the JSON array.`;
 
   return {
-    modelId: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+    modelId: defaultHaikuBedrockModelId(),
     system: [
       {
         type: 'text',
@@ -180,5 +181,91 @@ IMPORTANT: Return ONLY the JSON array. No preamble, no explanation, no markdown 
       },
     ],
     max_tokens: 4000,
+  };
+}
+
+const NOVA_CHAT_SYSTEM_PREAMBLE =
+  'You are Nova, an AI assistant for licensed healthcare and clinical operations professionals. ' +
+  'Provide accurate, cautious medical information and clear documentation help; you are not a substitute for professional judgment or in-person care. ' +
+  'Respect privacy: treat user content as sensitive. Use concise, professional language unless the user asks otherwise.';
+
+/**
+ * @param {Array<{ role: string, content: string }>} messages
+ * @returns {{ extraSystem: string[], dialog: Array<{ role: 'user' | 'assistant', content: string }> }}
+ */
+function splitNovaSystemAndDialog(messages) {
+  const extraSystem = [];
+  const dialog = [];
+  for (const m of messages || []) {
+    if (m.role === 'system') {
+      extraSystem.push(m.content);
+    } else if (m.role === 'user' || m.role === 'assistant') {
+      dialog.push({ role: m.role, content: m.content });
+    }
+  }
+  return { extraSystem, dialog };
+}
+
+function novaBedrockMaxPriorMessages() {
+  const raw = process.env.NOVA_BEDROCK_MAX_PRIOR_MESSAGES;
+  const n = raw != null && raw !== '' ? Number.parseInt(String(raw), 10) : NaN;
+  if (Number.isFinite(n) && n >= 1 && n <= 200) return n;
+  return 80;
+}
+
+/**
+ * Bedrock request body for one Nova chat turn (summary + prior dialog + new user message).
+ *
+ * @param {object} opts
+ * @param {string} opts.modelId - Resolved Bedrock modelId (InvokeModel)
+ * @param {string} opts.summary - Rolling session summary (plaintext)
+ * @param {Array<{ role: string, content: string }>} opts.priorMessages - History before the new user turn
+ * @param {string} opts.userMessage - New user message for this turn
+ * @param {number} [opts.max_tokens]
+ * @returns {object} Claude Bedrock request body
+ */
+export function getNovaChatCompletionRequestBody({
+  modelId,
+  summary,
+  priorMessages,
+  userMessage,
+  max_tokens = 8192,
+}) {
+  const { extraSystem, dialog } = splitNovaSystemAndDialog(priorMessages);
+  const cap = novaBedrockMaxPriorMessages();
+  const recent = dialog.length > cap ? dialog.slice(-cap) : dialog;
+
+  /** @type {Array<{ type: string, text: string, cache_control?: { type: string } }>} */
+  const system = [
+    {
+      type: 'text',
+      text: NOVA_CHAT_SYSTEM_PREAMBLE,
+      cache_control: { type: 'ephemeral' },
+    },
+  ];
+
+  const sum = summary != null ? String(summary) : '';
+  if (sum.trim()) {
+    system.push({
+      type: 'text',
+      text: `Conversation summary (compressed memory):\n${sum}`,
+      cache_control: { type: 'ephemeral' },
+    });
+  }
+
+  for (const block of extraSystem) {
+    if (!block || !String(block).trim()) continue;
+    system.push({
+      type: 'text',
+      text: String(block),
+      cache_control: { type: 'ephemeral' },
+    });
+  }
+
+  return {
+    modelId,
+    system,
+    messages: [...recent, { role: 'user', content: userMessage }],
+    max_tokens,
   };
 }

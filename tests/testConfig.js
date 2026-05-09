@@ -6,6 +6,7 @@
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getRedisConnectionUrl } from '../src/utils/redisClient.js';
 
 // Load .env.local automatically
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -85,7 +86,7 @@ export function getApiBaseUrl() {
  * @returns {string}
  */
 export function getRedisUrlForTests() {
-  return (process.env.REDIS_URL || '').trim();
+  return (getRedisConnectionUrl() || '').trim();
 }
 
 /**

@@ -128,11 +128,13 @@ AWS_COMPREHEND_SECRET_ACCESS_KEY=
 OPENAI_API_KEY=
 # Optional: Redis (local: redis://127.0.0.1:6379; prod: rediss://… when TLS). Omit to run without Redis.
 REDIS_URL=
+# Optional: AUTH token merged into REDIS_URL when the URL has no password (keeps secrets out of REDIS_URL).
+# REDIS_AUTH_TOKEN=
 # Optional: Nova AI Redis session TTL in seconds (default 3600; min 60 max 86400).
 # NOVA_REDIS_SESSION_TTL_SEC=3600
 ```
 
-Nova (Redis hot cache + Supabase persistence, Bearer JWT): `POST /api/nova/chat-sessions`, `GET /api/nova/chat-sessions/:chatId`, `PATCH /api/nova/chat-sessions/:chatId`, `POST /api/nova/chat-sessions/:chatId/token-usage` (requires `REDIS_URL`). Message bodies and summaries are encrypted in Postgres with the same user master key pattern as notes; Redis holds plaintext for the active session. Apply `sql/migrations/20260507_nova_chat_sessions.sql` after organizations billing. Integration tests: `npm run test:nova-chat-sessions` (server + Redis + `REDIS_URL` + `TEST_ACCOUNT_*` + migrated DB).
+Nova (Redis hot cache + Supabase persistence + Bedrock chat turn, Bearer JWT): `POST /api/nova/chat-sessions`, `GET /api/nova/chat-sessions/:chatId`, `PATCH /api/nova/chat-sessions/:chatId`, `POST /api/nova/chat-sessions/:chatId/completions` (body `model`: `haiku` \| `sonnet` \| `opus`, `message`), `POST /api/nova/chat-sessions/:chatId/token-usage` (requires `REDIS_URL`). Optional env: `NOVA_BEDROCK_MODEL_HAIKU`, `NOVA_BEDROCK_MODEL_SONNET`, `NOVA_BEDROCK_MODEL_OPUS` (Bedrock `modelId` overrides), `BEDROCK_DEFAULT_HAIKU_MODEL_ID` (SOAP / template extract). Message bodies and summaries are encrypted in Postgres with the same user master key pattern as notes; Redis holds plaintext for the active session. Apply `sql/migrations/20260507_nova_chat_sessions.sql` after organizations billing. Integration tests: `npm run test:nova-chat-sessions` (server + Redis + `REDIS_URL` + `TEST_ACCOUNT_*` + migrated DB).
 
 ### Internal cleanup (cron / ops)
 

@@ -37,3 +37,11 @@ export const novaChatTokenUsageRequestSchema = z
     cost_usd: z.number().nonnegative().optional(),
   })
   .strict();
+
+/** Preset keys; must match `resolveNovaBedrockModelId` in `src/utils/bedrockClaudeModels.js`. */
+export const novaChatCompletionRequestSchema = z
+  .object({
+    model: z.enum(['haiku', 'sonnet', 'opus']),
+    message: z.string().min(1).max(100_000),
+  })
+  .strict();
