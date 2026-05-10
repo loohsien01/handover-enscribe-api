@@ -198,6 +198,16 @@ jobs:
           echo "✓ Git pull completed in $((PULL_END - PULL_START))s"
           echo "Current commit: $(git rev-parse --short HEAD)"
           
+          # npm ci is memory-heavy; running it alongside Fastify + Nova worker often OOMs small EC2s.
+          STOP_START=$(date +%s)
+          echo "Stopping PM2 apps before npm ci (free RAM for install)..."
+          pm2 stop fastify-server 2>/dev/null || true
+          pm2 stop nova-summarize-worker 2>/dev/null || true
+          lsof -ti:3001 | xargs kill -9 2>/dev/null || true
+          sleep 2
+          STOP_END=$(date +%s)
+          echo "✓ Pre-install stop completed in $((STOP_END - STOP_START))s"
+          
           INSTALL_START=$(date +%s)
           echo "Installing dependencies..."
           npm ci --omit=dev
@@ -300,6 +310,7 @@ jobs:
           
           echo "---DEPLOYMENT TIMING SUMMARY---"
           echo "Git pull: $((PULL_END - PULL_START))s"
+          echo "PM2 stop (pre-install): $((STOP_END - STOP_START))s"
           echo "npm install: $((INSTALL_END - INSTALL_START))s"
           echo "Environment setup: $((ENV_END - ENV_START))s"
           echo "PM2 restart: $((RESTART_END - RESTART_START))s"
@@ -311,6 +322,7 @@ jobs:
           {
             echo "---DEPLOYMENT TIMING SUMMARY---"
             echo "Git pull: $((PULL_END - PULL_START))s"
+            echo "PM2 stop (pre-install): $((STOP_END - STOP_START))s"
             echo "npm install: $((INSTALL_END - INSTALL_START))s"
             echo "Environment setup: $((ENV_END - ENV_START))s"
             echo "PM2 restart: $((RESTART_END - RESTART_START))s"
