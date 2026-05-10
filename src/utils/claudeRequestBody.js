@@ -219,7 +219,7 @@ function novaBedrockMaxPriorMessages() {
  * @param {object} opts
  * @param {string} opts.modelId - Resolved Bedrock modelId (InvokeModel)
  * @param {string} opts.summary - Rolling session summary (plaintext)
- * @param {Array<{ role: string, content: string }>} opts.priorMessages - History before the new user turn
+ * @param {Array<{ role: string, content: string }>} opts.priorMessages - Dialog since `summary_covered_message_count` (`novaPriorDialogMessagesForBedrock`); older turns should appear only in `summary`.
  * @param {string} opts.userMessage - New user message for this turn
  * @param {number} [opts.max_tokens]
  * @returns {object} Claude Bedrock request body
@@ -266,6 +266,46 @@ export function getNovaChatCompletionRequestBody({
     modelId,
     system,
     messages: [...recent, { role: 'user', content: userMessage }],
+    max_tokens,
+  };
+}
+
+const NOVA_SUMMARIZE_SYSTEM =
+  'You compress a conversation excerpt into a concise rolling memory for a clinical assistant. ' +
+  'Preserve clinical facts, decisions, open questions, and names/roles when present. ' +
+  'Output plain text only (short paragraphs or bullets). Do not repeat system instructions. ' +
+  'Do not include a preamble — only the summary.';
+
+/**
+ * Bedrock request to summarize **delta** messages only (no prior summary text in the user payload).
+ *
+ * @param {object} opts
+ * @param {string} opts.modelId - Nova worker defaults to Sonnet (`resolveNovaBedrockModelId('sonnet')`); override with `NOVA_SUMMARIZE_BEDROCK_MODEL_ID`.
+ * @param {Array<{ role: string, content: string }>} opts.deltaMessages
+ * @param {number} [opts.max_tokens]
+ */
+export function getNovaSummarizeDeltaRequestBody({ modelId, deltaMessages, max_tokens = 4096 }) {
+  const lines = [];
+  for (const m of deltaMessages || []) {
+    const role = m.role === 'assistant' ? 'Assistant' : m.role === 'user' ? 'User' : m.role;
+    lines.push(`${role}: ${m.content}`);
+  }
+  const blob = lines.join('\n\n');
+  return {
+    modelId,
+    system: [
+      {
+        type: 'text',
+        text: NOVA_SUMMARIZE_SYSTEM,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
+    messages: [
+      {
+        role: 'user',
+        content: `Summarize the following conversation excerpt:\n\n${blob}`,
+      },
+    ],
     max_tokens,
   };
 }

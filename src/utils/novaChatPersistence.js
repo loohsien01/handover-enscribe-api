@@ -3,7 +3,7 @@
  * wrapped master key (same AES pattern as notes).
  */
 import * as encryptionUtils from './encryptionUtils.js';
-import { createEmptyNovaSession } from './novaRedisSession.js';
+import { createEmptyNovaSession, normalizeNovaSessionShape } from './novaRedisSession.js';
 
 export const chatSessionsTable = 'chat_sessions';
 export const chatMessagesTable = 'chat_messages';
@@ -95,13 +95,16 @@ export async function loadNovaChatSessionFromSupabase(supabase, userId, chatId, 
     ? Math.floor(new Date(row.last_active_at).getTime() / 1000)
     : Math.floor(Date.now() / 1000);
 
-  const session = {
-    ...createEmptyNovaSession(row.id),
+  const sumStr = (sumDec.text ?? '').trim();
+  const session = normalizeNovaSessionShape({
+    chat_id: row.id,
     messages,
-    summary: sumDec.text,
+    summary: sumDec.text ?? '',
     token_estimate: row.token_estimate ?? 0,
     last_active: lastActiveSec,
-  };
+    summary_covered_message_count: sumStr ? messages.length : 0,
+    summarize_pending: false,
+  });
 
   return { session, organizationId: row.organization_id };
 }

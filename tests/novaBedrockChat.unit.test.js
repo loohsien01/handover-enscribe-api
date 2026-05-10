@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { resolveNovaBedrockModelId } from '../src/utils/bedrockClaudeModels.js';
-import { getNovaChatCompletionRequestBody } from '../src/utils/claudeRequestBody.js';
+import {
+  getNovaChatCompletionRequestBody,
+  getNovaSummarizeDeltaRequestBody,
+} from '../src/utils/claudeRequestBody.js';
 
 test('resolveNovaBedrockModelId returns defaults for presets', () => {
   assert.match(resolveNovaBedrockModelId('haiku'), /haiku/i);
@@ -28,6 +31,22 @@ test('getNovaChatCompletionRequestBody builds messages and system', () => {
   assert.ok(body.system.some((b) => b.type === 'text' && String(b.text).includes('vitals')));
   assert.equal(body.messages.length, 3);
   assert.deepEqual(body.messages[2], { role: 'user', content: 'Next question?' });
+});
+
+test('getNovaSummarizeDeltaRequestBody builds user blob from delta messages only', () => {
+  const body = getNovaSummarizeDeltaRequestBody({
+    modelId: 'us.anthropic.claude-haiku-test',
+    deltaMessages: [
+      { role: 'user', content: 'Q1' },
+      { role: 'assistant', content: 'A1' },
+    ],
+    max_tokens: 512,
+  });
+  assert.equal(body.modelId, 'us.anthropic.claude-haiku-test');
+  assert.equal(body.max_tokens, 512);
+  assert.equal(body.messages.length, 1);
+  assert.ok(String(body.messages[0].content).includes('Q1'));
+  assert.ok(String(body.messages[0].content).includes('A1'));
 });
 
 test('getNovaChatCompletionRequestBody hoists system-role history into system blocks', () => {

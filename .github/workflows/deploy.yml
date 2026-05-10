@@ -265,8 +265,10 @@ jobs:
           lsof -ti:3001 | xargs kill -9 2>/dev/null || true
           sleep 2
           
-          # Restart or start PM2
+          # Restart or start PM2 (API + Nova summarize worker — same repo, same .env.local)
           pm2 restart fastify-server 2>/dev/null || pm2 start npm --name "fastify-server" -- run start:fastify
+          echo "Restarting Nova summarize worker (Redis queue + Bedrock)..."
+          pm2 restart nova-summarize-worker 2>/dev/null || pm2 start npm --name "nova-summarize-worker" -- run worker:nova-summarize
           
           RESTART_END=$(date +%s)
           echo "✓ PM2 restart completed in $((RESTART_END - RESTART_START))s"

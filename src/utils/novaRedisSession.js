@@ -12,6 +12,8 @@
  * @property {string} summary
  * @property {number} last_active - unix seconds
  * @property {number} token_estimate
+ * @property {number} [summary_covered_message_count] - messages[0..count) folded into `summary`
+ * @property {boolean} [summarize_pending] - summarization queued or still due
  */
 
 /**
@@ -34,7 +36,48 @@ export function createEmptyNovaSession(chatId) {
     summary: '',
     last_active: Math.floor(Date.now() / 1000),
     token_estimate: 0,
+    summary_covered_message_count: 0,
+    summarize_pending: false,
   };
+}
+
+/**
+ * Ensure checkpoint / pending flags exist (Redis JSON or older payloads).
+ * @param {NovaChatSession | null} session
+ * @returns {NovaChatSession | null}
+ */
+export function normalizeNovaSessionShape(session) {
+  if (!session) return null;
+  const msgLen = session.messages?.length ?? 0;
+  if (typeof session.summary_covered_message_count !== 'number' || session.summary_covered_message_count < 0) {
+    const sum = session.summary != null ? String(session.summary).trim() : '';
+    session.summary_covered_message_count = sum ? msgLen : 0;
+  }
+  if (session.summary_covered_message_count > msgLen) {
+    session.summary_covered_message_count = msgLen;
+  }
+  if (typeof session.summarize_pending !== 'boolean') {
+    session.summarize_pending = false;
+  }
+  return session;
+}
+
+/**
+ * Dialog messages for the next Bedrock completion: `messages.slice(summary_covered_message_count)`.
+ * Earlier turns are treated as covered by `session.summary` (rolling memory); avoids duplicating them
+ * in the message list alongside the summary block.
+ *
+ * @param {NovaChatSession} session
+ * @returns {NovaChatMessage[]}
+ */
+export function novaPriorDialogMessagesForBedrock(session) {
+  normalizeNovaSessionShape(session);
+  const msgs = session.messages || [];
+  const n = msgs.length;
+  let covered = session.summary_covered_message_count ?? 0;
+  if (covered < 0) covered = 0;
+  if (covered > n) covered = n;
+  return msgs.slice(covered);
 }
 
 /**
@@ -47,7 +90,7 @@ export async function novaSessionGet(redis, userId, chatId) {
   const raw = await redis.get(novaSessionRedisKey(userId, chatId));
   if (raw == null || raw === '') return null;
   try {
-    return JSON.parse(raw);
+    return normalizeNovaSessionShape(JSON.parse(raw));
   } catch {
     return null;
   }

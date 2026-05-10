@@ -21,7 +21,7 @@ import {
  * - GET    /api/nova/chat-sessions/:chatId
  * - PATCH  /api/nova/chat-sessions/:chatId
  * - POST   /api/nova/chat-sessions/:chatId/token-usage
- * - POST   /api/nova/chat-sessions/:chatId/completions (Bedrock: haiku | sonnet | opus)
+ * - POST   /api/nova/chat-sessions/:chatId/completions (Bedrock: haiku | sonnet | opus; 409 if concurrent)
  */
 export default fp(async function novaChatSessionsRoutes(fastify) {
   const preAuth = { preHandler: [fastify.authenticate] };

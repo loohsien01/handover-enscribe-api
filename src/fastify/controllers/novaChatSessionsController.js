@@ -2,11 +2,19 @@ import { randomUUID } from 'crypto';
 import { getSupabaseClient } from '../../utils/supabase.js';
 import { getRedisClient } from '../../utils/redisClient.js';
 import {
+  acquireNovaCompletionLock,
+  releaseNovaCompletionLock,
+} from '../../utils/novaCompletionLock.js';
+import {
   createEmptyNovaSession,
+  normalizeNovaSessionShape,
+  novaPriorDialogMessagesForBedrock,
   novaSessionGet,
   novaSessionSave,
   novaSessionTtlSeconds,
 } from '../../utils/novaRedisSession.js';
+import { enqueueNovaSummarizeJob } from '../../utils/novaSummarizeQueue.js';
+import { shouldEnqueueNovaSummarize } from '../../utils/novaSummarizeService.js';
 import {
   insertChatSessionRow,
   loadNovaChatSessionFromSupabase,
@@ -184,6 +192,9 @@ export async function patchNovaChatSession(request, reply) {
     session.messages = [...session.messages, ...body.appendMessages];
     messageSync = 'append';
   }
+  if (messageSync === 'full') {
+    session.summary_covered_message_count = 0;
+  }
 
   const supabase = getSupabaseClient(request.headers.authorization);
   const persistResult = await persistNovaChatSession(supabase, {
@@ -270,99 +281,124 @@ export async function postNovaChatCompletion(request, reply) {
   const masterKey = await userMasterKeyOr500(request, reply);
   if (!masterKey) return;
 
-  let session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
-  if (!session) {
-    return reply.status(404).send({ error: 'Chat session not found or expired', code: 'NOVA_SESSION_NOT_FOUND' });
+  const lockToken = await acquireNovaCompletionLock(redis, userId, chatId);
+  if (!lockToken) {
+    return reply.status(409).send({
+      error: 'Another completion is in progress for this chat',
+      code: 'NOVA_COMPLETION_IN_FLIGHT',
+    });
   }
 
-  const supabase = getSupabaseClient(request.headers.authorization);
-
-  const { data: orgRow, error: orgErr } = await supabase
-    .from('chat_sessions')
-    .select('organization_id')
-    .eq('id', chatId)
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  if (orgErr || !orgRow) {
-    return reply.status(404).send({ error: 'Chat session not found', code: 'NOVA_SESSION_NOT_FOUND' });
-  }
-
-  const priorMessages = session.messages || [];
-  const reqBody = getNovaChatCompletionRequestBody({
-    modelId,
-    summary: session.summary ?? '',
-    priorMessages,
-    userMessage: body.message,
-  });
-
-  let inv;
   try {
-    inv = await claudeInvokeModel(reqBody);
-  } catch (err) {
-    console.error('[postNovaChatCompletion] Bedrock invoke failed:', err);
-    return reply.status(502).send({
-      error: 'Model request failed',
-      code: 'NOVA_BEDROCK_FAILED',
-      detail: process.env.NODE_ENV !== 'production' ? String(err?.message || err) : undefined,
+    let session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
+    if (!session) {
+      return reply.status(404).send({ error: 'Chat session not found or expired', code: 'NOVA_SESSION_NOT_FOUND' });
+    }
+
+    const supabase = getSupabaseClient(request.headers.authorization);
+
+    const { data: orgRow, error: orgErr } = await supabase
+      .from('chat_sessions')
+      .select('organization_id')
+      .eq('id', chatId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (orgErr || !orgRow) {
+      return reply.status(404).send({ error: 'Chat session not found', code: 'NOVA_SESSION_NOT_FOUND' });
+    }
+
+    normalizeNovaSessionShape(session);
+    /** Dialog tail for Bedrock only — full transcript stays in `session.messages`. */
+    const dialogTailForBedrock = novaPriorDialogMessagesForBedrock(session);
+    const reqBody = getNovaChatCompletionRequestBody({
+      modelId,
+      summary: session.summary ?? '',
+      priorMessages: dialogTailForBedrock,
+      userMessage: body.message,
     });
-  }
 
-  const assistantText = inv.text;
-  const appendedPlain = [
-    { role: 'user', content: body.message },
-    { role: 'assistant', content: assistantText },
-  ];
-  session.messages = [...priorMessages, ...appendedPlain];
+    let inv;
+    try {
+      inv = await claudeInvokeModel(reqBody);
+    } catch (err) {
+      console.error('[postNovaChatCompletion] Bedrock invoke failed:', err);
+      return reply.status(502).send({
+        error: 'Model request failed',
+        code: 'NOVA_BEDROCK_FAILED',
+        detail: process.env.NODE_ENV !== 'production' ? String(err?.message || err) : undefined,
+      });
+    }
 
-  if (inv.usage) {
-    const add = inv.usage.input_tokens + inv.usage.output_tokens;
-    session.token_estimate = (session.token_estimate ?? 0) + add;
-  }
+    const assistantText = inv.text;
+    const appendedPlain = [
+      { role: 'user', content: body.message },
+      { role: 'assistant', content: assistantText },
+    ];
+    session.messages = [...(session.messages || []), ...appendedPlain];
 
-  const persistResult = await persistNovaChatSession(supabase, {
-    chatId,
-    userId,
-    session,
-    masterKey,
-    messageSync: 'append',
-    appendedMessages: appendedPlain,
-  });
-  if (!persistResult.success) {
-    return reply.status(500).send({
-      error: persistResult.error || 'Failed to persist chat session',
-      code: 'NOVA_SESSION_PERSIST_FAILED',
-    });
-  }
+    if (inv.usage) {
+      const add = inv.usage.input_tokens + inv.usage.output_tokens;
+      session.token_estimate = (session.token_estimate ?? 0) + add;
+    }
 
-  if (inv.usage) {
-    const tokenResult = await insertChatTokenUsageRow(supabase, {
+    const persistResult = await persistNovaChatSession(supabase, {
       chatId,
       userId,
-      organizationId: orgRow.organization_id,
-      input_tokens: inv.usage.input_tokens,
-      output_tokens: inv.usage.output_tokens,
-      model: inv.modelId,
-      cost_usd: undefined,
+      session,
+      masterKey,
+      messageSync: 'append',
+      appendedMessages: appendedPlain,
     });
-    if (!tokenResult.success) {
-      console.error('[postNovaChatCompletion] token usage insert failed:', tokenResult.error);
+    if (!persistResult.success) {
+      return reply.status(500).send({
+        error: persistResult.error || 'Failed to persist chat session',
+        code: 'NOVA_SESSION_PERSIST_FAILED',
+      });
     }
+
+    if (inv.usage) {
+      const tokenResult = await insertChatTokenUsageRow(supabase, {
+        chatId,
+        userId,
+        organizationId: orgRow.organization_id,
+        input_tokens: inv.usage.input_tokens,
+        output_tokens: inv.usage.output_tokens,
+        model: inv.modelId,
+        cost_usd: undefined,
+      });
+      if (!tokenResult.success) {
+        console.error('[postNovaChatCompletion] token usage insert failed:', tokenResult.error);
+      }
+    }
+
+    normalizeNovaSessionShape(session);
+    /** Non-production only: integration tests enqueue without hitting ~70% context (see `NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE`). */
+    const testForceSummarizeEnqueue =
+      process.env.NODE_ENV !== 'production' &&
+      process.env.NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE === '1';
+    const thresholdEnqueue = shouldEnqueueNovaSummarize(session, inv.usage, body.model);
+    if (!session.summarize_pending && (testForceSummarizeEnqueue || thresholdEnqueue)) {
+      session.summarize_pending = true;
+      await enqueueNovaSummarizeJob(redis, { userId, chatId });
+    }
+
+    const ttl = novaSessionTtlSeconds();
+    await novaSessionSave(redis, userId, session, ttl);
+
+    return reply.send({
+      assistant: { role: 'assistant', content: assistantText },
+      usage: inv.usage
+        ? {
+            input_tokens: inv.usage.input_tokens,
+            output_tokens: inv.usage.output_tokens,
+            total_tokens: inv.usage.input_tokens + inv.usage.output_tokens,
+            model: inv.modelId,
+          }
+        : null,
+      session,
+    });
+  } finally {
+    await releaseNovaCompletionLock(redis, userId, chatId, lockToken);
   }
-
-  const ttl = novaSessionTtlSeconds();
-  await novaSessionSave(redis, userId, session, ttl);
-
-  return reply.send({
-    assistant: { role: 'assistant', content: assistantText },
-    usage: inv.usage
-      ? {
-          input_tokens: inv.usage.input_tokens,
-          output_tokens: inv.usage.output_tokens,
-          total_tokens: inv.usage.input_tokens + inv.usage.output_tokens,
-          model: inv.modelId,
-        }
-      : null,
-    session,
-  });
 }

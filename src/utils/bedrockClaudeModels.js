@@ -48,3 +48,49 @@ export function defaultHaikuBedrockModelId() {
   }
   return DEFAULT_MODEL_IDS.haiku;
 }
+
+/** Approximate max input context (tokens) for thresholding; override per preset via env. */
+const DEFAULT_CONTEXT_LIMITS = {
+  haiku: 200_000,
+  sonnet: 200_000,
+  opus: 200_000,
+};
+
+/**
+ * @param {'haiku' | 'sonnet' | 'opus'} preset
+ * @returns {number} positive token limit, or 0 if unknown
+ */
+export function novaPresetContextLimitTokens(preset) {
+  const k = String(preset || '').toLowerCase();
+  if (k !== 'haiku' && k !== 'sonnet' && k !== 'opus') return 0;
+  const envName = `NOVA_BEDROCK_CONTEXT_LIMIT_${ENV_SUFFIX[k]}`;
+  const fromEnv = process.env[envName];
+  if (fromEnv != null && String(fromEnv).trim() !== '') {
+    const n = Number.parseInt(String(fromEnv).trim(), 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_CONTEXT_LIMITS[k];
+}
+
+/**
+ * Ratio of prompt size to model context (0–1+) for Nova completion thresholding.
+ * @param {{ input_tokens?: number } | null | undefined} usage
+ * @param {'haiku' | 'sonnet' | 'opus'} preset
+ * @returns {number}
+ */
+export function novaCompletionContextUsageRatio(usage, preset) {
+  if (!usage || typeof usage.input_tokens !== 'number' || usage.input_tokens < 0) return 0;
+  const limit = novaPresetContextLimitTokens(preset);
+  if (!limit) return 0;
+  return usage.input_tokens / limit;
+}
+
+/**
+ * @returns {number} default 0.7
+ */
+export function novaSummarizeContextThreshold() {
+  const raw = process.env.NOVA_SUMMARIZE_CONTEXT_THRESHOLD;
+  const n = raw != null && raw !== '' ? Number.parseFloat(String(raw)) : NaN;
+  if (Number.isFinite(n) && n > 0 && n <= 1) return n;
+  return 0.7;
+}
