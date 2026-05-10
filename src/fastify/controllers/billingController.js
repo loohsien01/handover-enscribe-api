@@ -1,6 +1,10 @@
 import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
 import { getStripe } from '../../utils/stripeClient.js';
 import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
+import {
+  computeEntitlements,
+  loadInternalAccess,
+} from '../../utils/billingEntitlements.js';
 
 const PRO_PRICE_ENV = 'STRIPE_PRICE_PRO_MONTHLY';
 
@@ -74,17 +78,27 @@ export async function getBillingStatus(request, reply) {
     return reply.status(403).send({ error: 'Not a member of this organization' });
   }
 
+  const internalAccess = await loadInternalAccess(request.user.id).catch((err) => {
+    console.error('[billing] loadInternalAccess:', err);
+    return null;
+  });
+
+  const entitlements = computeEntitlements({
+    userId: request.user.id,
+    org,
+    internalAccess,
+  });
+
   return reply.status(200).send({
     organization: {
       id: org.id,
       name: org.name,
       type: org.type,
-      plan_key: org.plan_key,
-      subscription_status: org.subscription_status,
       current_period_end: org.current_period_end,
       cancel_at_period_end: org.cancel_at_period_end,
       stripe_customer_id: org.stripe_customer_id,
     },
+    entitlements,
   });
 }
 

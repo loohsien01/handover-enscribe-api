@@ -114,17 +114,63 @@ export async function runBillingOrgTests() {
       if (org.type !== 'personal') {
         return { passed: false, message: `expected type personal, got ${org.type}` };
       }
-      if (org.plan_key !== 'free') {
-        return { passed: false, message: `expected plan_key free for unpaid test account, got ${org.plan_key}` };
-      }
-      if (org.subscription_status !== 'none') {
+      if ('plan_key' in org || 'subscription_status' in org) {
         return {
           passed: false,
-          message: `expected subscription_status none for unpaid test account, got ${org.subscription_status}`,
+          message: 'plan_key/subscription_status should live under entitlements only',
         };
+      }
+      const ent = data?.entitlements;
+      if (!ent || typeof ent.entitled !== 'boolean') {
+        return { passed: false, message: 'missing entitlements payload' };
+      }
+      if (ent.plan_key !== 'free') {
+        return { passed: false, message: `expected entitlements.plan_key free, got ${ent.plan_key}` };
+      }
+      if (ent.subscription_status !== 'none') {
+        return {
+          passed: false,
+          message: `expected entitlements.subscription_status none, got ${ent.subscription_status}`,
+        };
+      }
+      if (typeof ent.has_internal_access !== 'boolean' || typeof ent.has_pro_plan !== 'boolean') {
+        return { passed: false, message: 'entitlements flags missing or wrong type' };
+      }
+      if (typeof ent.ui_experience_version !== 'string') {
+        return { passed: false, message: 'entitlements.ui_experience_version missing' };
+      }
+      if (!['internal_access', 'subscription', 'none'].includes(ent.entitlement_source)) {
+        return { passed: false, message: `unexpected entitlement_source ${ent.entitlement_source}` };
       }
       return { passed: true };
     },
+  });
+
+  await runner.test('GET /me/entitlements (authenticated)', {
+    method: 'GET',
+    endpoint: '/api/me/entitlements',
+    headers: authHeaders,
+    expectedStatus: 200,
+    customValidator: (data) => {
+      const ent = data?.entitlements;
+      if (!ent) return { passed: false, message: 'missing entitlements' };
+      if (typeof ent.entitled !== 'boolean') {
+        return { passed: false, message: 'entitlements.entitled missing' };
+      }
+      if (typeof ent.ui_experience_version !== 'string') {
+        return { passed: false, message: 'entitlements.ui_experience_version missing' };
+      }
+      if (!['internal_access', 'subscription', 'none'].includes(ent.entitlement_source)) {
+        return { passed: false, message: `unexpected entitlement_source ${ent.entitlement_source}` };
+      }
+      return { passed: true };
+    },
+  });
+
+  await runner.test('GET /me/entitlements without authentication (401)', {
+    method: 'GET',
+    endpoint: '/api/me/entitlements',
+    expectedStatus: 401,
   });
 
   const checkoutRes = await fetch(`${runner.baseUrl}/api/billing/checkout-session`, {

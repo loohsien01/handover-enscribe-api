@@ -2,6 +2,11 @@
 
 Backend routes live under the Fastify `/api` prefix (see [server.js](../src/fastify/server.js)).
 
+> **Architecture & open concerns:** see [`BILLING_ARCHITECTURE.md`](./BILLING_ARCHITECTURE.md)
+> for the entitlements model, FE contract, paywall enforcement plan, webhook
+> idempotency notes, and the security/rollout checklist. This doc covers Stripe
+> setup and integration mechanics.
+
 ## Database
 
 1. Ensure `update_updated_at_column()` exists (already used by `userProfiles`).

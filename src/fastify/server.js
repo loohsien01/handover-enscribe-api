@@ -31,6 +31,7 @@ import { registerNoteTemplateSectionOrdersRoutes } from './routes/noteTemplateSe
 import { registerCleanupRoutes } from './routes/cleanup.js';
 import userProfileRoutes from './routes/userProfile.js';
 import billingRoutes from './routes/billing.js';
+import entitlementsRoutes from './routes/entitlements.js';
 import stripeWebhookRoutes from './routes/stripeWebhook.js';
 import novaChatSessionsRoutes from './routes/novaChatSessions.js';
 import { closeRedisClient, getRedisClient, getRedisUrl } from '../utils/redisClient.js';
@@ -175,6 +176,7 @@ async function createFastifyApp(options = {}) {
     await registerNoteTemplateSectionOrdersRoutes(apiScope);
     await apiScope.register(userProfileRoutes);
     await apiScope.register(billingRoutes);
+    await apiScope.register(entitlementsRoutes);
     await apiScope.register(novaChatSessionsRoutes);
     await registerMaskPhiRoutes(apiScope);
     await registerTranscribeRoutes(apiScope);

@@ -1,5 +1,117 @@
 # Nova AI — Medical AI Assistant (HIPAA-Safe Chat + Scribe Platform)
 
+## Nova HTTP API (frontend integration)
+
+Base path: `/api/nova/…` on the Fastify API host (e.g. local `http://localhost:3001`, production `https://api.enscribe.online`).
+
+**Auth:** every route requires a valid **Bearer JWT** (same Supabase session / `Authorization: Bearer <access_token>` pattern as the rest of the API). Unauthenticated requests are rejected by the server before Nova logic runs.
+
+**Note:** there is **no** `GET /api/nova/chat-sessions` list endpoint. The client should **store `chatId`** returned from create (and optionally load known IDs from your own UI state or a future listing API). Reload a session with `GET …/:chatId`.
+
+### Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/api/nova/chat-sessions` | Create a new chat; returns `chatId` + initial `session`. |
+| `GET` | `/api/nova/chat-sessions/:chatId` | Load session (Redis first, else hydrate from Supabase). |
+| `PATCH` | `/api/nova/chat-sessions/:chatId` | Update `summary`, `token_estimate`, `messages`, or `appendMessages`. |
+| `POST` | `/api/nova/chat-sessions/:chatId/completions` | Send one user message; Bedrock reply; persists user + assistant turns. |
+| `POST` | `/api/nova/chat-sessions/:chatId/token-usage` | Record token usage (optional path if the client meters separately). |
+
+`:chatId` must be a UUID. Validation errors return **400** with a serialized Zod `error` payload.
+
+### `session` object (API shape)
+
+Mirrors Redis working state; use it to render the transcript and optional indicators:
+
+- **`chat_id`** — session id (same as URL `:chatId` once created).
+- **`messages`** — array of `{ role: 'user' \| 'assistant' \| 'system', content: string }`; **full transcript** in order. After each successful completion, the API appends the new user message and assistant reply.
+- **`summary`** — rolling text summary (may be empty for new chats).
+- **`summary_covered_message_count`** — how many leading `messages` are treated as folded into `summary` for model context (advanced; usually you still render all `messages` for the user).
+- **`summarize_pending`** — `true` when a rolling summarization job is queued or due; safe to show a subtle “updating memory…” or ignore.
+- **`token_estimate`**, **`last_active`** — hints / bookkeeping.
+
+Server-side env knobs (context limits, summarize thresholds, queue timing) **do not** need to be configured in the frontend.
+
+### `POST …/completions`
+
+**Body (JSON, strict):**
+
+```json
+{
+  "model": "haiku",
+  "message": "User message for this turn (non-empty string)"
+}
+```
+
+`model` is one of: **`haiku`**, **`sonnet`**, **`opus`** (presets; server maps to Bedrock model ids).
+
+**Success (200):**
+
+```json
+{
+  "assistant": { "role": "assistant", "content": "…" },
+  "usage": {
+    "input_tokens": 1234,
+    "output_tokens": 56,
+    "total_tokens": 1290,
+    "model": "…"
+  },
+  "session": { }
+}
+```
+
+`usage` may be **`null`** if Bedrock does not return usage metadata for that call; the UI should tolerate that.
+
+**Behavior:** not streaming — one HTTP request/response per turn. Use a **generous client timeout** (tens of seconds). Only one completion should be **in flight per `chatId`** at a time (see **409** below).
+
+### `PATCH …/:chatId`
+
+Body must include **at least one** of: `summary`, `token_estimate`, `messages`, `appendMessages`.
+
+- **`messages`** — replace the full transcript (and the server resets `summary_covered_message_count` to `0`).
+- **`appendMessages`** — append-only array of new `{ role, content }`; do **not** send both `messages` and `appendMessages` in the same request.
+
+Caps (from schema): e.g. up to **500** messages on full replace, **50** on append; content length limits per field apply — see `src/fastify/schemas/novaChatRequests.js` for exact numbers.
+
+### `POST …/:chatId/token-usage`
+
+**Body:**
+
+```json
+{
+  "input_tokens": 1000,
+  "output_tokens": 200,
+  "model": "optional-string",
+  "cost_usd": 0
+}
+```
+
+**Success (201):** `{ "ok": true, "total_tokens": … }` (running total from the insert path). Most chat UIs can rely on **`usage` from completions** instead of calling this.
+
+### Error responses (stable `code` where provided)
+
+| HTTP | `code` (when present) | When |
+|------|------------------------|------|
+| 400 | (Zod / validation) | Bad `chatId`, body schema, or invalid `model` preset (`NOVA_MODEL_INVALID`). |
+| 404 | `NOVA_SESSION_NOT_FOUND` | Unknown chat or no access. |
+| 409 | `NOVA_COMPLETION_IN_FLIGHT` | Second simultaneous `POST …/completions` for the same chat; wait and retry or disable send until the first completes. |
+| 502 | `NOVA_BEDROCK_FAILED` | Bedrock invoke failed. |
+| 503 | `REDIS_UNAVAILABLE` | Nova chat requires Redis (`REDIS_URL`); config issue on the server. |
+| 500 | `NOVA_SESSION_PERSIST_FAILED`, `NOVA_TOKEN_USAGE_FAILED`, etc. | Persistence or internal errors. |
+
+Non-production errors may include a **`detail`** string (e.g. Bedrock message).
+
+### UX tips for the client
+
+- After **201** create, keep `chatId` and use **`session.messages`** for the thread.
+- On **409**, show “still thinking…” / disable send; do not fire another completion until the prior request finishes.
+- **Summarization** runs in a **background worker**; the chat reply path does not block on it. `summarize_pending` may flicker `true` then `false` after a poll or next completion.
+
+Deeper behavior (Redis keys, worker queue, encryption, Bedrock prompt assembly) is described below in this same document.
+
+---
+
 ## Overview
 
 This document defines the architecture for a HIPAA-compliant AI assistant built on AWS Bedrock (Claude) designed for clinicians. The system functions as a secure, general-purpose “ChatGPT for healthcare professionals,” supporting both clinical and non-clinical workflows (for example documentation, insurance contracts, billing, and general medical reasoning).
@@ -18,11 +130,18 @@ The system is built around a **stateless LLM with stateful application memory la
 | AWS Bedrock orchestration (chat turn) | **Done** — `POST /api/nova/chat-sessions/:chatId/completions` with presets `haiku` \| `sonnet` \| `opus` (`getNovaChatCompletionRequestBody` + `claudeInvokeModel`); appends user + assistant messages, records `chat_token_usage` when Bedrock returns `usage`, refreshes Redis. |
 | Automated tests (completions) | **Done** — `tests/nova-chat-sessions-completions.test.js` (`npm run test:nova-chat-sessions-completions`); harness supports `timeoutMs` / `AbortSignal.timeout`; included in `tests/runAll.js` (suite 2.15). Unit: `tests/novaBedrockChat.unit.test.js`, `tests/novaSummarize.unit.test.js`. **Queue E2E** (opt-in, `.e2e.test.js`, not in runAll): `NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE=1` in `.env.local` (dev/staging only; server `NODE_ENV=production` ignores it), restart Fastify, then `npm run test:nova-summarize-queue-e2e` — spawns worker subprocess, two completion rounds after rolling summarize, asserts full persisted transcript length, `summary_covered_message_count`, and that the next Bedrock turn uses a single-message dialog (no duplicated pre-checkpoint pairs); writes `test-results/nova-summarize-queue-e2e.json`. |
 | Deploy secrets (Redis on EC2) | **Done** — GitHub Actions deploy writes `REDIS_URL` (required) and optional `REDIS_AUTH_TOKEN` into EC2 `.env.local`. |
-| Chat persistence path | **Done (sync)** — Nova create / PATCH and `POST .../completions` write through to Supabase; Redis refreshed after durable writes. **Deferred:** Postgres outbox / write-behind (not needed until latency or scale justify it). |
+| Chat persistence path | **Done (sync)** — Nova create / PATCH and `POST .../completions` write through to Supabase; Redis refreshed after durable writes. **Deferred:** Postgres outbox / write-behind — only if synchronous writes become a bottleneck; there is **no** separate background worker for normal chat message persistence today. |
 | Background worker (rolling summarization) | **Done** — `npm run worker:nova-summarize` (`src/workers/novaSummarizeWorker.js`): drains Redis list `nova:summarize:queue`, **sweep** re-queues members of `nova:summarize:due` on an interval. API enqueues after `POST .../completions` when Bedrock `usage.input_tokens` ≥ `NOVA_SUMMARIZE_CONTEXT_THRESHOLD` (default `0.7`) of the preset context limit (non-production tests may use `NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE=1` to enqueue without hitting threshold). Worker uses `SUPABASE_SERVICE_ROLE_KEY` and `getOrCreateUserMasterKey` to decrypt/load and encrypt/persist session summary + messages. |
 | Per-session completion lock | **Done** — Redis `nova:completion-lock:{userId}:{chatId}` (NX + TTL); concurrent `POST .../completions` → **409** `NOVA_COMPLETION_IN_FLIGHT`. Env: `NOVA_COMPLETION_LOCK_TTL_SEC` (default 300). |
 | Full transcript vs Bedrock message list | **Done** — After each completion, `session.messages` is the **full** ordered transcript (append user + assistant). The Bedrock request uses **`novaPriorDialogMessagesForBedrock`**: `messages.slice(summary_covered_message_count)` only, so turns already folded into the rolling summary are not duplicated in the model’s `messages` array. |
 | Redis failure → regenerate summary | **Partial** — history reloads from Supabase; rolling summary is whatever was last persisted. **Rolling LLM summarize** runs via worker when enqueued; not automatically replayed on cold Redis rebuild unless a job remains in `nova:summarize:due`. |
+
+#### What is still partial, deferred, or not implemented?
+
+- **Deferred (by design):** **Postgres outbox / write-behind** — optional pattern if per-turn Supabase + Redis ever becomes too slow; not a “chat message worker”; normal turns stay on the synchronous API path above.
+- **Partial:** **Redis cold / loss** — full message history reloads from Supabase; rolling `summary` is last-persisted only. The summarize worker does not auto-run unless a job remains queued (`nova:summarize:queue` / `nova:summarize:due`).
+- **Planned (not shipped):** [Rolling summary — structured JSON](#rolling-summary--structured-json-planned) (`schema_version` 1: `facts`, `decisions`, `constraints`, `follow_ups`, `open_questions`).
+- **Future / open:** [Future enhancements](#future-enhancements) and [Implementation open questions](#implementation-open-questions) (some items partially settled there).
 
 ---
 
@@ -251,18 +370,63 @@ Chat messages stay **synchronously** persisted to Supabase on create / PATCH / c
 
 - **One in-flight completion per `chat_id`:** if a `POST .../completions` is already running for that session, additional requests return **409 Conflict** (`NOVA_COMPLETION_IN_FLIGHT`) so message order does not interleave across tabs or devices. Implemented with Redis NX + TTL.
 
-### Output format (structured) — target
+### Rolling summary — structured JSON (planned)
+
+Today the persisted rolling summary is **plain text** in `encrypted_summary`. The target is to store **validated JSON** (same encryption path, or a dedicated column) so the UI and prompts can rely on stable slots. Nova is an **assistant for clinicians** but **not** limited to clinical threads: fields are intentionally **generic**, with a **slight bias** toward capturing safety-relevant constraints (allergies, avoidances) when they appear.
+
+#### Schema (`schema_version` 1)
+
+| Field | Type | Purpose |
+|-------|------|--------|
+| `schema_version` | integer | **Required.** Start at `1`; bump when fields are added/renamed. |
+| `facts` | string[] | Short bullet strings: what was **stated or established** in the thread (clinical or non-clinical). |
+| `decisions` | string[] | Conclusions, agreements, or **committed plans** (“we will…”, “chosen option…”). |
+| `constraints` | string[] | Hard or soft **limits**: allergies, drugs/foods to avoid, policy constraints, “do not …”, user preferences that must be respected. |
+| `follow_ups` | string[] | **Next steps**, reminders, deadlines, or action items (for the user or the assistant). |
+| `open_questions` | string[] | **Unresolved** items that a future turn might answer. |
+
+**Rules for the summarizer model**
+
+- Output **only** JSON matching this shape (no markdown fence, no commentary).
+- Use **empty arrays** when a section has nothing to say (do not omit keys).
+- Each array entry is one **concise** line (a single bullet); avoid long paragraphs inside strings.
+- For **non-medical** chats, `facts` / `decisions` / `follow_ups` carry the weight; `constraints` may capture preferences (“keep answers short”) or contractual/legal cautions when relevant.
+- **Do not invent** clinical facts; if unsure, put uncertainty in `open_questions`.
+
+**Example (mixed generic + clinical)**
 
 ```json
 {
-  "chief_complaint": "",
-  "timeline": "",
-  "symptoms": [],
-  "medications": [],
-  "clinical_assessment": [],
-  "open_questions": []
+  "schema_version": 1,
+  "facts": [
+    "User is comparing two payer contract clauses on telehealth reimbursement.",
+    "User reports penicillin allergy documented in chart.",
+    "Blood pressure home readings in the 150s on current regimen."
+  ],
+  "decisions": [
+    "Agreed to prioritize clause 4(b) for legal review before signing.",
+    "User will log AM BP for one week before next medication change."
+  ],
+  "constraints": [
+    "Avoid beta-lactam antibiotics (penicillin allergy).",
+    "User wants concise bullet replies unless they ask for depth."
+  ],
+  "follow_ups": [
+    "Send draft redlines to counsel by Friday.",
+    "Recheck BP log at follow-up visit."
+  ],
+  "open_questions": [
+    "Whether payer allows audio-only telehealth in NJ for established patients.",
+    "Whether lightheadedness is orthostatic vs medication-related."
+  ]
 }
 ```
+
+**Implementation notes (when shipped)**
+
+- Validate with JSON Schema or Zod after model output; on failure, **fail open**: keep previous summary text and log (same as today).
+- **Rendering for Bedrock** can remain a compact plaintext projection of these arrays (sorted sections) until the chat stack consumes JSON directly.
+- A single-field JSON wrapper (e.g. only `text`) is **not** worth it; stay on plain text until this multi-field schema ships.
 
 ---
 
@@ -320,6 +484,20 @@ If another completion is already in flight for this `chat_id`, respond with **40
 
 - Rebuild session from Supabase (decrypt and repopulate cache on GET)
 - Regenerate summary (optional product behavior; not automatic in API today)
+
+### Total Redis loss (flush, new cluster, prolonged outage)
+
+**What lives only in Redis today:** hot session blobs (`nova:chat:{userId}:{chatId}`), the summarize **queue list** (`nova:summarize:queue`), and the **due set** (`nova:summarize:due`). The worker **sweep** re-pushes jobs from the due set to the list; if Redis is **empty**, sweep has **nothing** to recover.
+
+**Without an outbox** (acceptable for Nova chat: no strict exactly-once, duplicate summarize jobs are tolerable):
+
+1. **Baseline (already true):** **Messages** and the **last persisted** rolling summary load from Supabase; users can keep chatting. Context may be **large** until summarization runs again.
+2. **Recommended when you want faster recovery (pick one or combine):**
+   - **Durable flags on `chat_sessions`** — persist `summarize_pending` and `summary_covered_message_count` (today hydration resets some of this from Redis-only state). After Redis rebuild, a **reconciliation** step (cron or worker startup) reads rows with `summarize_pending = true` and **re-enqueues** `{ userId, chatId }` to Redis. Duplicate jobs are OK: the second run usually sees **no delta** after checkpointing.
+   - **Lazy re-enqueue** — on first `GET` or `POST …/completions` after a cold cache, if a cheap heuristic says context is heavy (e.g. `token_estimate` or message count) and summary is stale vs messages, enqueue **one** summarize job (rate-limit per chat).
+   - **Minimal** — do nothing extra: the **next** completion that crosses the **~70% context** threshold enqueues summarize again; simplest, but some sessions may stay “fat” until then.
+
+**Dupes:** Two summarize passes for the same chat close together are **wasted tokens** but typically **harmless** if merge + checkpoint are correct; no need for a transactional outbox for this product tier.
 
 ### Supabase failure
 
