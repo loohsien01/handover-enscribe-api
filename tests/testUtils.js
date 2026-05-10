@@ -18,7 +18,7 @@ function parseJsonSafe(text) {
  * Make HTTP request to Fastify server
  */
 export async function makeRequest(method, url, options = {}) {
-  const { headers = {}, body = null, expectedStatus = null } = options;
+  const { headers = {}, body = null, expectedStatus = null, timeoutMs } = options;
 
   try {
     // Only set Content-Type if there's a body
@@ -26,10 +26,16 @@ export async function makeRequest(method, url, options = {}) {
       ? { 'Content-Type': 'application/json', ...headers }
       : headers;
 
+    const signal =
+      timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined;
+
     const response = await fetch(url, {
       method,
       headers: requestHeaders,
       body: body ? JSON.stringify(body) : null,
+      signal,
     });
 
     const data = await response.json().catch(() => ({}));
@@ -130,6 +136,8 @@ export class TestRunner {
       testNumber,
       /** Called synchronously before fetch (use for progress logs when a request may hang). */
       onBeforeRequest,
+      /** Abort request after this many ms (e.g. Bedrock completions). */
+      timeoutMs,
     } = config;
 
     const url = `${this.baseUrl}${endpoint}`;
@@ -140,7 +148,7 @@ export class TestRunner {
         console.error(`[TestRunner] onBeforeRequest error for "${name}":`, e?.message || e);
       }
     }
-    const response = await makeRequest(method, url, { body, headers, expectedStatus });
+    const response = await makeRequest(method, url, { body, headers, expectedStatus, timeoutMs });
 
     // Check status and expected fields
     let passed = response.passed &&

@@ -16,6 +16,7 @@
     "test:aws": "node tests/aws.test.js",
     "test:dot-phrases": "node tests/dot-phrases.test.js",
     "test:nova-chat-sessions": "node tests/nova-chat-sessions.test.js",
+    "test:nova-chat-sessions-completions": "node tests/nova-chat-sessions-completions.test.js",
     "test:user-profile": "node tests/user-profile.test.js",
     "test:billing-org": "node tests/billing-org.test.js",
     "test:patient-encounters": "node tests/patient-encounters.test.js",

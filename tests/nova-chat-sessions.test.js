@@ -4,6 +4,11 @@
  * Requires: TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local
  * Requires: Supabase migrations including chat_sessions / chat_messages / chat_token_usage
  *   (`sql/migrations/20260507_nova_chat_sessions.sql`) and organizations billing tables.
+ *
+ * Does not call Bedrock or `POST .../completions`. Saved JSON has no assistant/LLM turns — only
+ * PATCH append (e.g. `nova-test-message`). Completions + optional Bedrock E2E:
+ * `tests/nova-chat-sessions-completions.test.js` (`npm run test:nova-chat-sessions-completions`);
+ * set `skipE2ETest = false` there to run Test 8.
  */
 import dotenv from 'dotenv';
 import path from 'path';

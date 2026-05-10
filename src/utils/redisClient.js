@@ -6,7 +6,8 @@
  *
  * Optional REDIS_AUTH_TOKEN: merged into the URL as the password when REDIS_URL has no userinfo
  * password (so you can keep the token out of REDIS_URL). If the URL already includes a password,
- * REDIS_AUTH_TOKEN is ignored.
+ * REDIS_AUTH_TOKEN is ignored. For passwordless local Redis (`redis://127.0.0.1` or `localhost`),
+ * the token is not appended so a prod token left in `.env.local` does not send AUTH.
  *
  * If REDIS_URL is set but the server is unreachable, {@link getRedisClient} returns null after
  * a failed connect (no process crash). Retries are throttled so Nova routes return 503 without
@@ -44,12 +45,26 @@ export function getRedisUrl() {
  * password (ElastiCache AUTH token, etc.).
  * @returns {string}
  */
+function isPasswordlessLocalRedisUrl(base) {
+  try {
+    const u = new URL(base);
+    const host = (u.hostname || '').toLowerCase();
+    if (u.protocol !== 'redis:') return false;
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    return false;
+  }
+}
+
 export function getRedisConnectionUrl() {
   const base = getRedisUrl();
   if (!base) return '';
   const token =
     typeof process.env.REDIS_AUTH_TOKEN === 'string' ? process.env.REDIS_AUTH_TOKEN.trim() : '';
   if (!token) return base;
+  if (isPasswordlessLocalRedisUrl(base)) {
+    return base;
+  }
   let parsed;
   try {
     parsed = new URL(base);
@@ -118,13 +133,11 @@ export async function getRedisClient() {
         );
       }
       try {
-        if (c && c.isOpen) {
+        if (c?.isOpen) {
           await c.quit();
-        } else if (c) {
-          c.disconnect();
         }
       } catch {
-        // ignore teardown errors
+        // ignore — do not call disconnect() on a failed connect (node-redis may throw ClientClosedError)
       }
       client = null;
       return null;
@@ -140,18 +153,14 @@ export async function getRedisClient() {
  * Close the shared client if it was opened. Safe to call multiple times.
  */
 export async function closeRedisClient() {
-  if (!client?.isOpen) {
-    client = null;
+  const c = client;
+  client = null;
+  if (!c?.isOpen) {
     return;
   }
   try {
-    await client.quit();
+    await c.quit();
   } catch {
-    try {
-      client.disconnect();
-    } catch {
-      // ignore
-    }
+    // ignore
   }
-  client = null;
 }
