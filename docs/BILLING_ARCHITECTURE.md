@@ -31,7 +31,7 @@ to paying users. Items are ordered by risk impact.
 |------|------|
 | `src/utils/billingEntitlements.js` | `loadInternalAccess`, pure `computeEntitlements`, `organizationHasProPlan`. |
 | `src/fastify/controllers/entitlementsController.js` | `GET /api/me/entitlements` — lightweight UX read. |
-| `src/fastify/controllers/billingController.js` | `GET /api/billing/status`, checkout-session, portal-session, schedule-cancel. |
+| `src/fastify/controllers/billingController.js` | `GET /api/billing/status`, checkout-session, portal-session, schedule-cancel, unschedule-cancel. |
 | `src/fastify/controllers/stripeWebhookController.js` | Stripe event dispatcher. |
 | `src/utils/billingStripeSync.js` | `derivePlanKeyFromSubscription`, `syncOrganizationFromSubscription`. |
 | `src/services/personalOrganization.js` | `ensurePersonalOrganization` (idempotent service-role create). |

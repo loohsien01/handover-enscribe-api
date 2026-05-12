@@ -214,10 +214,10 @@ export async function createPortalSession(request, reply) {
 }
 
 /**
- * POST /api/billing/schedule-cancel
- * Sets cancel_at_period_end on the personal org subscription (access through current period; no refund).
+ * @param {boolean} cancelAtPeriodEnd
  */
-export async function scheduleSubscriptionCancel(request, reply) {
+async function updatePersonalOrgCancelAtPeriodEnd(request, reply, cancelAtPeriodEnd) {
+  const logLabel = cancelAtPeriodEnd ? 'schedule-cancel' : 'unschedule-cancel';
   const stripe = getStripe();
   if (!stripe) {
     return reply.status(503).send({ error: 'Stripe not configured' });
@@ -239,7 +239,9 @@ export async function scheduleSubscriptionCancel(request, reply) {
   }
   if (!org.stripe_subscription_id) {
     return reply.status(400).send({
-      error: 'No subscription to schedule cancel for',
+      error: cancelAtPeriodEnd
+        ? 'No subscription to schedule cancel for'
+        : 'No subscription to resume',
       code: 'STRIPE_SUBSCRIPTION_MISSING',
     });
   }
@@ -247,11 +249,11 @@ export async function scheduleSubscriptionCancel(request, reply) {
   let subscription;
   try {
     subscription = await stripe.subscriptions.update(org.stripe_subscription_id, {
-      cancel_at_period_end: true,
+      cancel_at_period_end: cancelAtPeriodEnd,
       expand: ['items.data.price'],
     });
   } catch (err) {
-    request.log.error(err, '[billing] schedule-cancel');
+    request.log.error(err, `[billing] ${logLabel}`);
     if (err?.code === 'resource_missing') {
       return reply.status(404).send({
         error: 'Subscription not found in Stripe',
@@ -271,9 +273,27 @@ export async function scheduleSubscriptionCancel(request, reply) {
     ? new Date(periodEndUnix * 1000).toISOString()
     : null;
 
+  const resolvedFlag = subscription.cancel_at_period_end ?? cancelAtPeriodEnd;
+
   return reply.status(200).send({
-    cancel_at_period_end: subscription.cancel_at_period_end ?? true,
+    cancel_at_period_end: resolvedFlag,
     current_period_end,
     subscription_status: subscription.status,
   });
+}
+
+/**
+ * POST /api/billing/schedule-cancel
+ * Sets cancel_at_period_end on the personal org subscription (access through current period; no refund).
+ */
+export async function scheduleSubscriptionCancel(request, reply) {
+  return updatePersonalOrgCancelAtPeriodEnd(request, reply, true);
+}
+
+/**
+ * POST /api/billing/unschedule-cancel
+ * Clears cancel_at_period_end so the subscription renews normally after a prior schedule-cancel (or portal equivalent).
+ */
+export async function unscheduleSubscriptionCancel(request, reply) {
+  return updatePersonalOrgCancelAtPeriodEnd(request, reply, false);
 }
