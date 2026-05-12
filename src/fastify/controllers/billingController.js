@@ -5,6 +5,7 @@ import {
   computeEntitlements,
   loadInternalAccess,
 } from '../../utils/billingEntitlements.js';
+import { syncOrganizationFromSubscription } from '../../utils/billingStripeSync.js';
 
 const PRO_PRICE_ENV = 'STRIPE_PRICE_PRO_MONTHLY';
 
@@ -210,4 +211,69 @@ export async function createPortalSession(request, reply) {
   }
 
   return reply.status(200).send({ url: portal.url });
+}
+
+/**
+ * POST /api/billing/schedule-cancel
+ * Sets cancel_at_period_end on the personal org subscription (access through current period; no refund).
+ */
+export async function scheduleSubscriptionCancel(request, reply) {
+  const stripe = getStripe();
+  if (!stripe) {
+    return reply.status(503).send({ error: 'Stripe not configured' });
+  }
+
+  const admin = supabaseAdmin();
+  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(admin, request.user);
+  if (error) {
+    return reply.status(500).send({ error: 'Failed to load organization' });
+  }
+  if (!org) {
+    return reply.status(404).send({
+      error: 'No personal organization',
+      code: 'PERSONAL_ORG_MISSING',
+    });
+  }
+  if (!member || member.role !== 'owner') {
+    return reply.status(403).send({ error: 'Only organization owners can manage billing' });
+  }
+  if (!org.stripe_subscription_id) {
+    return reply.status(400).send({
+      error: 'No subscription to schedule cancel for',
+      code: 'STRIPE_SUBSCRIPTION_MISSING',
+    });
+  }
+
+  let subscription;
+  try {
+    subscription = await stripe.subscriptions.update(org.stripe_subscription_id, {
+      cancel_at_period_end: true,
+      expand: ['items.data.price'],
+    });
+  } catch (err) {
+    request.log.error(err, '[billing] schedule-cancel');
+    if (err?.code === 'resource_missing') {
+      return reply.status(404).send({
+        error: 'Subscription not found in Stripe',
+        code: 'STRIPE_SUBSCRIPTION_NOT_FOUND',
+      });
+    }
+    return reply.status(502).send({ error: 'Stripe request failed' });
+  }
+
+  await syncOrganizationFromSubscription(admin, subscription, org.id);
+
+  const periodEndUnix =
+    subscription.current_period_end ||
+    subscription.items?.data?.[0]?.current_period_end ||
+    null;
+  const current_period_end = periodEndUnix
+    ? new Date(periodEndUnix * 1000).toISOString()
+    : null;
+
+  return reply.status(200).send({
+    cancel_at_period_end: subscription.cancel_at_period_end ?? true,
+    current_period_end,
+    subscription_status: subscription.status,
+  });
 }

@@ -5,6 +5,7 @@ import {
   getBillingStatus,
   createCheckoutSession,
   createPortalSession,
+  scheduleSubscriptionCancel,
 } from '../controllers/billingController.js';
 
 /**
@@ -42,6 +43,15 @@ export default fp(async function billingRoutes(fastify) {
       return createPortalSession(request, reply);
     } catch (err) {
       fastify.log.error('POST /billing/portal-session:', err);
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  fastify.post('/billing/schedule-cancel', preAuth, async (request, reply) => {
+    try {
+      return scheduleSubscriptionCancel(request, reply);
+    } catch (err) {
+      fastify.log.error('POST /billing/schedule-cancel:', err);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });

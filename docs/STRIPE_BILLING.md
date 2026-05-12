@@ -58,6 +58,7 @@ If `GET /api/billing/status` returns `404 PERSONAL_ORG_MISSING`, complete profil
 | GET | `/api/billing/status` | Bearer | Returns personal org billing snapshot from the database. |
 | POST | `/api/billing/checkout-session` | Bearer | Body `{ "planKey": "pro" }` only. Any other `planKey` (including `"free"`) returns **400**. Returns `{ url }` for Stripe Checkout. |
 | POST | `/api/billing/portal-session` | Bearer | Returns `{ url }` for the Stripe Customer Portal. |
+| POST | `/api/billing/schedule-cancel` | Bearer | Owner only. Sets Stripe `cancel_at_period_end` on the org subscription (no body). Returns `{ cancel_at_period_end, current_period_end, subscription_status }` or **400** `STRIPE_SUBSCRIPTION_MISSING` if there is no stored subscription id. |
 | POST | `/api/stripe/webhook` | Stripe signature | Raw JSON body; updates `organizations` from Stripe events. |
 
 ## Local webhooks

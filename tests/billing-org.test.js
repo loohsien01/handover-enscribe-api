@@ -35,6 +35,12 @@ export async function runBillingOrgTests() {
     expectedStatus: 401,
   });
 
+  await runner.test('POST /billing/schedule-cancel without authentication', {
+    method: 'POST',
+    endpoint: '/api/billing/schedule-cancel',
+    expectedStatus: 401,
+  });
+
   if (!hasBillingTestAccount()) {
     console.warn(
       '\n⚠️  Skipping authenticated billing tests: set TEST_BILLING_ACCOUNT_EMAIL and TEST_BILLING_ACCOUNT_PASSWORD in .env.local'
@@ -218,6 +224,19 @@ export async function runBillingOrgTests() {
     headers: authHeaders,
     body: { planKey: 'free' },
     expectedStatus: 400,
+  });
+
+  await runner.test('POST /billing/schedule-cancel (400 when no subscription on org)', {
+    method: 'POST',
+    endpoint: '/api/billing/schedule-cancel',
+    headers: authHeaders,
+    expectedStatus: 400,
+    customValidator: (data) => {
+      if (data?.code !== 'STRIPE_SUBSCRIPTION_MISSING') {
+        return { passed: false, message: `expected STRIPE_SUBSCRIPTION_MISSING, got ${data?.code}` };
+      }
+      return { passed: true };
+    },
   });
 
   runner.printResults();
