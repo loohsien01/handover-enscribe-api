@@ -1,5 +1,32 @@
 /**
+ * @param {import('stripe').Stripe.Subscription} subscription
+ * @param {{ proPrice: string | undefined, priceId: string | undefined }} priceMatch
+ */
+function warnIfActiveSubscriptionIsNotPro(subscription, { proPrice, priceId }) {
+  const warnStatuses = new Set(['active', 'trialing', 'past_due', 'unpaid']);
+  if (!warnStatuses.has(subscription.status)) return;
+  if (!proPrice) {
+    console.warn(
+      `[billing] Subscription ${subscription.id} is ${subscription.status} but STRIPE_PRICE_PRO_MONTHLY is unset; plan_key coerced to free.`,
+    );
+    return;
+  }
+  if (!priceId) {
+    console.warn(
+      `[billing] Subscription ${subscription.id} has status ${subscription.status} but no price id on the first line item; plan_key coerced to free.`,
+    );
+    return;
+  }
+  if (priceId !== proPrice) {
+    console.warn(
+      `[billing] Subscription ${subscription.id} uses Stripe price ${priceId}, not STRIPE_PRICE_PRO_MONTHLY (${proPrice}); plan_key stays free until the subscription uses the configured Pro price.`,
+    );
+  }
+}
+
+/**
  * Map Stripe subscription + env price id to our plan_key.
+ * Only the price id in STRIPE_PRICE_PRO_MONTHLY maps to `pro`; everything else is `free`.
  * @param {import('stripe').Stripe.Subscription} subscription
  * @returns {'free' | 'pro'}
  */
@@ -16,6 +43,7 @@ export function derivePlanKeyFromSubscription(subscription) {
   if (hasProPrice) {
     return 'pro';
   }
+  warnIfActiveSubscriptionIsNotPro(subscription, { proPrice, priceId });
   return 'free';
 }
 

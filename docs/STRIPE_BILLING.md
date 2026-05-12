@@ -51,10 +51,12 @@ If `GET /api/billing/status` returns `404 PERSONAL_ORG_MISSING`, complete profil
 
 ## API
 
+**Plans:** Only **free** and **pro** exist in the app (`organizations.plan_key`). There is **no Stripe Price for free** — free is the default before checkout and after cancel/expiry; the API never creates Checkout for free. Set **`STRIPE_PRICE_PRO_MONTHLY`** to your single Pro subscription price id. Webhooks set `plan_key` to `pro` only when the subscription’s first line item uses that exact price id; otherwise it stays `free`, and the server logs a **warning** if Stripe still reports an active-like subscription status (so misconfiguration is visible in logs).
+
 | Method | Path | Auth | Description |
 |--------|------|------|---------------|
 | GET | `/api/billing/status` | Bearer | Returns personal org billing snapshot from the database. |
-| POST | `/api/billing/checkout-session` | Bearer | Body `{ "planKey": "pro" }`. Returns `{ url }` for Stripe Checkout. |
+| POST | `/api/billing/checkout-session` | Bearer | Body `{ "planKey": "pro" }` only. Any other `planKey` (including `"free"`) returns **400**. Returns `{ url }` for Stripe Checkout. |
 | POST | `/api/billing/portal-session` | Bearer | Returns `{ url }` for the Stripe Customer Portal. |
 | POST | `/api/stripe/webhook` | Stripe signature | Raw JSON body; updates `organizations` from Stripe events. |
 

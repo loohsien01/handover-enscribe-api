@@ -111,11 +111,6 @@ export async function createCheckoutSession(request, reply) {
     return reply.status(503).send({ error: 'Stripe not configured' });
   }
 
-  const planKey = request.body?.planKey;
-  if (planKey !== 'pro') {
-    return reply.status(400).send({ error: 'Invalid planKey' });
-  }
-
   const priceId = process.env[PRO_PRICE_ENV];
   if (!priceId) {
     return reply.status(503).send({ error: 'Pro price not configured' });

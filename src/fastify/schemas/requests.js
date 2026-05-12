@@ -720,7 +720,18 @@ export const userProfilePatchRequestSchema = z.object({
 
 /**
  * POST /api/billing/checkout-session
+ * Only Pro is sold via Stripe Checkout; free tier is DB-only (no Stripe price).
  */
-export const billingCheckoutRequestSchema = z.object({
-  planKey: z.literal('pro'),
-});
+export const billingCheckoutRequestSchema = z
+  .object({ planKey: z.string() })
+  .superRefine((data, ctx) => {
+    if (data.planKey === 'pro') return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['planKey'],
+      message:
+        data.planKey === 'free'
+          ? 'Free tier has no Stripe price or Checkout session; only planKey "pro" is valid here.'
+          : 'Invalid planKey. Only "pro" is supported for checkout-session.',
+    });
+  });

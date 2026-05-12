@@ -212,6 +212,14 @@ export async function runBillingOrgTests() {
     expectedStatus: 400,
   });
 
+  await runner.test('POST /billing/checkout-session planKey free (400)', {
+    method: 'POST',
+    endpoint: '/api/billing/checkout-session',
+    headers: authHeaders,
+    body: { planKey: 'free' },
+    expectedStatus: 400,
+  });
+
   runner.printResults();
   const resultsFile = runner.saveResults('billing-org-tests.json');
   console.log(`✅ Test results saved to: ${resultsFile}\n`);

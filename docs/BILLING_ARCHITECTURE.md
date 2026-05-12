@@ -122,17 +122,22 @@ paywall) gets full usage at our cost.
 
 `derivePlanKeyFromSubscription` only returns `'pro'` when the subscription's
 price id **strictly equals** `process.env.STRIPE_PRICE_PRO_MONTHLY`. Any other
-active price (annual plan, grandfathered SKU, second product) silently maps to
-`'free'`.
+active price (annual plan, grandfathered SKU, second product) maps to `'free'`;
+the server **logs a warning** when the subscription status is still
+active-like, but operators may miss it without log shipping.
 
 Resulting visible bug: customer pays in Stripe, `subscription_status: 'active'`,
 but `plan_key: 'free'` and `has_pro_plan: false` — UI shows "not entitled".
 
 ### Mitigations
 
-- Treat env-vs-Stripe mismatch as **an alertable misconfiguration**, not a
-  silent default. On unknown price id, log `warn` + (optional) capture an event,
-  do not silently downgrade.
+- **Implemented:** `derivePlanKeyFromSubscription` logs **`console.warn`** when a
+  subscription is in an active-like status (`active`, `trialing`, `past_due`,
+  `unpaid`) but the first line item’s price id is not `STRIPE_PRICE_PRO_MONTHLY`
+  (or env is unset / line item has no price). `plan_key` still stays **`free`**
+  so Pro is never granted without the configured Pro price.
+- Treat remaining gaps as **alertable in observability** (e.g. ship logs to your
+  monitoring) rather than assuming silence is OK.
 - If multiple Pro SKUs are coming (annual, team), introduce an env list or a
   small `stripe_price_to_plan` table, or read product metadata
   (`price.product.metadata.plan_key`) instead of comparing ids 1:1.

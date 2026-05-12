@@ -12,7 +12,7 @@
     "worker:nova-summarize": "node src/workers/novaSummarizeWorker.js",
     "lint": "eslint .",
     "test": "node tests/runAll.js",
-    "test:unit": "node tests/soapNoteValidator.unit.test.js && node tests/expandDotPhrases.unit.test.js && node tests/novaBedrockChat.unit.test.js && node tests/novaSummarize.unit.test.js && node tests/billingEntitlements.unit.test.js",
+    "test:unit": "node tests/soapNoteValidator.unit.test.js && node tests/expandDotPhrases.unit.test.js && node tests/novaBedrockChat.unit.test.js && node tests/novaSummarize.unit.test.js && node tests/billingEntitlements.unit.test.js && node tests/billingStripeSync.unit.test.js",
     "test:auth": "node tests/auth.test.js",
     "test:aws": "node tests/aws.test.js",
     "test:dot-phrases": "node tests/dot-phrases.test.js",
