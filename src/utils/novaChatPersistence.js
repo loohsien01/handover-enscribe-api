@@ -134,6 +134,46 @@ export async function insertChatSessionRow(supabase, ids) {
 }
 
 /**
+ * List chat session rows for the current user (metadata only; no encrypted summary/messages).
+ *
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase
+ * @param {string} userId
+ * @param {{ limit: number, offset: number, sortBy: 'last_active_at' | 'created_at' | 'updated_at', order: 'asc' | 'desc' }} opts
+ * @returns {Promise<{ success: true, sessions: Array<{ chatId: string, organizationId: string, token_estimate: number, total_tokens: number, created_at: string, updated_at: string, last_active_at: string }>, total: number } | { success: false, error: string }>}
+ */
+export async function listChatSessionsForUser(supabase, userId, opts) {
+  const { limit, offset, sortBy, order } = opts;
+  const ascending = order === 'asc';
+
+  const { data, error, count } = await supabase
+    .from(chatSessionsTable)
+    .select(
+      'id, organization_id, token_estimate, total_tokens, created_at, updated_at, last_active_at',
+      { count: 'exact' }
+    )
+    .eq('user_id', userId)
+    .order(sortBy, { ascending })
+    .range(offset, offset + limit - 1);
+
+  if (error) {
+    console.error('[novaChatPersistence] list sessions:', error);
+    return { success: false, error: error.message };
+  }
+
+  const sessions = (data || []).map((row) => ({
+    chatId: row.id,
+    organizationId: row.organization_id,
+    token_estimate: row.token_estimate ?? 0,
+    total_tokens: typeof row.total_tokens === 'string' ? Number(row.total_tokens) : row.total_tokens ?? 0,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    last_active_at: row.last_active_at,
+  }));
+
+  return { success: true, sessions, total: count ?? 0 };
+}
+
+/**
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {object} args
  * @param {string} args.chatId

@@ -114,8 +114,15 @@ export async function runNovaChatSessionsTests() {
     expectedFields: ['error'],
   });
 
+  await runner.test('Test 1b: GET /api/nova/chat-sessions without authentication', {
+    method: 'GET',
+    endpoint: '/api/nova/chat-sessions',
+    expectedStatus: 401,
+    expectedFields: ['error'],
+  });
+
   if (!accessToken) {
-    console.warn('\n⚠️  Skipping Tests 2–11: No valid access token available');
+    console.warn('\n⚠️  Skipping Tests 2–12: No valid access token available');
     console.log('To run the full suite: set TEST_ACCOUNT_* in .env.local and ensure the server is running.\n');
     runner.printResults();
     const resultsFile = runner.saveResults('nova-chat-sessions-tests.json');
@@ -124,6 +131,13 @@ export async function runNovaChatSessionsTests() {
   }
 
   const authHeaders = { Authorization: `Bearer ${accessToken}` };
+
+  await runner.test('Test 2a: GET /api/nova/chat-sessions invalid limit (400)', {
+    method: 'GET',
+    endpoint: '/api/nova/chat-sessions?limit=101',
+    headers: authHeaders,
+    expectedStatus: 400,
+  });
 
   await runner.test('Test 2: POST /api/nova/chat-sessions creates session', {
     method: 'POST',
@@ -147,6 +161,36 @@ export async function runNovaChatSessionsTests() {
     },
   });
 
+  await runner.test('Test 2b: GET /api/nova/chat-sessions lists created session', {
+    method: 'GET',
+    endpoint: '/api/nova/chat-sessions?limit=10&offset=0',
+    headers: authHeaders,
+    expectedStatus: 200,
+    expectedFields: ['sessions', 'total', 'limit', 'offset'],
+    customValidator: (data) => {
+      if (!Array.isArray(data.sessions)) {
+        return { passed: false, message: 'sessions is not an array' };
+      }
+      if (typeof data.total !== 'number') {
+        return { passed: false, message: 'total is not a number' };
+      }
+      if (data.limit !== 10 || data.offset !== 0) {
+        return { passed: false, message: 'limit/offset echo mismatch' };
+      }
+      const row = data.sessions.find((s) => s.chatId === cachedChatId);
+      if (!row) {
+        return { passed: false, message: 'created chatId not present in sessions list' };
+      }
+      if (typeof row.organizationId !== 'string') {
+        return { passed: false, message: 'list row missing organizationId' };
+      }
+      if (typeof row.token_estimate !== 'number' || typeof row.total_tokens !== 'number') {
+        return { passed: false, message: 'list row token fields' };
+      }
+      return { passed: true, message: '' };
+    },
+  });
+
   await runner.test('Test 3: GET /api/nova/chat-sessions/:chatId without authentication', {
     method: 'GET',
     endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}`,
@@ -154,7 +198,7 @@ export async function runNovaChatSessionsTests() {
   });
 
   if (!cachedChatId) {
-    console.warn('\n⚠️  Skipping Tests 4–11: session creation (Test 2) did not return chatId');
+    console.warn('\n⚠️  Skipping Tests 4–12: session creation (Test 2) did not return chatId');
     runner.printResults();
     const resultsFile = runner.saveResults('nova-chat-sessions-tests.json');
     console.log(`✅ Test results saved to: ${resultsFile}\n`);

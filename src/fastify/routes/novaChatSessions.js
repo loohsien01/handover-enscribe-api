@@ -3,11 +3,13 @@ import { serializeZodError } from '../../utils/serializeZodError.js';
 import {
   novaChatSessionIdParamsSchema,
   novaChatSessionPatchRequestSchema,
+  novaChatSessionsListQuerySchema,
   novaChatTokenUsageRequestSchema,
   novaChatCompletionRequestSchema,
 } from '../schemas/novaChatRequests.js';
 import {
   createNovaChatSession,
+  listNovaChatSessions,
   getNovaChatSession,
   patchNovaChatSession,
   postNovaChatTokenUsage,
@@ -17,6 +19,7 @@ import {
 /**
  * Nova AI — Redis hot cache + Supabase encrypted persistence (chat_sessions / chat_messages).
  *
+ * - GET    /api/nova/chat-sessions (paginated metadata; query limit, offset, sortBy, order)
  * - POST   /api/nova/chat-sessions
  * - GET    /api/nova/chat-sessions/:chatId
  * - PATCH  /api/nova/chat-sessions/:chatId
@@ -25,6 +28,20 @@ import {
  */
 export default fp(async function novaChatSessionsRoutes(fastify) {
   const preAuth = { preHandler: [fastify.authenticate] };
+
+  fastify.get('/nova/chat-sessions', preAuth, async (request, reply) => {
+    try {
+      const queryResult = novaChatSessionsListQuerySchema.safeParse(request.query);
+      if (!queryResult.success) {
+        return reply.status(400).send({ error: serializeZodError(queryResult.error) });
+      }
+      request.query = queryResult.data;
+      return listNovaChatSessions(request, reply);
+    } catch (err) {
+      fastify.log.error('GET /nova/chat-sessions:', err);
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
 
   fastify.post('/nova/chat-sessions', preAuth, async (request, reply) => {
     try {

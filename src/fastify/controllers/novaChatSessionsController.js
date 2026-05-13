@@ -17,6 +17,7 @@ import { enqueueNovaSummarizeJob } from '../../utils/novaSummarizeQueue.js';
 import { shouldEnqueueNovaSummarize } from '../../utils/novaSummarizeService.js';
 import {
   insertChatSessionRow,
+  listChatSessionsForUser,
   loadNovaChatSessionFromSupabase,
   persistNovaChatSession,
   insertChatTokenUsageRow,
@@ -118,6 +119,37 @@ export async function createNovaChatSession(request, reply) {
   await novaSessionSave(redis, userId, session, ttl);
 
   return reply.status(201).send({ chatId, session });
+}
+
+/**
+ * GET /api/nova/chat-sessions
+ * Paginated session metadata from Supabase (no Redis required).
+ */
+export async function listNovaChatSessions(request, reply) {
+  const supabase = getSupabaseClient(request.headers.authorization);
+  const userId = request.user.id;
+  const q = request.query;
+
+  const result = await listChatSessionsForUser(supabase, userId, {
+    limit: q.limit,
+    offset: q.offset,
+    sortBy: q.sortBy,
+    order: q.order,
+  });
+
+  if (!result.success) {
+    return reply.status(500).send({
+      error: result.error || 'Failed to list chat sessions',
+      code: 'NOVA_SESSION_LIST_FAILED',
+    });
+  }
+
+  return reply.send({
+    sessions: result.sessions,
+    total: result.total,
+    limit: q.limit,
+    offset: q.offset,
+  });
 }
 
 /**

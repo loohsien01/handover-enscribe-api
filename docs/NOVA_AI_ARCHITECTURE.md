@@ -6,12 +6,13 @@ Base path: `/api/nova/…` on the Fastify API host (e.g. local `http://localhost
 
 **Auth:** every route requires a valid **Bearer JWT** (same Supabase session / `Authorization: Bearer <access_token>` pattern as the rest of the API). Unauthenticated requests are rejected by the server before Nova logic runs.
 
-**Note:** there is **no** `GET /api/nova/chat-sessions` list endpoint. The client should **store `chatId`** returned from create (and optionally load known IDs from your own UI state or a future listing API). Reload a session with `GET …/:chatId`.
+**Listing:** `GET /api/nova/chat-sessions` returns paginated **metadata** from Supabase (`chatId`, org, token counters, timestamps). It does **not** require Redis. Load full transcript + summary with `GET …/:chatId` (Redis first, then hydrate).
 
 ### Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
+| `GET` | `/api/nova/chat-sessions` | List the signed-in user’s sessions (query: `limit`, `offset`, `sortBy`, `order`; see below). |
 | `POST` | `/api/nova/chat-sessions` | Create a new chat; returns `chatId` + initial `session`. |
 | `GET` | `/api/nova/chat-sessions/:chatId` | Load session (Redis first, else hydrate from Supabase). |
 | `PATCH` | `/api/nova/chat-sessions/:chatId` | Update `summary`, `token_estimate`, `messages`, or `appendMessages`. |
@@ -32,6 +33,12 @@ Mirrors Redis working state; use it to render the transcript and optional indica
 - **`token_estimate`**, **`last_active`** — hints / bookkeeping.
 
 Server-side env knobs (context limits, summarize thresholds, queue timing) **do not** need to be configured in the frontend.
+
+### `GET /api/nova/chat-sessions`
+
+**Query (optional):** `limit` (default **50**, max **100**), `offset` (default **0**), `sortBy` = `last_active_at` \| `created_at` \| `updated_at` (default `last_active_at`), `order` = `asc` \| `desc` (default `desc`).
+
+**Success (200):** paginated rows from `chat_sessions` for the JWT user. Does **not** load Redis or decrypt messages; use `GET …/:chatId` for the full `<Session>`.
 
 ### `POST …/completions`
 
@@ -97,10 +104,40 @@ Caps (from schema): e.g. up to **500** messages on full replace, **50** on appen
 | 404 | `NOVA_SESSION_NOT_FOUND` | Unknown chat or no access. |
 | 409 | `NOVA_COMPLETION_IN_FLIGHT` | Second simultaneous `POST …/completions` for the same chat; wait and retry or disable send until the first completes. |
 | 502 | `NOVA_BEDROCK_FAILED` | Bedrock invoke failed. |
-| 503 | `REDIS_UNAVAILABLE` | Nova chat requires Redis (`REDIS_URL`); config issue on the server. |
-| 500 | `NOVA_SESSION_PERSIST_FAILED`, `NOVA_TOKEN_USAGE_FAILED`, etc. | Persistence or internal errors. |
+| 503 | `REDIS_UNAVAILABLE` | Create, load, patch, or completions path requires Redis (`REDIS_URL`); **not** returned for `GET /api/nova/chat-sessions` (list is Supabase-only). |
+| 500 | `NOVA_SESSION_PERSIST_FAILED`, `NOVA_TOKEN_USAGE_FAILED`, `NOVA_SESSION_LIST_FAILED`, etc. | Persistence or internal errors. |
+| 401 | — | Missing or invalid Bearer JWT: `{ "error": "<message>" }` (e.g. token required, invalid/expired). Same auth as the rest of the API; refresh tokens like other authenticated routes. |
 
 Non-production errors may include a **`detail`** string (e.g. Bedrock message).
+
+### Response envelopes & HTTP status (frontend)
+
+All successful bodies are JSON. `<Session>` means the [session object](#session-object-api-shape) (`chat_id`, `messages`, `summary`, …).
+
+| Route | Success HTTP | Response body |
+|--------|----------------|----------------|
+| `GET /api/nova/chat-sessions` | **200** | `{ "sessions": [ { "chatId", "organizationId", "token_estimate", "total_tokens", "created_at", "updated_at", "last_active_at" } ], "total": <number>, "limit": <number>, "offset": <number> }` — metadata only; no transcript. |
+| `POST /api/nova/chat-sessions` | **201** | `{ "chatId": "<uuid>", "session": <Session> }` — **no request body** is required (empty body or `{}` is fine). |
+| `GET /api/nova/chat-sessions/:chatId` | **200** | `{ "session": <Session> }` |
+| `PATCH /api/nova/chat-sessions/:chatId` | **200** | `{ "session": <Session> }` |
+| `POST /api/nova/chat-sessions/:chatId/completions` | **200** | `{ "assistant": { "role": "assistant", "content": "…" }, "usage": <object> \| null, "session": <Session> }` |
+| `POST /api/nova/chat-sessions/:chatId/token-usage` | **201** | `{ "ok": true, "total_tokens": <number> }` |
+
+**Headers:** send **`Authorization: Bearer <access_token>`** on every call. For routes with a JSON body, use **`Content-Type: application/json`**.
+
+**Validation (400):** many schema failures return `{ "error": { "name": "ZodError", "message": "<string — JSON-encoded Zod `issues` array>" } }`. Production UIs often show a generic invalid-request message; parse `error.message` when you need field-level detail in dev or support tooling.
+
+### Suggested chat UI flow (minimal)
+
+1. **New thread:** `POST /api/nova/chat-sessions` → persist `chatId` (URL query, client storage, or global state). Render `session.messages` (starts empty).
+2. **Open existing:** `GET /api/nova/chat-sessions/:chatId`; on **404** (`NOVA_SESSION_NOT_FOUND`), treat as unknown/expired id and start a new session or show an error.
+3. **Send a turn:** `POST …/completions` with `{ "model": "haiku" \| "sonnet" \| "opus", "message": "<non-empty string>" }`. **Not streaming** — one round-trip per turn; use a long client timeout. Keep **at most one in-flight completion per `chatId`**; on **409** keep the UI in a “still generating” state until the first request finishes.
+4. **After a successful completion:** drive the transcript from **`response.session.messages`** (authoritative order and content). Optionally show **`response.usage`** for admin/debug; tolerate **`usage: null`**.
+5. **Rolling summary in the UI:** if you surface `summary` or “memory,” refresh via **`GET …/:chatId`** while `summarize_pending` is true (poll lightly or on focus) — the worker updates Redis/DB in the background. The next completion’s `session` is also fine without polling.
+6. **Session list / sidebar:** `GET /api/nova/chat-sessions` for **metadata** (ids, activity, token totals). For each row, call `GET …/:chatId` when the user opens a thread (or prefetch sparingly).
+7. **`PATCH`:** most UIs only need create + GET + completions. Use **`PATCH`** when the product edits the transcript, summary, or token hints client-side (see the PATCH section above).
+
+Reference tests for behavior (not a spec substitute): `tests/nova-chat-sessions-completions.test.js`.
 
 ### UX tips for the client
 
@@ -122,7 +159,8 @@ The system is built around a **stateless LLM with stateful application memory la
 
 | Area | Status |
 |------|--------|
-| Redis hot session cache | **Done** — keys `nova:chat:{userId}:{chatId}`, TTL `NOVA_REDIS_SESSION_TTL_SEC`; optional `REDIS_URL` (Nova returns 503 if cache unavailable). |
+| Session list (metadata) | **Done** — `GET /api/nova/chat-sessions` (Supabase `chat_sessions` for JWT user; pagination + sort; no Redis). |
+| Redis hot session cache | **Done** — keys `nova:chat:{userId}:{chatId}`, TTL `NOVA_REDIS_SESSION_TTL_SEC`; optional `REDIS_URL` (Nova returns 503 if cache unavailable for routes that need it). |
 | Redis AUTH (ElastiCache vs local dev) | **Done** — optional `REDIS_AUTH_TOKEN` merged into the connection URL when `REDIS_URL` has no embedded password (typical ElastiCache). For passwordless local Redis (`127.0.0.1`, `localhost`, `::1`), AUTH is not sent so a prod token in `.env.local` does not break local runs. |
 | Supabase session + message persistence | **Done** — tables `chat_sessions`, `chat_messages`; summary and message bodies encrypted with the user’s wrapped master key (same pattern as notes); RLS + `organization_id` (personal org via `ensurePersonalOrganization`). |
 | Reload Redis from Supabase | **Done** — GET misses cache: decrypt from Postgres, repopulate Redis. |

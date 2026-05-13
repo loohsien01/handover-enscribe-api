@@ -29,6 +29,21 @@ export const novaChatSessionIdParamsSchema = z.object({
   chatId: z.string().regex(uuidRegex, 'Invalid chat id'),
 });
 
+/** GET /api/nova/chat-sessions — paginated metadata list (no transcript; use GET …/:chatId). */
+export const novaChatSessionsListQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().positive().max(100).optional(),
+    offset: z.coerce.number().int().nonnegative().optional(),
+    sortBy: z.enum(['last_active_at', 'created_at', 'updated_at']).optional(),
+    order: z.enum(['asc', 'desc']).optional(),
+  })
+  .transform((d) => ({
+    limit: d.limit ?? 50,
+    offset: d.offset ?? 0,
+    sortBy: d.sortBy ?? 'last_active_at',
+    order: d.order ?? 'desc',
+  }));
+
 export const novaChatTokenUsageRequestSchema = z
   .object({
     input_tokens: z.number().int().nonnegative(),
