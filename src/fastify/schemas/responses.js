@@ -314,6 +314,7 @@ export const noteTemplatesListSchema = z.array(noteTemplatesResponseSchema);
 export const noteTemplateSectionResponseSchema = z.object({
   id: z.bigint(),
   user_id: z.string().uuid().nullable(),
+  is_system: z.boolean().default(false),
   name: z.string(),
   layout: z.enum(['paragraph', 'bullet points']),
   details: z.string(),

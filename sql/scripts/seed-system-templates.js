@@ -200,6 +200,7 @@ async function getOrCreateTemplateSection(template, aesKeyBase64) {
         encrypted_details,
         details_iv: ivBase64,
         user_id: null, // System template
+        is_system: true,
       })
       .select('id')
       .single();

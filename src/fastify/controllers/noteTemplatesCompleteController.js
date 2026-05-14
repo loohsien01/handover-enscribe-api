@@ -131,8 +131,8 @@ export async function getCompleteTemplate(supabase, templateId, userId) {
     }
 
     // Get encryption keys
-    const hasSystemSections = allSections.some(s => s.user_id === null);
-    const hasUserSections = allSections.some(s => s.user_id !== null);
+    const hasSystemSections = allSections.some((s) => s.user_id === null || s.is_system);
+    const hasUserSections = allSections.some((s) => s.user_id !== null);
 
     let systemKeyResult = null;
     let userKeyResult = null;
@@ -161,7 +161,8 @@ export async function getCompleteTemplate(supabase, templateId, userId) {
           return section;
         }
 
-        const keyResult = section.user_id === null ? systemKeyResult : userKeyResult;
+        const keyResult =
+          section.user_id === null || section.is_system ? systemKeyResult : userKeyResult;
         if (!keyResult || !keyResult.success) {
           console.error(`[getCompleteTemplate] No key available for section ${section.id}`);
           return section; // Return encrypted as fallback
@@ -275,8 +276,8 @@ export async function getAllNoteTemplatesComplete(request, reply) {
     let userKeyResult = null;
 
     if (includeDetails && allSections.length > 0) {
-      const hasSystemSections = allSections.some(s => s.user_id === null);
-      const hasUserSections = allSections.some(s => s.user_id !== null);
+      const hasSystemSections = allSections.some((s) => s.user_id === null || s.is_system);
+      const hasUserSections = allSections.some((s) => s.user_id !== null);
 
       if (hasSystemSections) {
         systemKeyResult = await getSystemMasterKey();
@@ -313,7 +314,8 @@ export async function getAllNoteTemplatesComplete(request, reply) {
             return section;
           }
 
-          const keyResult = section.user_id === null ? systemKeyResult : userKeyResult;
+          const keyResult =
+            section.user_id === null || section.is_system ? systemKeyResult : userKeyResult;
           if (!keyResult || !keyResult.success) {
             console.warn(`[getAllNoteTemplatesComplete] No key available for section ${section.id}`);
             return section; // Return as-is if can't decrypt
@@ -674,10 +676,11 @@ export async function updateNoteTemplateComplete(request, reply) {
         error_code: data?.[0]?.error_code,
         fullResponse: data?.[0],
       });
-      
-      const errorCode = data?.[0]?.error_code;
-      const errorMessage = data?.[0]?.error;
-      
+
+      const row = data?.[0];
+      const errorCode = (row?.error_code ?? row?.errorCode ?? '').toString().trim();
+      const errorMessage = row?.error;
+
       if (errorCode === 'DUPLICATE_TEMPLATE_NAME') {
         return reply.status(409).send({
           code: 'DUPLICATE_TEMPLATE_NAME',
@@ -692,7 +695,17 @@ export async function updateNoteTemplateComplete(request, reply) {
           message: errorMessage,
         });
       }
-      
+
+      if (
+        errorCode === 'SYSTEM_SECTION_IMMUTABLE' ||
+        errorMessage === 'System template sections cannot be modified'
+      ) {
+        return reply.status(403).send({
+          code: 'SYSTEM_SECTION_IMMUTABLE',
+          message: errorMessage,
+        });
+      }
+
       if (errorCode === 'TEMPLATE_NOT_FOUND') {
         return reply.status(404).send({
           code: 'TEMPLATE_NOT_FOUND',

@@ -82,7 +82,7 @@ export async function runUnattachedNoteTemplateSectionsCleanup(supabase, opts = 
     while (deletedIds.length < maxDeletesPerRun) {
       const { data: sections, error: secErr } = await supabase
         .from(sectionsTable)
-        .select('id, user_id, updated_at, created_at')
+        .select('id, user_id, updated_at, created_at, is_system')
         .or(eligibilityOr)
         .order('updated_at', { ascending: true, nullsFirst: true })
         .order('id', { ascending: true })
@@ -101,6 +101,7 @@ export async function runUnattachedNoteTemplateSectionsCleanup(supabase, opts = 
 
       const attached = await loadAttachedSectionIds(supabase, sections.map((s) => s.id));
       let unattached = sections.filter((s) => !attached.has(String(s.id)));
+      unattached = unattached.filter((s) => !s.is_system);
       const exemptBefore = unattached.length;
       unattached = unattached.filter(
         (s) => s.user_id == null || !cleanupExcludedUserIds.has(String(s.user_id))

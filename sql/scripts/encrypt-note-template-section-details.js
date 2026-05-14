@@ -36,7 +36,7 @@ const noteTemplateSections = [
   {
     name: 'Example Section',
     layout: 'paragraph',
-    details: 'History of Present Illnesses.',
+    details: 'Treatment plan, medications, follow-up instructions and next steps. Base solely on transcript - do not include assumptions. Only output data if present in transcript.',
   },
 ];
 

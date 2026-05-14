@@ -54,8 +54,8 @@ export async function getAllNoteTemplateSections(request, reply) {
     }
 
     // Fetch keys needed for decryption (once, not per-section)
-    const hasSystemTemplates = data.some(s => s.user_id === null);
-    const hasUserTemplates = data.some(s => s.user_id !== null);
+    const hasSystemTemplates = data.some((s) => s.user_id === null || s.is_system);
+    const hasUserTemplates = data.some((s) => s.user_id !== null);
 
     let systemKeyResult = null;
     let userKeyResult = null;
@@ -82,12 +82,13 @@ export async function getAllNoteTemplateSections(request, reply) {
         }
 
         // Select the correct key based on template ownership
-        const keyResult = section.user_id === null ? systemKeyResult : userKeyResult;
+        const keyResult =
+          section.user_id === null || section.is_system ? systemKeyResult : userKeyResult;
 
         if (!keyResult || !keyResult.success) {
           console.error(
             `[getAllNoteTemplateSections] No key available for section ${section.id}`,
-            section.user_id === null ? 'system' : 'user'
+            section.user_id === null || section.is_system ? 'system' : 'user'
           );
           return section;
         }
@@ -147,8 +148,8 @@ export async function getNoteTemplateSection(request, reply) {
     if (data.encrypted_details) {
       // Determine which key to use: system key or user key
       let keyResult;
-      if (data.user_id === null) {
-        // System template - use system key
+      if (data.user_id === null || data.is_system) {
+        // System / catalog section — use system master key
         keyResult = await getSystemMasterKey();
       } else {
         // User template - use user key

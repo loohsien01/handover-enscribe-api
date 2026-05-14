@@ -31,6 +31,7 @@
  *   Test 16: PATCH /api/note-templates/complete/:id (update name, deps on Test 6)
  *   Test 17: PATCH /api/note-templates/complete/:id (add new sections while reordering, deps on Test 6)
  *   Test 18: PATCH /api/note-templates/complete/:id (reorder existing sections only, deps on Test 6)
+ *   Test 19: PATCH rejects mutating catalog/system section; reorder-only still OK (full abort on mutate)
  * 
  * Note: Requires valid JWT token for authentication
  * Requires: TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local
@@ -48,6 +49,21 @@ import { TestRunner } from './testUtils.js';
 import { getTestAccount, hasTestAccounts, getApiBaseUrl } from './testConfig.js';
 
 const runner = new TestRunner('Note Templates Complete API Tests');
+
+/**
+ * Find a catalog/system section from batch GET (include_details) for immutability tests.
+ * @param {{ templates?: Array<{ sections?: Array<Record<string, unknown>> }> }} } data
+ */
+function findCatalogSectionFromBatch(data) {
+  for (const t of data.templates || []) {
+    for (const s of t.sections || []) {
+      if (s.is_system === true || s.user_id == null) {
+        return { id: s.id, name: s.name };
+      }
+    }
+  }
+  return null;
+}
 
 // Will store real access token from test account
 let accessToken = null;
@@ -880,6 +896,130 @@ async function runNoteTemplatesCompleteTests() {
   console.log(`   ${test18Message}`);
   console.log(`   ⏳ DEPENDENCY: Test 18 depends on Test 6 (creation). If Test 6 fails, this test is skipped.\n`);
 
+  // Test 19: catalog/system section cannot be mutated via PATCH /complete (403 + no partial persist); reorder-only OK
+  let test19Passed = false;
+  let test19Message = '';
+  try {
+    const batchRes = await fetch(
+      `${runner.baseUrl}/api/note-templates/complete?limit=50&offset=0&include_details=true`,
+      { method: 'GET', headers: authHeaders },
+    );
+    if (!batchRes.ok) {
+      test19Message = `Batch GET failed: ${batchRes.status}`;
+    } else {
+      const batchData = await batchRes.json();
+      const cat = findCatalogSectionFromBatch(batchData);
+      if (!cat?.id) {
+        test19Message =
+          '⚠️  SKIPPED: No catalog section (is_system or user_id null) in batch — seed system templates to run this assertion';
+      } else {
+        const catalogNameBefore = cat.name;
+        const postRes = await fetch(`${runner.baseUrl}/api/note-templates/complete`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders,
+          },
+          body: JSON.stringify({
+            name: `Immutable probe ${Date.now()}`,
+            sections: [{ id: cat.id }],
+          }),
+        });
+        if (!postRes.ok || postRes.status !== 201) {
+          test19Message = `POST probe template failed: ${postRes.status}`;
+        } else {
+          const postBody = await postRes.json();
+          const probeTemplateId = postBody?.template?.id;
+          if (!probeTemplateId) {
+            test19Message = 'POST response missing template.id';
+          } else {
+            cachedCreatedTemplateIds.push(probeTemplateId);
+            const patchMutate = await fetch(
+              `${runner.baseUrl}/api/note-templates/complete/${probeTemplateId}`,
+              {
+                method: 'PATCH',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...authHeaders,
+                },
+                body: JSON.stringify({
+                  sections: [
+                    {
+                      id: cat.id,
+                      name: `${catalogNameBefore} — mutated by test`,
+                    },
+                  ],
+                }),
+              },
+            );
+            const mutateBody = await patchMutate.json().catch(() => ({}));
+            const immutabilityRejected =
+              (patchMutate.status === 403 && mutateBody?.code === 'SYSTEM_SECTION_IMMUTABLE') ||
+              (patchMutate.status === 400 &&
+                (mutateBody?.code === 'SYSTEM_SECTION_IMMUTABLE' ||
+                  mutateBody?.error === 'System template sections cannot be modified'));
+            if (!immutabilityRejected) {
+              test19Message = `Expected 403 + code SYSTEM_SECTION_IMMUTABLE (or legacy 400 with immutability message), got ${patchMutate.status} ${JSON.stringify(mutateBody)}`;
+            } else {
+              const verifyRes = await fetch(
+                `${runner.baseUrl}/api/note-templates/complete/${probeTemplateId}`,
+                { method: 'GET', headers: authHeaders },
+              );
+              if (!verifyRes.ok) {
+                test19Message = `Verify GET failed: ${verifyRes.status}`;
+              } else {
+                const verifyData = await verifyRes.json();
+                const row = verifyData?.sections?.find((x) => String(x.id) === String(cat.id));
+                if (row?.name !== catalogNameBefore) {
+                  test19Message = `Expected catalog name unchanged after failed PATCH, got "${row?.name}"`;
+                } else {
+                  const patchReorder = await fetch(
+                    `${runner.baseUrl}/api/note-templates/complete/${probeTemplateId}`,
+                    {
+                      method: 'PATCH',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        ...authHeaders,
+                      },
+                      body: JSON.stringify({
+                        sections: [{ id: cat.id }],
+                      }),
+                    },
+                  );
+                  if (!patchReorder.ok || patchReorder.status !== 200) {
+                    test19Message = `Reorder-only PATCH should succeed (200), got ${patchReorder.status}`;
+                  } else {
+                    test19Passed = true;
+                    test19Message =
+                      'Mutating PATCH returned 403 SYSTEM_SECTION_IMMUTABLE; catalog name unchanged; reorder-only PATCH succeeded';
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    test19Message = error?.message || String(error);
+  }
+
+  runner.results.push({
+    name: 'Test 19: PATCH /complete rejects mutating catalog section (403 + transactional); reorder-only OK',
+    passed: test19Passed,
+    endpoint: '/api/note-templates/complete/:id',
+    method: 'PATCH',
+    status: test19Passed ? 403 : null,
+    expectedStatus: 403,
+    customMessage: test19Message,
+    testNumber: 19,
+    timestamp: new Date().toISOString(),
+  });
+
+  const test19Result = test19Passed ? '✅' : (test19Message.includes('SKIPPED') ? '⚠️ ' : '❌');
+  console.log(`${test19Result} Test 19: PATCH /complete catalog immutability + reorder-only`);
+  console.log(`   ${test19Message}\n`);
+
   // ===== CLEANUP (not formal tests) =====
   console.log('Cleaning up test data...\n');
 
@@ -924,7 +1064,7 @@ async function runNoteTemplatesCompleteTests() {
   console.log('');
 
   // Print results
-  runner.printResults(18);  // Updated count: Tests 1-18 (sequential numbering)
+  runner.printResults(19); // Tests 1–19 (sequential numbering)
   // Save results to file
   const resultsFile = runner.saveResults('note-templates-complete-tests.json');
   console.log(`✅ Test results saved to: ${resultsFile}\n`);

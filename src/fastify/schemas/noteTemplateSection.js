@@ -19,4 +19,5 @@ export const noteTemplateSectionDatabaseSchema = z.object({
   }),
   encrypted_details: z.string().min(1, 'Encrypted details cannot be empty'),
   details_iv: z.string().min(1, 'IV cannot be empty'),
+  is_system: z.boolean().default(false),
 });
