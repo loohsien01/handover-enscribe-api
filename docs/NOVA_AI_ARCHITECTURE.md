@@ -16,7 +16,8 @@ Base path: `/api/nova/…` on the Fastify API host (e.g. local `http://localhost
 | `POST` | `/api/nova/chat-sessions` | Create a new chat; returns `chatId` + initial `session`. |
 | `GET` | `/api/nova/chat-sessions/:chatId` | Load session (Redis first, else hydrate from Supabase). |
 | `PATCH` | `/api/nova/chat-sessions/:chatId` | Update `summary`, `token_estimate`, `messages`, or `appendMessages`. |
-| `POST` | `/api/nova/chat-sessions/:chatId/completions` | Send one user message; Bedrock reply; persists user + assistant turns. |
+| `POST` | `/api/nova/chat-sessions/:chatId/completions` | Enqueue one user turn: persists **user** message immediately; returns **202** + job id (or **200** idempotent replay if that `client_message_id` already completed). Bedrock runs asynchronously in-process (`setImmediate`, same pattern as `POST /api/jobs/prompt-llm/generate-note`). |
+| `GET` | `/api/nova/chat-sessions/:chatId/completion-jobs/:jobId` | Poll completion job until `complete` or `failed` (then includes `assistant`, `usage`, `session` when complete). |
 | `POST` | `/api/nova/chat-sessions/:chatId/token-usage` | Record token usage (optional path if the client meters separately). |
 
 `:chatId` must be a UUID. Validation errors return **400** with a serialized Zod `error` payload.
@@ -26,7 +27,7 @@ Base path: `/api/nova/…` on the Fastify API host (e.g. local `http://localhost
 Mirrors Redis working state; use it to render the transcript and optional indicators:
 
 - **`chat_id`** — session id (same as URL `:chatId` once created).
-- **`messages`** — array of `{ role: 'user' \| 'assistant' \| 'system', content: string }`; **full transcript** in order. After each successful completion, the API appends the new user message and assistant reply.
+- **`messages`** — array of `{ role: 'user' \| 'assistant' \| 'system', content: string }`; **full transcript** in order. After a completion job **finishes**, the API has appended the assistant reply (the user line is written when the job is **accepted**).
 - **`summary`** — rolling text summary (may be empty for new chats).
 - **`summary_covered_message_count`** — how many leading `messages` are treated as folded into `summary` for model context (advanced; usually you still render all `messages` for the user).
 - **`summarize_pending`** — `true` when a rolling summarization job is queued or due; safe to show a subtle “updating memory…” or ignore.
@@ -47,30 +48,76 @@ Server-side env knobs (context limits, summarize thresholds, queue timing) **do 
 ```json
 {
   "model": "haiku",
-  "message": "User message for this turn (non-empty string)"
+  "message": "User message for this turn (non-empty string)",
+  "client_message_id": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
 
-`model` is one of: **`haiku`**, **`sonnet`**, **`opus`** (presets; server maps to Bedrock model ids).
+`model` is one of: **`haiku`**, **`sonnet`**, **`opus`** (presets; server maps to Bedrock model ids). **`client_message_id`** must be a **UUID** per turn from the client (idempotency: same id returns the same **200** replay after success, or the same **202** job while still `pending`/`running`).
 
-**Success (200):**
+**Success (202 Accepted)** — new job (or in-flight duplicate of the same `client_message_id`):
 
 ```json
 {
+  "id": "<job-uuid>",
+  "status": "pending",
+  "chat_id": "<chatId>"
+}
+```
+
+**Success (200 OK)** — idempotent replay after the job already **`complete`** for this `client_message_id` (same shape as a terminal poll):
+
+```json
+{
+  "id": "<job-uuid>",
+  "status": "complete",
+  "chat_id": "<chatId>",
   "assistant": { "role": "assistant", "content": "…" },
-  "usage": {
-    "input_tokens": 1234,
-    "output_tokens": 56,
-    "total_tokens": 1290,
-    "model": "…"
-  },
+  "usage": { "input_tokens": 1234, "output_tokens": 56, "total_tokens": 1290, "model": "…" },
   "session": { }
 }
 ```
 
-`usage` may be **`null`** if Bedrock does not return usage metadata for that call; the UI should tolerate that.
+`usage` may be **`null`** when Bedrock did not return usage for that turn; tolerate it in the UI.
 
-**Behavior:** not streaming — one HTTP request/response per turn; the API process holds the connection open until Bedrock returns. Use a **generous client timeout** (tens of seconds). Only one completion should be **in flight per `chatId`** at a time (see **409** below). **Roadmap:** move this to a **job-style** flow (short HTTP + poll or push) — see [What is still partial, deferred, or not implemented?](#what-is-still-partial-deferred-or-not-implemented).
+**Behavior:** `POST` returns quickly after persisting the **user** line (first attempt) and enqueueing work, or after accepting a **retry** for the same `client_message_id` when a prior job **`failed`** (no second user row — same text must match the pending user line at end of session). Poll **`GET …/completion-jobs/:jobId`** until `status` is `complete` or `failed`. The **user** message **stays** in the transcript when a job fails (no server-side delete). At most **one** non-terminal job per `chatId` (Postgres partial unique index); a second turn with a different `client_message_id` while another job is active yields **409** `NOVA_COMPLETION_IN_FLIGHT`. Bedrock or persist failures set the job to `status: failed`; see poll response below.
+
+### `GET …/completion-jobs/:jobId`
+
+**Success (200):** while running:
+
+```json
+{ "id": "<job-uuid>", "status": "pending", "chat_id": "<chatId>" }
+```
+
+(or `"status": "running"` after the worker claims the job)
+
+When **`complete`:**
+
+```json
+{
+  "id": "<job-uuid>",
+  "status": "complete",
+  "chat_id": "<chatId>",
+  "assistant": { "role": "assistant", "content": "…" },
+  "usage": { } ,
+  "session": { }
+}
+```
+
+When **`failed`:**
+
+```json
+{
+  "id": "<job-uuid>",
+  "status": "failed",
+  "chat_id": "<chatId>",
+  "code": "NOVA_BEDROCK_FAILED",
+  "error": "…"
+}
+```
+
+**404:** `NOVA_COMPLETION_JOB_NOT_FOUND` — wrong `jobId`, or job does not belong to this `:chatId`.
 
 ### `PATCH …/:chatId`
 
@@ -101,9 +148,11 @@ Caps (from schema): e.g. up to **500** messages on full replace, **50** on appen
 | HTTP | `code` (when present) | When |
 |------|------------------------|------|
 | 400 | (Zod / validation) | Bad `chatId`, body schema, or invalid `model` preset (`NOVA_MODEL_INVALID`). |
+| 400 | `NOVA_CLIENT_MESSAGE_MISMATCH` | Retry after a **failed** job with the same `client_message_id` but `message` does not match the pending user line at end of session. |
+| 400 | `NOVA_COMPLETION_RETRY_INVALID_STATE` | Retry requested (prior **`failed`** job for this `client_message_id`) but the session does not end with the expected user message (e.g. reload needed). |
 | 404 | `NOVA_SESSION_NOT_FOUND` | Unknown chat or no access. |
-| 409 | `NOVA_COMPLETION_IN_FLIGHT` | Second simultaneous `POST …/completions` for the same chat; wait and retry or disable send until the first completes. |
-| 502 | `NOVA_BEDROCK_FAILED` | Bedrock invoke failed. |
+| 404 | `NOVA_COMPLETION_JOB_NOT_FOUND` | Unknown job id, or job does not belong to this `:chatId`. |
+| 409 | `NOVA_COMPLETION_IN_FLIGHT` | Second `POST …/completions` for the same chat while another job is `pending`/`running` (different `client_message_id`); poll the active job or wait. |
 | 503 | `REDIS_UNAVAILABLE` | Create, load, patch, or completions path requires Redis (`REDIS_URL`); **not** returned for `GET /api/nova/chat-sessions` (list is Supabase-only). |
 | 500 | `NOVA_SESSION_PERSIST_FAILED`, `NOVA_TOKEN_USAGE_FAILED`, `NOVA_SESSION_LIST_FAILED`, etc. | Persistence or internal errors. |
 | 401 | — | Missing or invalid Bearer JWT: `{ "error": "<message>" }` (e.g. token required, invalid/expired). Same auth as the rest of the API; refresh tokens like other authenticated routes. |
@@ -120,7 +169,8 @@ All successful bodies are JSON. `<Session>` means the [session object](#session-
 | `POST /api/nova/chat-sessions` | **201** | `{ "chatId": "<uuid>", "session": <Session> }` — **no request body** is required (empty body or `{}` is fine). |
 | `GET /api/nova/chat-sessions/:chatId` | **200** | `{ "session": <Session> }` |
 | `PATCH /api/nova/chat-sessions/:chatId` | **200** | `{ "session": <Session> }` |
-| `POST /api/nova/chat-sessions/:chatId/completions` | **200** | `{ "assistant": { "role": "assistant", "content": "…" }, "usage": <object> \| null, "session": <Session> }` |
+| `POST /api/nova/chat-sessions/:chatId/completions` | **202** | `{ "id": "<job-uuid>", "status": "pending" \| "running", "chat_id": "<chatId>" }` — also **200** when replaying a finished turn with the same `client_message_id` (see POST section). |
+| `GET /api/nova/chat-sessions/:chatId/completion-jobs/:jobId` | **200** | `{ "id", "status", "chat_id" }` — when `status` is `complete`, includes `assistant`, `usage` (\| null), `session`; when `failed`, includes `code`, `error`. |
 | `POST /api/nova/chat-sessions/:chatId/token-usage` | **201** | `{ "ok": true, "total_tokens": <number> }` |
 
 **Headers:** send **`Authorization: Bearer <access_token>`** on every call. For routes with a JSON body, use **`Content-Type: application/json`**.
@@ -131,8 +181,8 @@ All successful bodies are JSON. `<Session>` means the [session object](#session-
 
 1. **New thread:** `POST /api/nova/chat-sessions` → persist `chatId` (URL query, client storage, or global state). Render `session.messages` (starts empty).
 2. **Open existing:** `GET /api/nova/chat-sessions/:chatId`; on **404** (`NOVA_SESSION_NOT_FOUND`), treat as unknown/expired id and start a new session or show an error.
-3. **Send a turn:** `POST …/completions` with `{ "model": "haiku" \| "sonnet" \| "opus", "message": "<non-empty string>" }`. **Not streaming** — one round-trip per turn; use a long client timeout. Keep **at most one in-flight completion per `chatId`**; on **409** keep the UI in a “still generating” state until the first request finishes.
-4. **After a successful completion:** drive the transcript from **`response.session.messages`** (authoritative order and content). Optionally show **`response.usage`** for admin/debug; tolerate **`usage: null`**.
+3. **Send a turn:** `POST …/completions` with `{ "model": "haiku" \| "sonnet" \| "opus", "message": "<non-empty string>", "client_message_id": "<uuid>" }` → **202** + `id` (job id). Poll **`GET …/completion-jobs/:id`** until `status` is `complete` or `failed`. The **user** message appears in `session.messages` as soon as **202** is returned (refresh `GET …/:chatId` if needed). Use **FE loading state** for the assistant reply (no placeholder row in the API). **Retry after `failed`:** same `client_message_id` and **same** `message` → **202** for a new job **without** duplicating the user row; if `message` does not match the pending user line, the API returns **400** (`NOVA_CLIENT_MESSAGE_MISMATCH` or `NOVA_COMPLETION_RETRY_INVALID_STATE`).
+4. **After a successful job:** drive the transcript from **`response.session.messages`** on the terminal poll (or **200** idempotent replay). Optionally show **`response.usage`**; tolerate **`usage: null`**.
 5. **Rolling summary in the UI:** if you surface `summary` or “memory,” refresh via **`GET …/:chatId`** while `summarize_pending` is true (poll lightly or on focus) — the worker updates Redis/DB in the background. The next completion’s `session` is also fine without polling.
 6. **Session list / sidebar:** `GET /api/nova/chat-sessions` for **metadata** (ids, activity, token totals). For each row, call `GET …/:chatId` when the user opens a thread (or prefetch sparingly).
 7. **`PATCH`:** most UIs only need create + GET + completions. Use **`PATCH`** when the product edits the transcript, summary, or token hints client-side (see the PATCH section above).
@@ -142,7 +192,7 @@ Reference tests for behavior (not a spec substitute): `tests/nova-chat-sessions-
 ### UX tips for the client
 
 - After **201** create, keep `chatId` and use **`session.messages`** for the thread.
-- On **409**, show “still thinking…” / disable send; do not fire another completion until the prior request finishes.
+- On **409**, another turn is already queued or running for this chat; poll the active job or wait before sending a **different** `client_message_id`.
 - **Summarization** runs in a **background worker**; the chat reply path does not block on it. `summarize_pending` may flicker `true` then `false` after a poll or next completion.
 
 Deeper behavior (Redis keys, worker queue, encryption, Bedrock prompt assembly) is described below in this same document.
@@ -165,23 +215,23 @@ The system is built around a **stateless LLM with stateful application memory la
 | Supabase session + message persistence | **Done** — tables `chat_sessions`, `chat_messages`; summary and message bodies encrypted with the user’s wrapped master key (same pattern as notes); RLS + `organization_id` (personal org via `ensurePersonalOrganization`). |
 | Reload Redis from Supabase | **Done** — GET misses cache: decrypt from Postgres, repopulate Redis. |
 | Token usage rows + session aggregate | **Done** — `chat_token_usage` + `POST .../token-usage`; `total_tokens` on `chat_sessions` incremented per event (per-seat `user_id` for metering). |
-| AWS Bedrock orchestration (chat turn) | **Done (sync HTTP)** — `POST /api/nova/chat-sessions/:chatId/completions` holds the request until Bedrock returns; presets `haiku` \| `sonnet` \| `opus` (`getNovaChatCompletionRequestBody` + `claudeInvokeModel`); appends user + assistant messages, records `chat_token_usage` when Bedrock returns `usage`, refreshes Redis. **Not done:** job-style / 202 + poll (see gaps below). |
+| AWS Bedrock orchestration (chat turn) | **Done (async job + poll)** — `POST …/completions` returns **202** + job id, persists user message, `setImmediate` runs `novaChatCompletionProcessor` (JWT Supabase + Bedrock, same idea as prompt-llm jobs). Poll `GET …/completion-jobs/:jobId`. Table `nova_chat_completion_jobs` (`status` is Postgres enum `nova_chat_completion_job_status`); partial unique one active job per `chat_id`. |
 | Automated tests (completions) | **Done** — `tests/nova-chat-sessions-completions.test.js` (`npm run test:nova-chat-sessions-completions`); harness supports `timeoutMs` / `AbortSignal.timeout`; included in `tests/runAll.js` (suite 2.15). Unit: `tests/novaBedrockChat.unit.test.js`, `tests/novaSummarize.unit.test.js`. **Queue E2E** (opt-in, `.e2e.test.js`, not in runAll): `NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE=1` in `.env.local` (dev/staging only; server `NODE_ENV=production` ignores it), restart Fastify, then `npm run test:nova-summarize-queue-e2e` — spawns worker subprocess, two completion rounds after rolling summarize, asserts full persisted transcript length, `summary_covered_message_count`, and that the next Bedrock turn uses a single-message dialog (no duplicated pre-checkpoint pairs); writes `test-results/nova-summarize-queue-e2e.json`. |
 | Deploy secrets (Redis on EC2) | **Done** — GitHub Actions deploy writes `REDIS_URL` (required) and optional `REDIS_AUTH_TOKEN` into EC2 `.env.local`. |
-| Chat persistence path | **Done (sync)** — Nova create / PATCH and `POST .../completions` write through to Supabase; Redis refreshed after durable writes. **Deferred:** Postgres outbox / write-behind — only if synchronous writes become a bottleneck; there is **no** separate background worker for normal chat message persistence today. |
-| Background worker (rolling summarization) | **Done** — `npm run worker:nova-summarize` (`src/workers/novaSummarizeWorker.js`): drains Redis list `nova:summarize:queue`, **sweep** re-queues members of `nova:summarize:due` on an interval. API enqueues after `POST .../completions` when Bedrock `usage.input_tokens` ≥ `NOVA_SUMMARIZE_CONTEXT_THRESHOLD` (default `0.7`) of the preset context limit (non-production tests may use `NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE=1` to enqueue without hitting threshold). Worker uses `SUPABASE_SERVICE_ROLE_KEY` and `getOrCreateUserMasterKey` to decrypt/load and encrypt/persist session summary + messages. |
-| Per-session completion lock | **Done** — Redis `nova:completion-lock:{userId}:{chatId}` (NX + TTL); concurrent `POST .../completions` → **409** `NOVA_COMPLETION_IN_FLIGHT`. Env: `NOVA_COMPLETION_LOCK_TTL_SEC` (default 300). |
+| Chat persistence path | **Done** — Nova create / PATCH persist synchronously; each completion **accept** appends the user message to Postgres + Redis; the async processor appends the assistant when Bedrock succeeds. **Deferred:** Postgres outbox / write-behind — only if synchronous writes become a bottleneck; there is **no** separate background worker process for chat completions today (in-process continuation only). |
+| Background worker (rolling summarization) | **Done** — `npm run worker:nova-summarize` (`src/workers/novaSummarizeWorker.js`): drains Redis list `nova:summarize:queue`, **sweep** re-queues members of `nova:summarize:due` on an interval. API enqueues after a completion job **finishes** when Bedrock `usage.input_tokens` ≥ `NOVA_SUMMARIZE_CONTEXT_THRESHOLD` (default `0.7`) of the preset context limit (non-production tests may use `NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE=1` to enqueue without hitting threshold). Worker uses `SUPABASE_SERVICE_ROLE_KEY` and `getOrCreateUserMasterKey` to decrypt/load and encrypt/persist session summary + messages. |
+| Per-chat active completion guard | **Done** — Postgres partial unique index on `nova_chat_completion_jobs(chat_id)` where `status` ∈ (`pending`,`running`); second **different** turn → **409** `NOVA_COMPLETION_IN_FLIGHT`. Same `client_message_id` while in-flight → same **202** job id. |
+| Chat session display title | **Planned** — human-readable **title** per thread for session lists (default **"New Chat"** at create; optional later **AI-generated** title from early user/assistant text). Requires `chat_sessions` (or metadata) column + API list/create/PATCH exposure; not implemented in this repo yet. |
 | Full transcript vs Bedrock message list | **Done** — After each completion, `session.messages` is the **full** ordered transcript (append user + assistant). The Bedrock request uses **`novaPriorDialogMessagesForBedrock`**: `messages.slice(summary_covered_message_count)` only, so turns already folded into the rolling summary are not duplicated in the model’s `messages` array. |
 | Redis failure → regenerate summary | **Partial** — history reloads from Supabase; rolling summary is whatever was last persisted. **Rolling LLM summarize** runs via worker when enqueued; not automatically replayed on cold Redis rebuild unless a job remains in `nova:summarize:due`. |
 
 #### What is still partial, deferred, or not implemented?
 
-- **TODO (infra / UX):** **Job-style chat completions instead of long-lived HTTP** — Today `POST …/completions` is synchronous end-to-end: the client keeps a single HTTP request open until Bedrock finishes (or times out). Planned follow-on: mirror the existing scribe pattern under `/api/jobs/prompt-llm/…` — e.g. **accept turn → 202 + `jobId`** (or enqueue to Redis/worker), run Bedrock off the hot request path, expose **poll** `GET …/jobs/:jobId` (and/or SSE later). Benefits: reverse-proxy / ALB idle timeouts, clearer retries, optional longer model runs without tying up a Fastify worker per doctor. **Not started for Nova.** Concurrency would shift from Redis `NOVA_COMPLETION_IN_FLIGHT` on the HTTP handler to **job row state** (or equivalent) plus the same “one active generation per `chatId`” rule.
-- **Deferred (by design):** **Postgres outbox / write-behind** — optional pattern if per-turn Supabase + Redis ever becomes too slow; not a “chat message worker”; normal turns stay on the synchronous API path above.
+- **Deferred (by design):** **Postgres outbox / write-behind** — optional pattern if per-turn Supabase + Redis ever becomes too slow; not a “chat message worker”; normal turns stay on the API path above.
 - **Partial:** **Redis cold / loss** — full message history reloads from Supabase; rolling `summary` is last-persisted only. The summarize worker does not auto-run unless a job remains queued (`nova:summarize:queue` / `nova:summarize:due`). **`summarize_pending` and `summary_covered_message_count` are not faithfully restored from Postgres on hydrate** — `loadNovaChatSessionFromSupabase` resets `summarize_pending` to `false` and derives checkpoint from summary vs messages only; durable flags + reconciliation described in [Total Redis loss](#total-redis-loss-flush-new-cluster-prolonged-outage) are recommendations, not fully implemented.
-- **Planned (not shipped):** [Rolling summary — structured JSON](#rolling-summary--structured-json-planned) (`schema_version` 1: `facts`, `decisions`, `constraints`, `follow_ups`, `open_questions`).
+- **Planned (not shipped):** [Rolling summary — structured JSON](#rolling-summary--structured-json-planned) (`schema_version` 1: `facts`, `decisions`, `constraints`, `follow_ups`, `open_questions`). **Session list title** — per-chat **display name** (default **"New Chat"**; optional AI-generated from first messages for sidebar/history).
 - **Doc vs code:** [Failure Handling](#failure-handling) “buffer in Redis / retry async persistence” on Supabase failure is an **architectural option**, not the current Nova completion path (today a failed persist surfaces as an error to the client after Bedrock may already have run).
-- **Not implemented:** **Streaming tokens** (SSE/WebSocket) for assistant output; **client-supplied message ids** for idempotent duplicate `POST` retries ([open question #4](#implementation-open-questions)); **vector / RAG**, multimodal, encounter-linked sessions — see [Future enhancements](#future-enhancements) and [Implementation open questions](#implementation-open-questions).
+- **Not implemented:** **Streaming tokens** (SSE/WebSocket) for assistant output; **vector / RAG**, multimodal, encounter-linked sessions — see [Future enhancements](#future-enhancements) and [Implementation open questions](#implementation-open-questions). (**Note:** `client_message_id` on `POST …/completions` is implemented for idempotent / retry semantics.)
 
 ---
 
@@ -342,12 +392,11 @@ API: `POST /api/nova/chat-sessions/:chatId/token-usage` with a Bearer JWT (RLS-e
 
 ### Input context construction
 
-Each `POST .../completions` request includes:
+Each Nova completion **job** (async Bedrock invoke) builds the prompt from:
 
 1. System instructions  
 2. Rolling **summary** (plaintext from Redis / `encrypted_summary` when hydrated)  
-3. **Verbatim dialog tail** — for the model only: `messages` from index `summary_covered_message_count` onward (older turns are not duplicated in the message list; they are assumed folded into the summary), then capped by `NOVA_BEDROCK_MAX_PRIOR_MESSAGES`. **Persistence:** Redis / Supabase still store the **complete** `messages` array; each turn appends to it. Only the Bedrock payload uses the tail slice.  
-4. New user input for this turn
+3. **Verbatim dialog tail** — for the model only: `messages` from index `summary_covered_message_count` onward (older turns are not duplicated in the message list; they are assumed folded into the summary), then capped by `NOVA_BEDROCK_MAX_PRIOR_MESSAGES`. The **last** message in that tail is the pending **user** line persisted at job accept; it is passed once as `userMessage` to Bedrock (not duplicated in the prior tail). **Persistence:** Redis / Supabase still store the **complete** `messages` array; each turn appends user then assistant. Only the Bedrock payload uses the tail slice.
 
 ---
 
@@ -375,11 +424,11 @@ FINAL_PROMPT =
 
 ## Summarization strategy
 
-Chat messages stay **synchronously** persisted to Supabase on create / PATCH / completions. The **summarization worker** performs **LLM-based rolling summaries** only (not write-behind for messages).
+Chat messages are persisted to Supabase on create / PATCH; each completion **accept** appends the user line, and the async processor appends the assistant when Bedrock returns. The **summarization worker** performs **LLM-based rolling summaries** only (not write-behind for messages).
 
 ### Triggers
 
-1. **Primary — threshold after completion** — After a successful `POST .../completions`, if estimated prompt/context use is **~≥70%** of the active model’s context window, enqueue or schedule a summarization run for that session.
+1. **Primary — threshold after completion** — After a successful completion **job** (assistant persisted), if estimated prompt/context use is **~≥70%** of the active model’s context window, enqueue or schedule a summarization run for that session.
 2. **Secondary — cron / sweep** — Periodic job retries **failed** summarizations, and finds sessions **over threshold** that never got a fresh summary (missed enqueue, restart, throttling). This complements the event trigger; it does not replace it.
 
 ### Token signal (Bedrock → Redis / DB)
@@ -408,7 +457,7 @@ Chat messages stay **synchronously** persisted to Supabase on create / PATCH / c
 
 ### Concurrency (multi-tab / multi-device)
 
-- **One in-flight completion per `chat_id`:** if a `POST .../completions` is already running for that session, additional requests return **409 Conflict** (`NOVA_COMPLETION_IN_FLIGHT`) so message order does not interleave across tabs or devices. Implemented with Redis NX + TTL.
+- **One non-terminal completion job per `chat_id`:** a partial unique index on `nova_chat_completion_jobs` ensures at most one row in `pending` or `running` per chat. A second `POST …/completions` with a **different** `client_message_id` while one is active returns **409 Conflict** (`NOVA_COMPLETION_IN_FLIGHT`). Retrying the **same** `client_message_id` returns the same **202** payload (`id`, `status`) as the active job.
 
 ### Rolling summary — structured JSON (planned)
 
@@ -492,7 +541,7 @@ The Messages-style InvokeModel response includes **`usage`** with at least `inpu
 
 ### 1. User sends message
 
-If another completion is already in flight for this `chat_id`, respond with **409 Conflict** before starting Bedrock.
+If another completion job is already **pending** or **running** for this `chat_id`, respond with **409 Conflict** before enqueueing (unless the request is an idempotent replay of the same `client_message_id` as the active job).
 
 ### 2. Backend loads context
 
@@ -503,18 +552,20 @@ If another completion is already in flight for this `chat_id`, respond with **40
 
 ### 4. Call AWS Bedrock (Claude)
 
+Async processor (`novaChatCompletionProcessor`), not the `POST` request thread.
+
 ### 5. Save response
 
-- Redis (refreshed after successful Postgres writes on Nova create / PATCH and after `POST .../completions`)
-- Supabase (synchronous persist on create / PATCH and on completions: new messages + token usage when available)
+- Redis (refreshed after successful Postgres writes on Nova create / PATCH and after each completion **job** finishes)
+- Supabase (user line on job **accept**; assistant + token usage when the processor completes)
 
 ### 6. Token logging
 
-- Supabase row in `chat_token_usage` (+ bump `chat_sessions.total_tokens`) via `POST .../completions` when Bedrock returns usage, or via `POST .../token-usage` for client-reported usage
+- Supabase row in `chat_token_usage` (+ bump `chat_sessions.total_tokens`) when Bedrock returns `usage` on the completion job, or via `POST …/token-usage` for client-reported usage
 
 ### 7. Summarization
 
-- After step 6, if usage crosses the **~70% context** rule (and `usage` is present), API enqueues a Redis job and sets `summarize_pending` on the session. The **worker** (`worker:nova-summarize`) drains the queue; **sweep** re-queues `nova:summarize:due` periodically. Main chat path stays **fail open** if summarization fails.
+- After step 6, if usage crosses the **~70% context** rule (and `usage` is present), the processor enqueues a Redis job and sets `summarize_pending` on the session. The **worker** (`worker:nova-summarize`) drains the queue; **sweep** re-queues `nova:summarize:due` periodically. Main chat path stays **fail open** if summarization fails.
 
 ---
 
@@ -604,7 +655,8 @@ Memory is entirely application-controlled for:
 
 ## Future Enhancements
 
-- **Async Nova completions** — job queue + poll (or SSE), replacing synchronous long-held `POST …/completions`; see [gap list](#what-is-still-partial-deferred-or-not-implemented) above.
+- **Async Nova completions** — **Shipped:** job table + **202** + poll under `/api/nova/chat-sessions/…`; optional later: dedicated queue workers, SSE push.
+- **Chat session title** — Per-thread **display title** for lists: default **"New Chat"** at session creation; optional **AI-generated** label (e.g. after first successful completion) from a short model pass on a non-sensitive excerpt or structured summary. Needs DB column + list API field + optional PATCH.
 - Vector database for long-term semantic retrieval
 - Multi-modal inputs (audio, EMR integration)
 - Insurance contract reasoning module
@@ -637,6 +689,6 @@ These are not blockers for the architecture; they refine product and compliance 
 1. **BAA coverage** — Confirm BAAs (or equivalent) for every subprocessors in the path: AWS (Bedrock, ElastiCache), Supabase (HIPAA add-on if required), and any logging/observability that might see message bodies.
 2. **PHI in prompts** — Define policy for when chat content is clinical PHI vs internal ops (e.g. billing templates); whether system prompts and summaries are allowed to echo identifiers, and whether de-identification is required for any analytics.
 3. **Identity and tenancy** — **Partially settled in code:** `user_id` is the Supabase auth user; sessions are private to that user (RLS). `organization_id` is set from the user’s personal org for billing alignment; clinic-wide pools vs personal org for Nova may still be a product choice.
-4. **Idempotency and ordering** — **Partially directed:** enforce **single in-flight completion per `chat_id`** with **409** to prevent interleaved multi-device sends. Remaining: client message IDs vs server-assigned for duplicate POST retries.
+4. **Idempotency and ordering** — **Largely settled in code:** `client_message_id` (UUID) on `POST …/completions` for idempotent replay (`complete` → **200**) and retry-after-`failed` without double user append; **409** when another job is `pending`/`running` for the same `chat_id`. Further product choices: server-assigned ids only, or edit-and-resend semantics.
 5. **Integration with scribe/encounters** — Whether Nova sessions can attach to `patient_encounter` (or similar) for audit context, or remain strictly standalone general chat.
 6. **Summary regeneration** — After Redis loss, whether to re-summarize from full history in one shot, cap history length, or replay through a dedicated “rebuild” job with rate limits. **Rolling summarization** for active chats is covered in [Summarization strategy](#summarization-strategy).

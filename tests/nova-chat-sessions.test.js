@@ -2,8 +2,11 @@
  * Test Suite: Nova AI — Redis chat sessions API
  * Requires: Fastify server, Redis, REDIS_URL in .env.local (same as server); optional REDIS_AUTH_TOKEN
  * Requires: TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local
- * Requires: Supabase migrations including chat_sessions / chat_messages / chat_token_usage
- *   (`sql/migrations/20260507_nova_chat_sessions.sql`) and organizations billing tables.
+ * Requires: Supabase migrations including `chat_sessions` / `chat_messages` / `chat_token_usage`
+ *   (`sql/migrations/20260507_nova_chat_sessions.sql`), `nova_chat_completion_jobs`
+ *   (`sql/migrations/20260514_nova_chat_completion_jobs.sql` — enum `nova_chat_completion_job_status`; if you applied an older TEXT-only 20260514, also run `sql/migrations/20260515_nova_chat_completion_jobs_status_enum.sql` once),
+ *   (`sql/policies/nova_chat_completion_jobs_RLS.sql`),
+ *   and organizations billing tables.
  *
  * Does not call Bedrock or `POST .../completions`. Saved JSON has no assistant/LLM turns — only
  * PATCH append (e.g. `nova-test-message`). Completions + optional Bedrock E2E:

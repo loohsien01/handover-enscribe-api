@@ -29,6 +29,11 @@ export const novaChatSessionIdParamsSchema = z.object({
   chatId: z.string().regex(uuidRegex, 'Invalid chat id'),
 });
 
+export const novaChatCompletionJobParamsSchema = z.object({
+  chatId: z.string().regex(uuidRegex, 'Invalid chat id'),
+  jobId: z.string().regex(uuidRegex, 'Invalid job id'),
+});
+
 /** GET /api/nova/chat-sessions — paginated metadata list (no transcript; use GET …/:chatId). */
 export const novaChatSessionsListQuerySchema = z
   .object({
@@ -58,5 +63,7 @@ export const novaChatCompletionRequestSchema = z
   .object({
     model: z.enum(['haiku', 'sonnet', 'opus']),
     message: z.string().min(1).max(100_000),
+    /** Idempotency key per turn; duplicate while in-flight or after success replays the same outcome. */
+    client_message_id: z.string().regex(uuidRegex, 'client_message_id must be a UUID'),
   })
   .strict();

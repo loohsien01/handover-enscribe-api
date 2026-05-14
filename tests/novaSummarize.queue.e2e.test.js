@@ -21,6 +21,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 dotenv.config({ path: path.resolve(REPO_ROOT, '.env.local') });
 
 import assert from 'node:assert/strict';
+import { randomUUID } from 'crypto';
 import { test } from 'node:test';
 import { createClient } from 'redis';
 import { makeRequest } from './testUtils.js';
@@ -47,6 +48,31 @@ const COMPLETION_TIMEOUT_MS = (() => {
 const POLL_MS = 500;
 const WORKER_WAIT_MS = 90_000;
 const MODEL = (process.env.NOVA_E2E_MODEL || 'haiku').toLowerCase();
+
+/**
+ * @param {string} base
+ * @param {Record<string, string>} authHeaders
+ * @param {string} chatId
+ * @param {string} jobId
+ * @param {number} timeoutMs
+ */
+async function pollNovaCompletionJobUntilTerminal(base, authHeaders, chatId, jobId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await makeRequest(
+      'GET',
+      `${base}/api/nova/chat-sessions/${chatId}/completion-jobs/${jobId}`,
+      { headers: authHeaders, expectedStatus: 200 }
+    );
+    assert.equal(res.passed, true, JSON.stringify(res.body));
+    const st = res.body?.status;
+    if (st === 'complete' || st === 'failed') {
+      return res;
+    }
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
+  throw new Error('poll timeout waiting for Nova completion job');
+}
 
 /** @returns {string | false} */
 function e2eSkipReason() {
@@ -153,7 +179,7 @@ test(
       const chatId = createRes.body?.chatId;
       assert.ok(chatId);
 
-      const completion1 = await makeRequest(
+      const completion1Post = await makeRequest(
         'POST',
         `${base}/api/nova/chat-sessions/${chatId}/completions`,
         {
@@ -161,12 +187,23 @@ test(
           body: {
             model: MODEL,
             message: 'For testing only: one sentence on why azithromycin is not a penicillin.',
+            client_message_id: randomUUID(),
           },
-          expectedStatus: 200,
-          timeoutMs: COMPLETION_TIMEOUT_MS,
+          expectedStatus: 202,
+          timeoutMs: 30_000,
         }
       );
-      assert.equal(completion1.passed, true, JSON.stringify(completion1.body));
+      assert.equal(completion1Post.passed, true, JSON.stringify(completion1Post.body));
+      const job1 = completion1Post.body?.id;
+      assert.ok(typeof job1 === 'string' && job1.length > 0, 'job id from 202');
+      const completion1 = await pollNovaCompletionJobUntilTerminal(
+        base,
+        authHeaders,
+        chatId,
+        job1,
+        COMPLETION_TIMEOUT_MS
+      );
+      assert.equal(completion1.body?.status, 'complete', JSON.stringify(completion1.body));
       assert.ok(completion1.body?.session?.summarize_pending === true, 'expected enqueue (test force)');
 
       const deadline1 = Date.now() + WORKER_WAIT_MS;
@@ -194,7 +231,7 @@ test(
         'next Bedrock turn should not repeat folded user/assistant pairs as chat messages'
       );
 
-      const completion2 = await makeRequest(
+      const completion2Post = await makeRequest(
         'POST',
         `${base}/api/nova/chat-sessions/${chatId}/completions`,
         {
@@ -202,12 +239,23 @@ test(
           body: {
             model: MODEL,
             message: 'Second turn: reply with one word: BANANA',
+            client_message_id: randomUUID(),
           },
-          expectedStatus: 200,
-          timeoutMs: COMPLETION_TIMEOUT_MS,
+          expectedStatus: 202,
+          timeoutMs: 30_000,
         }
       );
-      assert.equal(completion2.passed, true, JSON.stringify(completion2.body));
+      assert.equal(completion2Post.passed, true, JSON.stringify(completion2Post.body));
+      const job2 = completion2Post.body?.id;
+      assert.ok(typeof job2 === 'string');
+      const completion2 = await pollNovaCompletionJobUntilTerminal(
+        base,
+        authHeaders,
+        chatId,
+        job2,
+        COMPLETION_TIMEOUT_MS
+      );
+      assert.equal(completion2.body?.status, 'complete');
       assert.ok(completion2.body?.session?.messages?.length === 4);
       assert.ok(completion2.body?.session?.summarize_pending === true);
 

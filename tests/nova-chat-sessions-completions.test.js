@@ -1,5 +1,6 @@
 /**
- * Nova — `POST /api/nova/chat-sessions/:chatId/completions`
+ * Nova — async `POST /api/nova/chat-sessions/:chatId/completions` + poll
+ * `GET /api/nova/chat-sessions/:chatId/completion-jobs/:jobId`
  *
  * Standard: auth, Zod, 404 (no Bedrock). Optional Bedrock E2E: two completions + GET; asserts JSON
  * shape and `usage` from the API (not assistant prose matching magic strings — models may refuse).
@@ -7,6 +8,7 @@
  * `skipE2ETest` (below): `true` = default, API tests only. Set `false` to append Test 8 (Bedrock).
  * Env: `API_BASE_URL`, `REDIS_URL`, `TEST_ACCOUNT_*`. E2E: `NOVA_E2E_MODEL`, `NOVA_E2E_COMPLETION_TIMEOUT_MS`.
  */
+import { randomUUID } from 'crypto';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -37,7 +39,40 @@ const PLACEHOLDER_CHAT_ID = '11111111-1111-4111-8111-111111111111';
 const UNKNOWN_CHAT_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
 
 /**
- * Bedrock/InvokeModel normally returns usage; API forwards it on 200 responses.
+ * @param {string} base
+ * @param {Record<string, string>} authHeaders
+ * @param {string} chatId
+ * @param {string} jobId
+ * @param {{ timeoutMs?: number, intervalMs?: number }} [opts]
+ */
+async function pollCompletionJobUntilTerminal(base, authHeaders, chatId, jobId, opts = {}) {
+  const deadline = Date.now() + (opts.timeoutMs ?? 120_000);
+  const interval = opts.intervalMs ?? 400;
+  let last = {};
+  while (Date.now() < deadline) {
+    last = await makeRequest(
+      'GET',
+      `${base}/api/nova/chat-sessions/${chatId}/completion-jobs/${jobId}`,
+      {
+        headers: authHeaders,
+        expectedStatus: 200,
+      }
+    );
+    if (!last.passed) return last;
+    const st = last.body?.status;
+    if (st === 'complete' || st === 'failed') return last;
+    await new Promise((r) => setTimeout(r, interval));
+  }
+  return {
+    passed: false,
+    status: 0,
+    body: { error: 'poll timeout waiting for completion job' },
+    customMessage: 'poll timeout',
+  };
+}
+
+/**
+ * Bedrock/InvokeModel normally returns usage; API forwards it on terminal poll responses.
  * @param {unknown} body - completions JSON body
  * @param {string} turnLabel
  * @returns {{ ok: boolean, msg: string }}
@@ -123,17 +158,40 @@ async function appendBedrockE2E(runner, authHeaders) {
   // Avoid asking the model to echo arbitrary tokens — many models refuse (policy), which breaks E2E
   // even when the API and Bedrock are healthy. Use benign factual prompts; assert JSON shape + usage.
   console.log('  … Bedrock turn 1 (may take ~10–60s)');
+  const clientId1 = randomUUID();
   const c1 = await makeRequest('POST', `${base}/api/nova/chat-sessions/${chatId}/completions`, {
     headers: authHeaders,
-    body: { model: E2E_MODEL, message: 'What is 2+2? Answer with a single digit only.' },
-    expectedStatus: 200,
+    body: {
+      model: E2E_MODEL,
+      message: 'What is 2+2? Answer with a single digit only.',
+      client_message_id: clientId1,
+    },
+    expectedStatus: 202,
+    timeoutMs: 30_000,
+  });
+  const job1 = c1.body?.id;
+  if (!c1.passed || typeof job1 !== 'string') {
+    failMessage = `Turn 1: expected 202 + job id (status ${c1.status})`;
+    pushManualResult(runner, {
+      name: 'Test 8: Bedrock E2E — session + 2× completions + GET',
+      passed: false,
+      status: c1.status,
+      body: c1.body,
+      customMessage: failMessage,
+      expectedStatus: 202,
+    });
+    return;
+  }
+  const poll1 = await pollCompletionJobUntilTerminal(base, authHeaders, chatId, job1, {
     timeoutMs: COMPLETION_TIMEOUT_MS,
   });
-  const m1 = c1.body?.session?.messages;
-  const a1 = c1.body?.assistant?.content;
-  const u1 = expectCompletionUsage(c1.body, 'Turn 1');
+  const c1Final = poll1.body;
+  const m1 = c1Final?.session?.messages;
+  const a1 = c1Final?.assistant?.content;
+  const u1 = expectCompletionUsage(c1Final, 'Turn 1');
   if (
-    !c1.passed ||
+    !poll1.passed ||
+    c1Final?.status !== 'complete' ||
     typeof a1 !== 'string' ||
     a1.trim().length < 1 ||
     !Array.isArray(m1) ||
@@ -143,13 +201,13 @@ async function appendBedrockE2E(runner, authHeaders) {
     !u1.ok
   ) {
     failMessage = u1.ok
-      ? 'Turn 1: expected 200, assistant string, session.messages [user, assistant]'
+      ? 'Turn 1: expected complete job, assistant string, session.messages [user, assistant]'
       : u1.msg;
     pushManualResult(runner, {
       name: 'Test 8: Bedrock E2E — session + 2× completions + GET',
       passed: false,
-      status: c1.status,
-      body: c1.body,
+      status: poll1.status,
+      body: poll1.body,
       customMessage: failMessage,
       expectedStatus: 200,
     });
@@ -157,24 +215,44 @@ async function appendBedrockE2E(runner, authHeaders) {
   }
   console.log(`  → assistant (excerpt): ${String(a1).slice(0, 200)}${String(a1).length > 200 ? '…' : ''}`);
   console.log(
-    `  → usage: in=${c1.body.usage.input_tokens} out=${c1.body.usage.output_tokens} total=${c1.body.usage.total_tokens} model=${c1.body.usage.model || '?'}`
+    `  → usage: in=${c1Final.usage.input_tokens} out=${c1Final.usage.output_tokens} total=${c1Final.usage.total_tokens} model=${c1Final.usage.model || '?'}`
   );
 
   console.log('\n  … Bedrock turn 2');
-  const c2 = await makeRequest('POST', `${base}/api/nova/chat-sessions/${chatId}/completions`, {
+  const clientId2 = randomUUID();
+  const c2post = await makeRequest('POST', `${base}/api/nova/chat-sessions/${chatId}/completions`, {
     headers: authHeaders,
     body: {
       model: E2E_MODEL,
       message: 'What is 3+3? Answer with a single digit only.',
+      client_message_id: clientId2,
     },
-    expectedStatus: 200,
+    expectedStatus: 202,
+    timeoutMs: 30_000,
+  });
+  const job2 = c2post.body?.id;
+  if (!c2post.passed || typeof job2 !== 'string') {
+    failMessage = `Turn 2: expected 202 + job id (status ${c2post.status})`;
+    pushManualResult(runner, {
+      name: 'Test 8: Bedrock E2E — session + 2× completions + GET',
+      passed: false,
+      status: c2post.status,
+      body: c2post.body,
+      customMessage: failMessage,
+      expectedStatus: 202,
+    });
+    return;
+  }
+  const poll2 = await pollCompletionJobUntilTerminal(base, authHeaders, chatId, job2, {
     timeoutMs: COMPLETION_TIMEOUT_MS,
   });
-  const m2 = c2.body?.session?.messages;
-  const a2 = c2.body?.assistant?.content;
-  const u2 = expectCompletionUsage(c2.body, 'Turn 2');
+  const c2 = poll2.body;
+  const m2 = c2?.session?.messages;
+  const a2 = c2?.assistant?.content;
+  const u2 = expectCompletionUsage(c2, 'Turn 2');
   if (
-    !c2.passed ||
+    !poll2.passed ||
+    c2?.status !== 'complete' ||
     typeof a2 !== 'string' ||
     a2.trim().length < 1 ||
     !Array.isArray(m2) ||
@@ -184,13 +262,13 @@ async function appendBedrockE2E(runner, authHeaders) {
     !u2.ok
   ) {
     failMessage = u2.ok
-      ? 'Turn 2: expected 200 and ≥4 messages (user/assistant/user/assistant)'
+      ? 'Turn 2: expected complete job and ≥4 messages (user/assistant/user/assistant)'
       : u2.msg;
     pushManualResult(runner, {
       name: 'Test 8: Bedrock E2E — session + 2× completions + GET',
       passed: false,
-      status: c2.status,
-      body: c2.body,
+      status: poll2.status,
+      body: poll2.body,
       customMessage: failMessage,
       expectedStatus: 200,
     });
@@ -198,7 +276,7 @@ async function appendBedrockE2E(runner, authHeaders) {
   }
   console.log(`  → assistant (excerpt): ${String(a2).slice(0, 200)}${String(a2).length > 200 ? '…' : ''}`);
   console.log(
-    `  → usage: in=${c2.body.usage.input_tokens} out=${c2.body.usage.output_tokens} total=${c2.body.usage.total_tokens} model=${c2.body.usage.model || '?'}`
+    `  → usage: in=${c2.usage.input_tokens} out=${c2.usage.output_tokens} total=${c2.usage.total_tokens} model=${c2.usage.model || '?'}`
   );
 
   console.log('\n  … GET session');
@@ -243,7 +321,9 @@ export async function runNovaChatSessionsCompletionsTests() {
 
   console.log('Starting Nova chat-sessions completions tests...');
   console.log(`Server: ${getApiBaseUrl()}`);
-  console.log('POST /api/nova/chat-sessions/:chatId/completions — auth + validation + 404');
+  console.log(
+    'POST /api/nova/chat-sessions/:chatId/completions + GET …/completion-jobs/:jobId — auth + validation + 404'
+  );
   if (skipE2ETest) {
     console.log('Bedrock E2E: skipped (skipE2ETest=true)\n');
   } else {
@@ -284,13 +364,13 @@ export async function runNovaChatSessionsCompletionsTests() {
   await runner.test('Test 1: POST completions without authentication', {
     method: 'POST',
     endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions`,
-    body: { model: 'haiku', message: 'x' },
+    body: { model: 'haiku', message: 'x', client_message_id: randomUUID() },
     expectedStatus: 401,
     expectedFields: ['error'],
   });
 
   if (!accessToken) {
-    console.warn('\n⚠️  Skipping Tests 2–7 (and E2E): no access token\n');
+    console.warn('\n⚠️  Skipping Tests 2–7b (and E2E): no access token\n');
     runner.printResults();
     runner.saveResults('nova-chat-sessions-completions-tests.json');
     return runner.getSummary();
@@ -302,7 +382,7 @@ export async function runNovaChatSessionsCompletionsTests() {
     method: 'POST',
     endpoint: '/api/nova/chat-sessions/not-a-uuid/completions',
     headers: authHeaders,
-    body: { model: 'haiku', message: 'hello' },
+    body: { model: 'haiku', message: 'hello', client_message_id: randomUUID() },
     expectedStatus: 400,
     expectedFields: ['error'],
   });
@@ -316,11 +396,29 @@ export async function runNovaChatSessionsCompletionsTests() {
     expectedFields: ['error'],
   });
 
+  await runner.test('Test 3b: POST completions missing client_message_id (400)', {
+    method: 'POST',
+    endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions`,
+    headers: authHeaders,
+    body: { model: 'haiku', message: 'hello' },
+    expectedStatus: 400,
+    expectedFields: ['error'],
+  });
+
+  await runner.test('Test 3c: POST completions invalid client_message_id (400)', {
+    method: 'POST',
+    endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions`,
+    headers: authHeaders,
+    body: { model: 'haiku', message: 'hello', client_message_id: 'not-a-uuid' },
+    expectedStatus: 400,
+    expectedFields: ['error'],
+  });
+
   await runner.test('Test 4: POST completions invalid model enum (400)', {
     method: 'POST',
     endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions`,
     headers: authHeaders,
-    body: { model: 'gpt-4o', message: 'hello' },
+    body: { model: 'gpt-4o', message: 'hello', client_message_id: randomUUID() },
     expectedStatus: 400,
     expectedFields: ['error'],
   });
@@ -329,7 +427,7 @@ export async function runNovaChatSessionsCompletionsTests() {
     method: 'POST',
     endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions`,
     headers: authHeaders,
-    body: { model: 'haiku', message: '' },
+    body: { model: 'haiku', message: '', client_message_id: randomUUID() },
     expectedStatus: 400,
     expectedFields: ['error'],
   });
@@ -338,7 +436,7 @@ export async function runNovaChatSessionsCompletionsTests() {
     method: 'POST',
     endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions`,
     headers: authHeaders,
-    body: { model: 'haiku', message: 'hi', extra: true },
+    body: { model: 'haiku', message: 'hi', client_message_id: randomUUID(), extra: true },
     expectedStatus: 400,
     expectedFields: ['error'],
   });
@@ -347,7 +445,7 @@ export async function runNovaChatSessionsCompletionsTests() {
     method: 'POST',
     endpoint: `/api/nova/chat-sessions/${UNKNOWN_CHAT_ID}/completions`,
     headers: authHeaders,
-    body: { model: 'haiku', message: 'hello' },
+    body: { model: 'haiku', message: 'hello', client_message_id: randomUUID() },
     expectedStatus: 404,
     expectedFields: ['error', 'code'],
     customValidator: (data) => {

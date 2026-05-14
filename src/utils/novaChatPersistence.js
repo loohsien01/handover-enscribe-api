@@ -8,6 +8,7 @@ import { createEmptyNovaSession, normalizeNovaSessionShape } from './novaRedisSe
 export const chatSessionsTable = 'chat_sessions';
 export const chatMessagesTable = 'chat_messages';
 export const chatTokenUsageTable = 'chat_token_usage';
+export const novaChatCompletionJobsTable = 'nova_chat_completion_jobs';
 
 /**
  * @param {string | null | undefined} plain

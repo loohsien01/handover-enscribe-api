@@ -2,6 +2,7 @@ import fp from 'fastify-plugin';
 import { serializeZodError } from '../../utils/serializeZodError.js';
 import {
   novaChatSessionIdParamsSchema,
+  novaChatCompletionJobParamsSchema,
   novaChatSessionPatchRequestSchema,
   novaChatSessionsListQuerySchema,
   novaChatTokenUsageRequestSchema,
@@ -14,6 +15,7 @@ import {
   patchNovaChatSession,
   postNovaChatTokenUsage,
   postNovaChatCompletion,
+  getNovaChatCompletionJob,
 } from '../controllers/novaChatSessionsController.js';
 
 /**
@@ -24,7 +26,8 @@ import {
  * - GET    /api/nova/chat-sessions/:chatId
  * - PATCH  /api/nova/chat-sessions/:chatId
  * - POST   /api/nova/chat-sessions/:chatId/token-usage
- * - POST   /api/nova/chat-sessions/:chatId/completions (Bedrock: haiku | sonnet | opus; 409 if concurrent)
+ * - POST   /api/nova/chat-sessions/:chatId/completions (202 + job id; user message persisted; poll GET …/completion-jobs/:jobId)
+ * - GET    /api/nova/chat-sessions/:chatId/completion-jobs/:jobId (poll job: pending | running | complete | failed)
  */
 export default fp(async function novaChatSessionsRoutes(fastify) {
   const preAuth = { preHandler: [fastify.authenticate] };
@@ -83,6 +86,20 @@ export default fp(async function novaChatSessionsRoutes(fastify) {
       return patchNovaChatSession(request, reply);
     } catch (err) {
       fastify.log.error('PATCH /nova/chat-sessions/:chatId:', err);
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  fastify.get('/nova/chat-sessions/:chatId/completion-jobs/:jobId', preAuth, async (request, reply) => {
+    try {
+      const paramsResult = novaChatCompletionJobParamsSchema.safeParse(request.params);
+      if (!paramsResult.success) {
+        return reply.status(400).send({ error: serializeZodError(paramsResult.error) });
+      }
+      request.params = paramsResult.data;
+      return getNovaChatCompletionJob(request, reply);
+    } catch (err) {
+      fastify.log.error('GET /nova/chat-sessions/:chatId/completion-jobs/:jobId:', err);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });

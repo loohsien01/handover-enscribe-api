@@ -2,31 +2,24 @@ import { randomUUID } from 'crypto';
 import { getSupabaseClient } from '../../utils/supabase.js';
 import { getRedisClient } from '../../utils/redisClient.js';
 import {
-  acquireNovaCompletionLock,
-  releaseNovaCompletionLock,
-} from '../../utils/novaCompletionLock.js';
-import {
   createEmptyNovaSession,
   normalizeNovaSessionShape,
-  novaPriorDialogMessagesForBedrock,
   novaSessionGet,
   novaSessionSave,
   novaSessionTtlSeconds,
 } from '../../utils/novaRedisSession.js';
-import { enqueueNovaSummarizeJob } from '../../utils/novaSummarizeQueue.js';
-import { shouldEnqueueNovaSummarize } from '../../utils/novaSummarizeService.js';
 import {
   insertChatSessionRow,
   listChatSessionsForUser,
   loadNovaChatSessionFromSupabase,
   persistNovaChatSession,
   insertChatTokenUsageRow,
+  novaChatCompletionJobsTable,
 } from '../../utils/novaChatPersistence.js';
 import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
-import { getNovaChatCompletionRequestBody } from '../../utils/claudeRequestBody.js';
-import { claudeInvokeModel } from '../../utils/bedrockClient.js';
 import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
+import { novaChatCompletionProcessor } from '../processors/novaChatCompletionProcessor.js';
 
 async function redisOr503(reply) {
   const redis = await getRedisClient();
@@ -294,8 +287,60 @@ export async function postNovaChatTokenUsage(request, reply) {
 }
 
 /**
+ * Build JSON for GET …/completion-jobs/:jobId and for POST idempotent replay (200) when the job
+ * already completed for the same `client_message_id`.
+ *
+ * @param {import('fastify').FastifyRequest} request
+ * @param {import('redis').RedisClientType} redis
+ * @param {string} userId
+ * @param {string} chatId
+ * @param {Buffer} masterKey
+ * @param {{ id: string, status: string, usage?: object | null, error_code?: string | null, error_message?: string | null }} job
+ */
+async function buildNovaCompletionPollPayload(request, redis, userId, chatId, masterKey, job) {
+  if (job.status === 'pending' || job.status === 'running') {
+    return { id: job.id, status: job.status, chat_id: chatId };
+  }
+  if (job.status === 'failed') {
+    return {
+      id: job.id,
+      status: 'failed',
+      chat_id: chatId,
+      code: job.error_code || 'NOVA_COMPLETION_FAILED',
+      error: job.error_message || 'Completion failed',
+    };
+  }
+  const session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
+  if (!session) {
+    return {
+      id: job.id,
+      status: 'complete',
+      chat_id: chatId,
+      assistant: { role: 'assistant', content: '' },
+      usage: job.usage ?? null,
+      session: null,
+      code: 'NOVA_SESSION_NOT_FOUND',
+      error: 'Session could not be loaded after completion',
+    };
+  }
+  const last = session.messages?.[session.messages.length - 1];
+  const assistantContent = last?.role === 'assistant' ? last.content : '';
+  return {
+    id: job.id,
+    status: 'complete',
+    chat_id: chatId,
+    assistant: { role: 'assistant', content: assistantContent },
+    usage: job.usage ?? null,
+    session,
+  };
+}
+
+/**
  * POST /api/nova/chat-sessions/:chatId/completions
- * One user turn: Bedrock Claude → append user + assistant messages, persist, record token usage.
+ * Enqueues one async Bedrock turn: persists the user message on first attempt, returns **202** + job id;
+ * poll **GET** `/api/nova/chat-sessions/:chatId/completion-jobs/:jobId`. Idempotent replay of the same
+ * `client_message_id` after **complete** returns **200** with the final payload (no second Bedrock call).
+ * After a **failed** job, the same `client_message_id` + same `message` retries without appending a duplicate user row.
  */
 export async function postNovaChatCompletion(request, reply) {
   const redis = await redisOr503(reply);
@@ -310,69 +355,153 @@ export async function postNovaChatCompletion(request, reply) {
     return reply.status(400).send({ error: 'Invalid model', code: 'NOVA_MODEL_INVALID' });
   }
 
-  const masterKey = await userMasterKeyOr500(request, reply);
-  if (!masterKey) return;
+  const supabase = getSupabaseClient(request.headers.authorization);
 
-  const lockToken = await acquireNovaCompletionLock(redis, userId, chatId);
-  if (!lockToken) {
+  const { data: sessionExists, error: sessionCheckErr } = await supabase
+    .from('chat_sessions')
+    .select('id')
+    .eq('id', chatId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (sessionCheckErr || !sessionExists) {
+    return reply.status(404).send({
+      error: 'Chat session not found or expired',
+      code: 'NOVA_SESSION_NOT_FOUND',
+    });
+  }
+
+  const { data: doneJob } = await supabase
+    .from(novaChatCompletionJobsTable)
+    .select('id, status, usage, error_code, error_message')
+    .eq('chat_id', chatId)
+    .eq('user_id', userId)
+    .eq('client_message_id', body.client_message_id)
+    .eq('status', 'complete')
+    .order('completed_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (doneJob) {
+    const masterKey = await userMasterKeyOr500(request, reply);
+    if (!masterKey) return;
+    const payload = await buildNovaCompletionPollPayload(request, redis, userId, chatId, masterKey, doneJob);
+    return reply.status(200).send(payload);
+  }
+
+  const { data: activeJob } = await supabase
+    .from(novaChatCompletionJobsTable)
+    .select('id, client_message_id, status')
+    .eq('chat_id', chatId)
+    .eq('user_id', userId)
+    .in('status', ['pending', 'running'])
+    .maybeSingle();
+
+  if (activeJob) {
+    if (activeJob.client_message_id === body.client_message_id) {
+      return reply.status(202).send({
+        id: activeJob.id,
+        status: activeJob.status,
+        chat_id: chatId,
+      });
+    }
     return reply.status(409).send({
       error: 'Another completion is in progress for this chat',
       code: 'NOVA_COMPLETION_IN_FLIGHT',
     });
   }
 
-  try {
-    let session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
-    if (!session) {
-      return reply.status(404).send({ error: 'Chat session not found or expired', code: 'NOVA_SESSION_NOT_FOUND' });
-    }
+  const { data: latestFailedForClientId } = await supabase
+    .from(novaChatCompletionJobsTable)
+    .select('id')
+    .eq('chat_id', chatId)
+    .eq('user_id', userId)
+    .eq('client_message_id', body.client_message_id)
+    .eq('status', 'failed')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-    const supabase = getSupabaseClient(request.headers.authorization);
+  const hasFailedRetry = Boolean(latestFailedForClientId?.id);
 
-    const { data: orgRow, error: orgErr } = await supabase
-      .from('chat_sessions')
-      .select('organization_id')
-      .eq('id', chatId)
-      .eq('user_id', userId)
-      .maybeSingle();
+  const { data: newJob, error: insErr } = await supabase
+    .from(novaChatCompletionJobsTable)
+    .insert({
+      user_id: userId,
+      chat_id: chatId,
+      client_message_id: body.client_message_id,
+      model: body.model,
+      status: 'pending',
+    })
+    .select('id')
+    .single();
 
-    if (orgErr || !orgRow) {
-      return reply.status(404).send({ error: 'Chat session not found', code: 'NOVA_SESSION_NOT_FOUND' });
-    }
-
-    normalizeNovaSessionShape(session);
-    /** Dialog tail for Bedrock only — full transcript stays in `session.messages`. */
-    const dialogTailForBedrock = novaPriorDialogMessagesForBedrock(session);
-    const reqBody = getNovaChatCompletionRequestBody({
-      modelId,
-      summary: session.summary ?? '',
-      priorMessages: dialogTailForBedrock,
-      userMessage: body.message,
-    });
-
-    let inv;
-    try {
-      inv = await claudeInvokeModel(reqBody);
-    } catch (err) {
-      console.error('[postNovaChatCompletion] Bedrock invoke failed:', err);
-      return reply.status(502).send({
-        error: 'Model request failed',
-        code: 'NOVA_BEDROCK_FAILED',
-        detail: process.env.NODE_ENV !== 'production' ? String(err?.message || err) : undefined,
+  if (insErr) {
+    if (insErr.code === '23503') {
+      return reply.status(404).send({
+        error: 'Chat session not found or expired',
+        code: 'NOVA_SESSION_NOT_FOUND',
       });
     }
-
-    const assistantText = inv.text;
-    const appendedPlain = [
-      { role: 'user', content: body.message },
-      { role: 'assistant', content: assistantText },
-    ];
-    session.messages = [...(session.messages || []), ...appendedPlain];
-
-    if (inv.usage) {
-      const add = inv.usage.input_tokens + inv.usage.output_tokens;
-      session.token_estimate = (session.token_estimate ?? 0) + add;
+    if (insErr.code === '23505') {
+      const { data: again } = await supabase
+        .from(novaChatCompletionJobsTable)
+        .select('id, client_message_id, status')
+        .eq('chat_id', chatId)
+        .eq('user_id', userId)
+        .in('status', ['pending', 'running'])
+        .maybeSingle();
+      if (again?.client_message_id === body.client_message_id) {
+        return reply.status(202).send({ id: again.id, status: again.status, chat_id: chatId });
+      }
+      return reply.status(409).send({
+        error: 'Another completion is in progress for this chat',
+        code: 'NOVA_COMPLETION_IN_FLIGHT',
+      });
     }
+    console.error('[postNovaChatCompletion] insert job:', insErr);
+    return reply.status(500).send({ error: 'Failed to create completion job' });
+  }
+
+  const masterKey = await userMasterKeyOr500(request, reply);
+  if (!masterKey) {
+    await supabase.from(novaChatCompletionJobsTable).delete().eq('id', newJob.id).eq('user_id', userId);
+    return;
+  }
+
+  let session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
+  if (!session) {
+    await supabase.from(novaChatCompletionJobsTable).delete().eq('id', newJob.id).eq('user_id', userId);
+    return reply.status(404).send({ error: 'Chat session not found or expired', code: 'NOVA_SESSION_NOT_FOUND' });
+  }
+
+  normalizeNovaSessionShape(session);
+  const msgs = session.messages || [];
+  const last = msgs[msgs.length - 1];
+
+  let skipUserAppend = false;
+  if (hasFailedRetry) {
+    if (last?.role === 'user' && last.content === body.message) {
+      skipUserAppend = true;
+    } else if (last?.role === 'user') {
+      await supabase.from(novaChatCompletionJobsTable).delete().eq('id', newJob.id).eq('user_id', userId);
+      return reply.status(400).send({
+        error: 'client_message_id retry requires the same message as the pending user turn',
+        code: 'NOVA_CLIENT_MESSAGE_MISMATCH',
+      });
+    } else {
+      await supabase.from(novaChatCompletionJobsTable).delete().eq('id', newJob.id).eq('user_id', userId);
+      return reply.status(400).send({
+        error:
+          'Cannot retry this client_message_id: session does not end with the expected user message. Reload the thread or use a new client_message_id.',
+        code: 'NOVA_COMPLETION_RETRY_INVALID_STATE',
+      });
+    }
+  }
+
+  if (!skipUserAppend) {
+    const userAppend = [{ role: 'user', content: body.message }];
+    session.messages = [...msgs, ...userAppend];
 
     const persistResult = await persistNovaChatSession(supabase, {
       chatId,
@@ -380,57 +509,63 @@ export async function postNovaChatCompletion(request, reply) {
       session,
       masterKey,
       messageSync: 'append',
-      appendedMessages: appendedPlain,
+      appendedMessages: userAppend,
     });
+
     if (!persistResult.success) {
+      await supabase.from(novaChatCompletionJobsTable).delete().eq('id', newJob.id).eq('user_id', userId);
       return reply.status(500).send({
         error: persistResult.error || 'Failed to persist chat session',
         code: 'NOVA_SESSION_PERSIST_FAILED',
       });
     }
-
-    if (inv.usage) {
-      const tokenResult = await insertChatTokenUsageRow(supabase, {
-        chatId,
-        userId,
-        organizationId: orgRow.organization_id,
-        input_tokens: inv.usage.input_tokens,
-        output_tokens: inv.usage.output_tokens,
-        model: inv.modelId,
-        cost_usd: undefined,
-      });
-      if (!tokenResult.success) {
-        console.error('[postNovaChatCompletion] token usage insert failed:', tokenResult.error);
-      }
-    }
-
-    normalizeNovaSessionShape(session);
-    /** Non-production only: integration tests enqueue without hitting ~70% context (see `NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE`). */
-    const testForceSummarizeEnqueue =
-      process.env.NODE_ENV !== 'production' &&
-      process.env.NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE === '1';
-    const thresholdEnqueue = shouldEnqueueNovaSummarize(session, inv.usage, body.model);
-    if (!session.summarize_pending && (testForceSummarizeEnqueue || thresholdEnqueue)) {
-      session.summarize_pending = true;
-      await enqueueNovaSummarizeJob(redis, { userId, chatId });
-    }
-
-    const ttl = novaSessionTtlSeconds();
-    await novaSessionSave(redis, userId, session, ttl);
-
-    return reply.send({
-      assistant: { role: 'assistant', content: assistantText },
-      usage: inv.usage
-        ? {
-            input_tokens: inv.usage.input_tokens,
-            output_tokens: inv.usage.output_tokens,
-            total_tokens: inv.usage.input_tokens + inv.usage.output_tokens,
-            model: inv.modelId,
-          }
-        : null,
-      session,
-    });
-  } finally {
-    await releaseNovaCompletionLock(redis, userId, chatId, lockToken);
   }
+
+  const ttl = novaSessionTtlSeconds();
+  await novaSessionSave(redis, userId, session, ttl);
+
+  const authHeader = request.headers.authorization;
+  setImmediate(() => {
+    novaChatCompletionProcessor(newJob.id, userId, chatId, authHeader).catch((err) => {
+      console.error(`[novaChatCompletionProcessor] Unhandled error for job ${newJob.id}:`, err);
+    });
+  });
+
+  return reply.status(202).send({
+    id: newJob.id,
+    status: 'pending',
+    chat_id: chatId,
+  });
+}
+
+/**
+ * GET /api/nova/chat-sessions/:chatId/completion-jobs/:jobId
+ */
+export async function getNovaChatCompletionJob(request, reply) {
+  const redis = await redisOr503(reply);
+  if (!redis) return;
+
+  const userId = request.user.id;
+  const { chatId, jobId } = request.params;
+  const supabase = getSupabaseClient(request.headers.authorization);
+
+  const { data: job, error } = await supabase
+    .from(novaChatCompletionJobsTable)
+    .select('id, chat_id, status, usage, error_code, error_message')
+    .eq('id', jobId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error || !job || job.chat_id !== chatId) {
+    return reply.status(404).send({
+      error: 'Job not found',
+      code: 'NOVA_COMPLETION_JOB_NOT_FOUND',
+    });
+  }
+
+  const masterKey = await userMasterKeyOr500(request, reply);
+  if (!masterKey) return;
+
+  const payload = await buildNovaCompletionPollPayload(request, redis, userId, chatId, masterKey, job);
+  return reply.send(payload);
 }
