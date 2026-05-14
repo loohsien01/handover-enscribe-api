@@ -147,22 +147,24 @@ async function transcribe_recording_binary_upload({ recording_file_signed_url, d
     }
     
     const deepgramData = await deepgramResp.json();
-    
-    if (!deepgramData?.results?.channels?.[0]?.alternatives?.[0]?.transcript) {
+
+    const alt0 = deepgramData?.results?.channels?.[0]?.alternatives?.[0];
+    // Empty string is a valid Deepgram transcript (silence / no speech); do not use !transcript
+    if (!alt0 || typeof alt0.transcript !== 'string') {
       throw new Error('Deepgram returned invalid response structure from binary_upload');
     }
-    
+
     console.log('[transcribe_recording_binary_upload] ✓ Binary upload successful!');
-    
-    const transcript = deepgramData.results.channels[0].alternatives[0].transcript;
+
+    const transcript = alt0.transcript;
     return {
       transcript,
       deepgram_metadata: {
         model: DEEPGRAM_MODEL,
         duration: deepgramData.metadata?.duration,
-        confidence: deepgramData.results.channels[0].alternatives[0].confidence,
-        method: 'binary_upload' // Mark that binary_upload method was used
-      }
+        confidence: alt0.confidence,
+        method: 'binary_upload', // Mark that binary_upload method was used
+      },
     };
   } catch (error) {
     console.error('[transcribe_recording_binary_upload] Binary upload failed:', error.message);
@@ -300,24 +302,26 @@ async function transcribe_recording_deepgram({ recording_file_signed_url, req = 
 
     const deepgramData = await deepgramResp.json();
 
-    if (!deepgramData?.results?.channels?.[0]?.alternatives?.[0]?.transcript) {
+    const alt0 = deepgramData?.results?.channels?.[0]?.alternatives?.[0];
+    // Empty string is a valid Deepgram transcript (silence / no speech); do not use !transcript
+    if (!alt0 || typeof alt0.transcript !== 'string') {
       throw new Error('Deepgram returned invalid response structure');
     }
 
     console.log('[transcribe_recording_deepgram] ✓ Deepgram response received successfully with url_based method');
 
     // Extract transcript and normalize response format to match legacy Cloud Run format
-    const transcript = deepgramData.results.channels[0].alternatives[0].transcript;
-    
+    const transcript = alt0.transcript;
+
     return {
       transcript,
       // Include additional metadata for potential future use
       deepgram_metadata: {
         model: DEEPGRAM_MODEL,
         duration: deepgramData.metadata?.duration,
-        confidence: deepgramData.results.channels[0].alternatives[0].confidence,
-        method: 'url_based' // Mark that primary url_based method was used
-      }
+        confidence: alt0.confidence,
+        method: 'url_based', // Mark that primary url_based method was used
+      },
     };
   } catch (error) {
     console.error('[transcribe_recording_deepgram] URL method failed:', error.message);

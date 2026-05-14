@@ -70,7 +70,7 @@ Server-side env knobs (context limits, summarize thresholds, queue timing) **do 
 
 `usage` may be **`null`** if Bedrock does not return usage metadata for that call; the UI should tolerate that.
 
-**Behavior:** not streaming — one HTTP request/response per turn. Use a **generous client timeout** (tens of seconds). Only one completion should be **in flight per `chatId`** at a time (see **409** below).
+**Behavior:** not streaming — one HTTP request/response per turn; the API process holds the connection open until Bedrock returns. Use a **generous client timeout** (tens of seconds). Only one completion should be **in flight per `chatId`** at a time (see **409** below). **Roadmap:** move this to a **job-style** flow (short HTTP + poll or push) — see [What is still partial, deferred, or not implemented?](#what-is-still-partial-deferred-or-not-implemented).
 
 ### `PATCH …/:chatId`
 
@@ -165,7 +165,7 @@ The system is built around a **stateless LLM with stateful application memory la
 | Supabase session + message persistence | **Done** — tables `chat_sessions`, `chat_messages`; summary and message bodies encrypted with the user’s wrapped master key (same pattern as notes); RLS + `organization_id` (personal org via `ensurePersonalOrganization`). |
 | Reload Redis from Supabase | **Done** — GET misses cache: decrypt from Postgres, repopulate Redis. |
 | Token usage rows + session aggregate | **Done** — `chat_token_usage` + `POST .../token-usage`; `total_tokens` on `chat_sessions` incremented per event (per-seat `user_id` for metering). |
-| AWS Bedrock orchestration (chat turn) | **Done** — `POST /api/nova/chat-sessions/:chatId/completions` with presets `haiku` \| `sonnet` \| `opus` (`getNovaChatCompletionRequestBody` + `claudeInvokeModel`); appends user + assistant messages, records `chat_token_usage` when Bedrock returns `usage`, refreshes Redis. |
+| AWS Bedrock orchestration (chat turn) | **Done (sync HTTP)** — `POST /api/nova/chat-sessions/:chatId/completions` holds the request until Bedrock returns; presets `haiku` \| `sonnet` \| `opus` (`getNovaChatCompletionRequestBody` + `claudeInvokeModel`); appends user + assistant messages, records `chat_token_usage` when Bedrock returns `usage`, refreshes Redis. **Not done:** job-style / 202 + poll (see gaps below). |
 | Automated tests (completions) | **Done** — `tests/nova-chat-sessions-completions.test.js` (`npm run test:nova-chat-sessions-completions`); harness supports `timeoutMs` / `AbortSignal.timeout`; included in `tests/runAll.js` (suite 2.15). Unit: `tests/novaBedrockChat.unit.test.js`, `tests/novaSummarize.unit.test.js`. **Queue E2E** (opt-in, `.e2e.test.js`, not in runAll): `NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE=1` in `.env.local` (dev/staging only; server `NODE_ENV=production` ignores it), restart Fastify, then `npm run test:nova-summarize-queue-e2e` — spawns worker subprocess, two completion rounds after rolling summarize, asserts full persisted transcript length, `summary_covered_message_count`, and that the next Bedrock turn uses a single-message dialog (no duplicated pre-checkpoint pairs); writes `test-results/nova-summarize-queue-e2e.json`. |
 | Deploy secrets (Redis on EC2) | **Done** — GitHub Actions deploy writes `REDIS_URL` (required) and optional `REDIS_AUTH_TOKEN` into EC2 `.env.local`. |
 | Chat persistence path | **Done (sync)** — Nova create / PATCH and `POST .../completions` write through to Supabase; Redis refreshed after durable writes. **Deferred:** Postgres outbox / write-behind — only if synchronous writes become a bottleneck; there is **no** separate background worker for normal chat message persistence today. |
@@ -176,10 +176,12 @@ The system is built around a **stateless LLM with stateful application memory la
 
 #### What is still partial, deferred, or not implemented?
 
+- **TODO (infra / UX):** **Job-style chat completions instead of long-lived HTTP** — Today `POST …/completions` is synchronous end-to-end: the client keeps a single HTTP request open until Bedrock finishes (or times out). Planned follow-on: mirror the existing scribe pattern under `/api/jobs/prompt-llm/…` — e.g. **accept turn → 202 + `jobId`** (or enqueue to Redis/worker), run Bedrock off the hot request path, expose **poll** `GET …/jobs/:jobId` (and/or SSE later). Benefits: reverse-proxy / ALB idle timeouts, clearer retries, optional longer model runs without tying up a Fastify worker per doctor. **Not started for Nova.** Concurrency would shift from Redis `NOVA_COMPLETION_IN_FLIGHT` on the HTTP handler to **job row state** (or equivalent) plus the same “one active generation per `chatId`” rule.
 - **Deferred (by design):** **Postgres outbox / write-behind** — optional pattern if per-turn Supabase + Redis ever becomes too slow; not a “chat message worker”; normal turns stay on the synchronous API path above.
-- **Partial:** **Redis cold / loss** — full message history reloads from Supabase; rolling `summary` is last-persisted only. The summarize worker does not auto-run unless a job remains queued (`nova:summarize:queue` / `nova:summarize:due`).
+- **Partial:** **Redis cold / loss** — full message history reloads from Supabase; rolling `summary` is last-persisted only. The summarize worker does not auto-run unless a job remains queued (`nova:summarize:queue` / `nova:summarize:due`). **`summarize_pending` and `summary_covered_message_count` are not faithfully restored from Postgres on hydrate** — `loadNovaChatSessionFromSupabase` resets `summarize_pending` to `false` and derives checkpoint from summary vs messages only; durable flags + reconciliation described in [Total Redis loss](#total-redis-loss-flush-new-cluster-prolonged-outage) are recommendations, not fully implemented.
 - **Planned (not shipped):** [Rolling summary — structured JSON](#rolling-summary--structured-json-planned) (`schema_version` 1: `facts`, `decisions`, `constraints`, `follow_ups`, `open_questions`).
-- **Future / open:** [Future enhancements](#future-enhancements) and [Implementation open questions](#implementation-open-questions) (some items partially settled there).
+- **Doc vs code:** [Failure Handling](#failure-handling) “buffer in Redis / retry async persistence” on Supabase failure is an **architectural option**, not the current Nova completion path (today a failed persist surfaces as an error to the client after Bedrock may already have run).
+- **Not implemented:** **Streaming tokens** (SSE/WebSocket) for assistant output; **client-supplied message ids** for idempotent duplicate `POST` retries ([open question #4](#implementation-open-questions)); **vector / RAG**, multimodal, encounter-linked sessions — see [Future enhancements](#future-enhancements) and [Implementation open questions](#implementation-open-questions).
 
 ---
 
@@ -602,6 +604,7 @@ Memory is entirely application-controlled for:
 
 ## Future Enhancements
 
+- **Async Nova completions** — job queue + poll (or SSE), replacing synchronous long-held `POST …/completions`; see [gap list](#what-is-still-partial-deferred-or-not-implemented) above.
 - Vector database for long-term semantic retrieval
 - Multi-modal inputs (audio, EMR integration)
 - Insurance contract reasoning module
