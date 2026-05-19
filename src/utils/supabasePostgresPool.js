@@ -12,6 +12,34 @@ const { Pool } = pg;
 /** @type {pg.Pool | null} */
 let pool = null;
 
+/** Throttle idle-client error logs (network blips / pooler closing sockets). */
+let lastPoolErrorLog = 0;
+
+const POOL_ERROR_LOG_INTERVAL_MS = 60_000;
+
+/**
+ * pg emits `error` on the Pool for idle clients when the server or network drops a connection.
+ * Without a listener, Node treats that as an unhandled error and exits the process.
+ * @param {pg.Pool} p
+ */
+function attachPoolErrorHandler(p) {
+  p.on('error', (err) => {
+    const t = Date.now();
+    if (t - lastPoolErrorLog < POOL_ERROR_LOG_INTERVAL_MS) return;
+    lastPoolErrorLog = t;
+    const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : '';
+    const suffix = code ? ` (${code})` : '';
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[supabase-postgres] Idle pool client error — connection dropped; pool will replace it.${suffix} ${msg}` +
+        ' Set SUPABASE_DB_VERBOSE=1 for more detail.'
+    );
+    if (process.env.SUPABASE_DB_VERBOSE === '1' && err instanceof Error && err.stack) {
+      console.warn(err.stack);
+    }
+  });
+}
+
 /**
  * @param {string} connectionString
  * @returns {string}
@@ -98,11 +126,15 @@ export function getSupabasePostgresPool() {
       max: 10,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 20_000,
+      // Detect dead TCP sessions sooner when Supabase pooler closes idle sockets.
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
     };
     if (ssl) {
       poolConfig.ssl = ssl;
     }
     pool = new Pool(poolConfig);
+    attachPoolErrorHandler(pool);
   }
   return pool;
 }

@@ -35,6 +35,7 @@ import entitlementsRoutes from './routes/entitlements.js';
 import stripeWebhookRoutes from './routes/stripeWebhook.js';
 import novaChatSessionsRoutes from './routes/novaChatSessions.js';
 import { closeRedisClient, getRedisClient, getRedisUrl } from '../utils/redisClient.js';
+import { closeSupabasePostgresPool } from '../utils/supabasePostgresPool.js';
 /**
  * Create and configure Fastify application
  * Handles all Fastify backend routes and middleware
@@ -262,6 +263,7 @@ async function startServer() {
     const shutdown = async (signal) => {
       fastify.log.info({ signal }, 'shutting down');
       await closeRedisClient();
+      await closeSupabasePostgresPool().catch(() => {});
       await fastify.close();
       process.exit(0);
     };
