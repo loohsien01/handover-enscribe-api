@@ -35,7 +35,7 @@ import entitlementsRoutes from './routes/entitlements.js';
 import stripeWebhookRoutes from './routes/stripeWebhook.js';
 import novaChatSessionsRoutes from './routes/novaChatSessions.js';
 import { closeRedisClient, getRedisClient, getRedisUrl } from '../utils/redisClient.js';
-import { closeSupabasePostgresPool } from '../utils/supabasePostgresPool.js';
+import { closeSupabasePostgresPool, warmupSupabasePostgresPool } from '../utils/supabasePostgresPool.js';
 /**
  * Create and configure Fastify application
  * Handles all Fastify backend routes and middleware
@@ -244,6 +244,11 @@ async function startServer() {
     const { fastify, port, host } = await createFastifyApp();
 
     await fastify.listen({ port, host });
+
+    const pgPool = warmupSupabasePostgresPool();
+    if (pgPool) {
+      fastify.log.info('Supabase Postgres pool ready');
+    }
 
     console.log(`\n✓ Fastify server running on http://${host}:${port}`);
     console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);

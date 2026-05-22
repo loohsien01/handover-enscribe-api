@@ -9,6 +9,20 @@ import { getSupabasePostgresUrl } from './supabasePostgresUrl.js';
 
 const { Pool } = pg;
 
+/**
+ * Last-resort guard: pg-pool emits `error` on idle clients when the network or Supabase
+ * pooler drops TCP (common on macOS as EADDRNOTAVAIL). Without any listener Node exits.
+ * Orphan pools (e.g. after hot reload) can miss our handler — swallow only that case.
+ */
+const originalPoolEmit = Pool.prototype.emit;
+Pool.prototype.emit = function poolEmitGuard(event, ...args) {
+  if (event === 'error' && this.listenerCount('error') === 0) {
+    logIdlePoolClientError(args[0], { orphanPool: true });
+    return true;
+  }
+  return originalPoolEmit.apply(this, args);
+};
+
 /** @type {pg.Pool | null} */
 let pool = null;
 
@@ -22,22 +36,30 @@ const POOL_ERROR_LOG_INTERVAL_MS = 60_000;
  * Without a listener, Node treats that as an unhandled error and exits the process.
  * @param {pg.Pool} p
  */
+/**
+ * @param {unknown} err
+ * @param {{ orphanPool?: boolean }} [meta]
+ */
+function logIdlePoolClientError(err, meta = {}) {
+  const t = Date.now();
+  if (t - lastPoolErrorLog < POOL_ERROR_LOG_INTERVAL_MS) return;
+  lastPoolErrorLog = t;
+  const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : '';
+  const suffix = code ? ` (${code})` : '';
+  const msg = err instanceof Error ? err.message : String(err);
+  const prefix = meta.orphanPool ? 'Orphan pool' : 'Idle pool';
+  console.warn(
+    `[supabase-postgres] ${prefix} client error — connection dropped; pool will replace it.${suffix} ${msg}` +
+      ' Set SUPABASE_DB_VERBOSE=1 for more detail.'
+  );
+  if (process.env.SUPABASE_DB_VERBOSE === '1' && err instanceof Error && err.stack) {
+    console.warn(err.stack);
+  }
+}
+
 function attachPoolErrorHandler(p) {
-  p.on('error', (err) => {
-    const t = Date.now();
-    if (t - lastPoolErrorLog < POOL_ERROR_LOG_INTERVAL_MS) return;
-    lastPoolErrorLog = t;
-    const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : '';
-    const suffix = code ? ` (${code})` : '';
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(
-      `[supabase-postgres] Idle pool client error — connection dropped; pool will replace it.${suffix} ${msg}` +
-        ' Set SUPABASE_DB_VERBOSE=1 for more detail.'
-    );
-    if (process.env.SUPABASE_DB_VERBOSE === '1' && err instanceof Error && err.stack) {
-      console.warn(err.stack);
-    }
-  });
+  if (p.listenerCount('error') > 0) return;
+  p.on('error', (err) => logIdlePoolClientError(err));
 }
 
 /**
@@ -124,9 +146,11 @@ export function getSupabasePostgresPool() {
     const poolConfig = {
       connectionString,
       max: 10,
-      idleTimeoutMillis: 30_000,
+      // Release idle clients before Supabase pooler / OS tear down stale TCP (EADDRNOTAVAIL on read).
+      idleTimeoutMillis: 10_000,
+      // Rotate connections periodically so long-lived TLS sessions do not go stale quietly.
+      maxLifetimeSeconds: 300,
       connectionTimeoutMillis: 20_000,
-      // Detect dead TCP sessions sooner when Supabase pooler closes idle sockets.
       keepAlive: true,
       keepAliveInitialDelayMillis: 10_000,
     };
@@ -158,4 +182,17 @@ export async function closeSupabasePostgresPool() {
  */
 export async function querySupabasePostgres(text, params = []) {
   return getSupabasePostgresPool().query(text, params);
+}
+
+/**
+ * Create the pool (and error handler) at process startup so the first idle disconnect
+ * cannot occur before `attachPoolErrorHandler` runs.
+ * @returns {pg.Pool | null} null when no Postgres URL is configured
+ */
+export function warmupSupabasePostgresPool() {
+  try {
+    return getSupabasePostgresPool();
+  } catch {
+    return null;
+  }
 }
