@@ -27,6 +27,13 @@ import * as userSecurityConfigController from '../controllers/userSecurityConfig
 import { getNovaChatCompletionRequestBody } from '../../utils/claudeRequestBody.js';
 import { claudeInvokeModel } from '../../utils/bedrockClient.js';
 import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
+import {
+  USAGE_METRICS,
+  UsageLimitExceededError,
+  assertUsageAllowed,
+  recordUsageSuccess,
+  resolveBillingContext,
+} from '../../utils/billingUsage.js';
 
 /**
  * @param {import('redis').RedisClientType} redis
@@ -136,6 +143,26 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
       completed_at: new Date().toISOString(),
     });
     return;
+  }
+
+  const billingCtx = await resolveBillingContext(userId);
+  try {
+    await assertUsageAllowed({
+      organizationId: orgRow.organization_id,
+      metric: USAGE_METRICS.NOVA_RESPONSE,
+      bypassUsageLimits: billingCtx.bypassUsageLimits,
+      planKeyForLimits: billingCtx.planKeyForLimits,
+    });
+  } catch (err) {
+    if (err instanceof UsageLimitExceededError) {
+      await updateJobRow(supabase, jobId, userId, 'failed', {
+        error_code: err.code,
+        error_message: err.message,
+        completed_at: new Date().toISOString(),
+      });
+      return;
+    }
+    throw err;
   }
 
   let session = await loadSessionRedisThenSupabaseForJob(redis, authorizationHeader, userId, chatId, masterKey);
@@ -255,6 +282,15 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
         model: inv.modelId,
       }
     : null;
+
+  await recordUsageSuccess({
+    organizationId: orgRow.organization_id,
+    userId,
+    metric: USAGE_METRICS.NOVA_RESPONSE,
+    idempotencyKey: `nova_response:job:${jobId}`,
+    metadata: { chat_id: chatId, job_id: jobId },
+    bypassUsageLimits: billingCtx.bypassUsageLimits,
+  });
 
   await updateJobRow(supabase, jobId, userId, 'complete', {
     usage: usagePayload,

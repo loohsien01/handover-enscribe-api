@@ -12,6 +12,7 @@ const ALLOWED_ORIGINS = [
   'https://enscribe-web.vercel.app',
   'https://emscribe.vercel.app',
   'https://enscribe.online',
+  'https://app.enscribe.online',
 
   // Development origins
   'http://localhost:3000',

@@ -20,6 +20,11 @@ import { ensurePersonalOrganization } from '../../services/personalOrganization.
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
 import { novaChatCompletionProcessor } from '../processors/novaChatCompletionProcessor.js';
+import {
+  USAGE_METRICS,
+  UsageLimitExceededError,
+  assertUsageAllowedForUser,
+} from '../../utils/billingUsage.js';
 
 async function redisOr503(reply) {
   const redis = await getRedisClient();
@@ -423,6 +428,15 @@ export async function postNovaChatCompletion(request, reply) {
     .maybeSingle();
 
   const hasFailedRetry = Boolean(latestFailedForClientId?.id);
+
+  try {
+    await assertUsageAllowedForUser(userId, USAGE_METRICS.NOVA_RESPONSE);
+  } catch (err) {
+    if (err instanceof UsageLimitExceededError) {
+      return reply.status(402).send(err.toJSON());
+    }
+    throw err;
+  }
 
   const { data: newJob, error: insErr } = await supabase
     .from(novaChatCompletionJobsTable)

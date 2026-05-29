@@ -2,7 +2,8 @@
  * Billing + personal organization (Stripe + organizations tables).
  *
  * Requires:
- * - Migration `sql/migrations/20260430_organizations_billing.sql` applied
+ * - Migrations `sql/migrations/20260430_organizations_billing.sql` and
+ *   `sql/migrations/20260528120000_usage_metering.sql` applied
  * - `.env.local`: `TEST_BILLING_ACCOUNT_EMAIL` + `TEST_BILLING_ACCOUNT_PASSWORD` for a
  *   fully confirmed user that has completed `userProfile` (so a personal org exists)
  *
@@ -24,6 +25,35 @@ const JSON_HEADERS = {
   Accept: 'application/json',
   'Content-Type': 'application/json',
 };
+
+/** @param {unknown} usage */
+function validateUsageBlock(usage) {
+  if (usage == null) {
+    return {
+      passed: true,
+      message: 'usage omitted (apply usage_metering migration for full check)',
+    };
+  }
+  const u = /** @type {Record<string, unknown>} */ (usage);
+  if (typeof u.period_start !== 'string' || typeof u.period_end !== 'string') {
+    return { passed: false, message: 'usage period_start/period_end missing' };
+  }
+  const metrics = u.metrics;
+  if (!metrics || typeof metrics !== 'object') {
+    return { passed: false, message: 'usage.metrics missing' };
+  }
+  const m = /** @type {Record<string, { used?: number, limit?: number | null }>} */ (metrics);
+  for (const key of ['notes_saved', 'nova_response']) {
+    const row = m[key];
+    if (!row || typeof row.used !== 'number') {
+      return { passed: false, message: `usage.metrics.${key}.used missing` };
+    }
+    if (!('limit' in row)) {
+      return { passed: false, message: `usage.metrics.${key}.limit missing` };
+    }
+  }
+  return { passed: true };
+}
 
 export async function runBillingOrgTests() {
   console.log('Starting billing + organization tests...');
@@ -154,7 +184,7 @@ export async function runBillingOrgTests() {
       if (!['internal_access', 'subscription', 'none'].includes(ent.entitlement_source)) {
         return { passed: false, message: `unexpected entitlement_source ${ent.entitlement_source}` };
       }
-      return { passed: true };
+      return validateUsageBlock(data?.usage);
     },
   });
 
@@ -175,7 +205,7 @@ export async function runBillingOrgTests() {
       if (!['internal_access', 'subscription', 'none'].includes(ent.entitlement_source)) {
         return { passed: false, message: `unexpected entitlement_source ${ent.entitlement_source}` };
       }
-      return { passed: true };
+      return validateUsageBlock(data?.usage);
     },
   });
 

@@ -4,6 +4,7 @@ import {
   computeEntitlements,
   loadInternalAccess,
 } from '../../utils/billingEntitlements.js';
+import { loadUsageForUserContext } from '../../utils/billingUsage.js';
 
 /**
  * Read the caller's personal organization (or null when missing).
@@ -63,7 +64,15 @@ export async function getMyEntitlements(request, reply) {
     request.log?.error({ err }, '[entitlements] loadInternalAccess');
   }
 
+  let usage = null;
+  try {
+    usage = await loadUsageForUserContext(userId, org, internalAccess);
+  } catch (err) {
+    request.log?.error({ err }, '[entitlements] loadUsageForUserContext');
+  }
+
   return reply.status(200).send({
     entitlements: computeEntitlements({ userId, org, internalAccess }),
+    usage,
   });
 }

@@ -23,7 +23,15 @@ to paying users. Items are ordered by risk impact.
 - `public.internal_access` — user-scoped grant for internal testers / beta UI.
   Fields exposed to FE: `ui_experience_version`, derived `active`
   (`expires_at IS NULL OR expires_at > now()`). Fields **kept server-only**:
-  `reason`, `created_by`, `exclude_from_cleanup`.
+  `reason`, `created_by`, `exclude_from_cleanup`. Active internal users **bypass
+  usage limits** (see §11).
+- `public.plan_limits` — config: per `plan_key`, per `metric`, limit for a
+  `period_type` (v1: `calendar_month`). `limit_quantity` NULL = unlimited.
+  Migration: `sql/migrations/20260528120000_usage_metering.sql`.
+- `public.usage_counters` — fast aggregates:
+  `(organization_id, metric, period_start) → quantity`.
+- `public.usage_events` — append-only audit + idempotency
+  (`idempotency_key` unique).
 
 ### Code surface
 
@@ -35,6 +43,10 @@ to paying users. Items are ordered by risk impact.
 | `src/fastify/controllers/stripeWebhookController.js` | Stripe event dispatcher. |
 | `src/utils/billingStripeSync.js` | `derivePlanKeyFromSubscription`, `syncOrganizationFromSubscription`. |
 | `src/services/personalOrganization.js` | `ensurePersonalOrganization` (idempotent service-role create). |
+| `src/fastify/controllers/patientEncountersController.js` | `patientEncounterCompleteBundle` — gates `notes_saved`. |
+| `src/fastify/controllers/novaChatSessionsController.js` | `POST …/completions` — asserts `nova_response` quota before enqueue. |
+| `src/fastify/processors/novaChatCompletionProcessor.js` | Re-checks quota at run; records `nova_response` on success. |
+| `src/utils/billingUsage.js` | Period helpers, `assertUsageAllowed`, `recordUsageSuccess`, `loadUsageForUserContext`. |
 | `sql/policies/internalAccess_RLS.sql` | SELECT-only RLS policy for `internal_access`. |
 
 ### Read flow
@@ -78,7 +90,31 @@ GET /api/me/entitlements -> 200
     "subscription_status": "none",                // org sub status, raw
     "entitled": false,                            // OR of has_internal_access | has_pro_plan
     "entitlement_source": "none"                  // "internal_access" | "subscription" | "none"
+  },
+  "usage": {
+    "period_start": "2026-05-01T00:00:00.000Z",
+    "period_end": "2026-06-01T00:00:00.000Z",
+    "metrics": {
+      "notes_saved": { "used": 3, "limit": 10 },
+      "nova_response": { "used": 12, "limit": 50 }
+    }
   }
+}
+```
+
+`usage` is `null` when the DB read fails (e.g. migration not applied). Pro and
+internal-access users get `"limit": null` (unlimited).
+
+**402 `USAGE_LIMIT_EXCEEDED`** (save note or Nova completion):
+
+```jsonc
+{
+  "error": "Usage limit exceeded for this billing period",
+  "code": "USAGE_LIMIT_EXCEEDED",
+  "metric": "notes_saved",
+  "used": 10,
+  "limit": 10,
+  "period_end": "2026-06-01T00:00:00.000Z"
 }
 ```
 
@@ -92,29 +128,40 @@ fields (`plan_key`, `subscription_status`) live **only** under `entitlements`.
 ## 2. Concern: no server-side paywall enforcement yet  ⚠️ **highest risk**
 
 `/api/me/entitlements` and `/api/billing/status` describe **who should be
-entitled**, but no production handler currently *gates* its work on entitlement.
-Costly endpoints (LLM jobs, Nova chat completions, transcription, prompt LLM
-processor, etc.) accept any authenticated request.
+entitled**, but no production handler currently *gates* its work on entitlement
+or usage quotas. Costly endpoints (LLM jobs, Nova chat completions,
+transcription, prompt LLM processor, etc.) accept any authenticated request.
 
 Until enforcement lands, the entitlements payload is **advisory only**: a
 non-paying user who calls those endpoints directly (or whose FE bug bypasses the
 paywall) gets full usage at our cost.
 
-### Decisions to make before launch
+### Decisions (usage metering — locked for v1)
 
-1. **Where to gate.** Candidate first targets: prompt-LLM job creation, Nova
-   completions, transcription kickoff. Free-tier limits (count / day) vs hard
-   block for non-Pro?
-2. **One helper, one source of truth.** Add e.g.
-   `assertUserEntitled(userId, { feature })` in `billingEntitlements.js` that
-   returns `{ entitled, source, reason }`, used by every gated handler. Avoid
-   open-coding `plan_key === 'pro'` in route handlers.
-3. **Internal access scope.** Does `internal_access` grant Pro features only,
-   or also bypass any future metering/quotas? Document explicitly — easier now
-   than after the metering table exists.
-4. **Error contract.** Define the FE-visible 4xx (likely **402 Payment
-   Required** with `code: 'SUBSCRIPTION_REQUIRED'` and `entitlement_source`
-   echoed back) so the client can route to the upgrade flow consistently.
+Product and engineering direction is documented in **§11**. Summary:
+
+| Topic | Decision |
+|-------|----------|
+| **Free-tier SOAP quota** | Limit **`notes_saved`** per calendar month, not job creates. |
+| **Generate without save** | Allowed on free (unlimited `generate-note`); clinicians are expected to save; accept some LLM cost abuse. |
+| **Where to count saves** | Central gate in `patientEncounterCompleteBundle` (success only), so `POST /api/patient-encounters/complete` and `generate-and-save-note` share one path. |
+| **Nova quota** | Limit **`nova_response`** per calendar month (one per successful completion job); user-facing copy: “Nova responses”. |
+| **Billing subject** | Counters keyed by **`organization_id`** (personal org ≈ per user today). |
+| **Unlimited** | `organizationHasProPlan(org)` **or** active `internal_access` → skip limit checks. Use **`has_pro_plan`**, not raw `plan_key`. |
+| **`past_due`** | Revokes Pro (`has_pro_plan` false); usage limits apply like free. Not the same as `cancel_at_period_end` (still `active` until period end). |
+| **Period** | Calendar month (UTC) for v1. |
+| **Historical rows** | Do **not** derive quotas from `jobs`, encounters, or archived data — 7-day retention deletes them ([`retention_archival (Supabase_to_S3).md`](./retention_archival%20(Supabase_to_S3).md)). Counters are write-on-use. |
+
+### Still to implement
+
+1. **Helpers** — e.g. `assertUsageAllowed({ organizationId, userId, metric })` and
+   `recordUsageEvent(...)` in a billing/usage module; reuse `organizationHasProPlan`
+   + `loadInternalAccess` for bypass. Avoid open-coding `plan_key === 'pro'` in routes.
+2. **Error contract** — distinguish:
+   - **`USAGE_LIMIT_EXCEEDED`** (402) — free user over monthly quota; FE → upgrade.
+   - **`SUBSCRIPTION_REQUIRED`** (402) — optional if some features require Pro with no free tier.
+3. **Expose usage in API** — extend `GET /api/me/entitlements` (or sibling) with
+   `usage.metrics.{notes_saved, nova_response}` → `{ used, limit, period_start, period_end }`.
 
 ---
 
@@ -236,6 +283,10 @@ These are minor but worth knowing before the FE wires up the flow:
 - **`current_period_end` is a presentation field.** Don't gate access on it
   on the BE; trust `subscription_status` + `plan_key` only. Stripe's grace logic
   is encoded in `subscription_status` (`past_due`, `unpaid`, `canceled` …).
+- **`past_due` vs scheduled cancel.** `past_due` = payment failed; **`has_pro_plan`
+  is false** even if `plan_key` is still `'pro'` in the row. Scheduled cancel keeps
+  `subscription_status: 'active'` with `cancel_at_period_end: true` until
+  `current_period_end` — Pro stays on until then. Usage limits follow **`has_pro_plan`**.
 
 ---
 
@@ -251,8 +302,9 @@ These are minor but worth knowing before the FE wires up the flow:
 - [x] All Stripe org mutations done with `supabaseAdmin` (service role) —
       no RLS write policies for `authenticated` on `organizations` exposing
       Stripe fields.
-- [ ] Server-side paywall enforcement on costly endpoints. **(open — see §2)**
+- [x] Server-side usage metering (`notes_saved`, `nova_response`). **(see §11–§12)**
 - [ ] Webhook idempotent under concurrent delivery. **(open — see §4)**
+- [x] Usage tables RLS: authenticated read own org counters; writes service-role only.**
 
 Verify RLS state on `internal_access` with:
 
@@ -268,17 +320,17 @@ select policyname, cmd, roles
 
 ## 9. Suggested rollout order
 
-1. Land server-side `assertUserEntitled` helper + apply to one gated endpoint
-   end-to-end (likely prompt-LLM job creation). Get the 402 contract right
-   before duplicating it across handlers.
+1. **Usage metering (v1)** — migrations + helpers + gate `patientEncounterCompleteBundle`
+   + Nova completion success path. Seed `plan_limits`. Extend entitlements payload
+   with usage snapshot. **(see §12 TODO)**
 2. Fix webhook idempotency (insert-first-with-conflict).
 3. Decide failure stance for `loadInternalAccess` and ship.
 4. Validate price-id mapping (env list or product metadata).
 5. FE integration: read `/me/entitlements` on app boot, on auth change, and
-   on a short post-checkout interval. Render `ui_experience_version` from the
-   payload — never persist client-side.
-6. Update `STRIPE_BILLING.md` to reference the new entitlements endpoint and
-   the 402 contract.
+   on a short post-checkout interval; show monthly usage + upgrade on
+   `USAGE_LIMIT_EXCEEDED`. Render `ui_experience_version` from the payload —
+   never persist client-side.
+6. Update `STRIPE_BILLING.md` to reference entitlements, usage metrics, and 402 codes.
 
 ---
 
@@ -294,4 +346,152 @@ select policyname, cmd, roles
   to row value only when `internal_access` is **active**; otherwise defaults to
   `stable` regardless of what the row says.
 - **`has_pro_plan`** — true iff `org.plan_key === 'pro'` AND
-  `subscription_status ∈ {active, trialing}`. (See §3 about price-id drift.)
+  `subscription_status ∈ {active, trialing}`. Excludes `past_due`, `unpaid`,
+  `canceled`, etc. Usage limits and unlimited quotas must follow this flag, not
+  `plan_key` alone. (See §3 about price-id drift.)
+- **`notes_saved`** — usage metric: one increment per successful
+  `patientEncounterCompleteBundle` (persisted encounter + note). Draft
+  `generate-note` runs do not increment.
+- **`nova_response`** — usage metric: one increment per Nova completion job that
+  reaches `complete` (successful assistant turn). FE copy: “Nova responses this month”.
+- **`internal_access` (metering)** — active row bypasses `plan_limits`; intended for
+  staff / beta testers without Stripe. Still entitled via `has_internal_access`.
+
+---
+
+## 11. Usage metering architecture (v1 — implemented)
+
+### Why counters exist
+
+Encounter bundle archive (~7 days inactivity) deletes live `jobs`, encounters,
+recordings, and transcripts. **`chat_token_usage` is useful for analytics but must
+not be the sole enforcement store** for Nova if retention is added later. Meter at
+request time into `usage_counters` / `usage_events`.
+
+### Tables (planned)
+
+**`plan_limits`**
+
+| Column | Purpose |
+|--------|---------|
+| `plan_key` | `free` \| `pro` |
+| `metric` | `notes_saved` \| `nova_response` |
+| `limit_quantity` | `bigint`; **NULL = unlimited** |
+| `period_type` | v1: `calendar_month` |
+
+Starter seed (adjust via SQL anytime):
+
+| plan_key | metric | limit_quantity |
+|----------|--------|----------------|
+| free | notes_saved | 10 |
+| free | nova_response | 50 |
+| pro | notes_saved | NULL |
+| pro | nova_response | NULL |
+
+**`usage_counters`** — `organization_id`, `metric`, `period_start`, `period_end`,
+`quantity`, `updated_at`. Unique on `(organization_id, metric, period_start)`.
+
+**`usage_events`** — `organization_id`, `user_id`, `metric`, `quantity`,
+`idempotency_key` (unique), `metadata` (jsonb), `created_at`. Optional
+`source_job_id` / `note_id` in metadata for support.
+
+### Enforcement flow
+
+```
+                    ┌─────────────────────────────┐
+                    │ organizationHasProPlan?     │
+                    │ OR active internal_access?  │
+                    └─────────────┬───────────────┘
+                          yes     │     no
+                           ▼      │      ▼
+                      allow       │  read counter vs plan_limits
+                                  │      │
+                                  │      ▼ over limit → 402 USAGE_LIMIT_EXCEEDED
+                                  │      │
+                                  ▼      ▼
+                           perform work (RPC / Bedrock)
+                                  │
+                                  ▼ success only
+                           INSERT usage_events (idempotent)
+                           UPSERT usage_counters.quantity += 1
+```
+
+### Gate points (code)
+
+| Metric | When to check | When to increment |
+|--------|---------------|-------------------|
+| `notes_saved` | Start of `patientEncounterCompleteBundle` | After successful `create_patient_encounter_complete` RPC |
+| `nova_response` | Before accepting completion (optional) or only on success | When `nova_chat_completion_jobs.status` → `complete` |
+
+**Save paths sharing the bundle gate:**
+
+- `POST /api/patient-encounters/complete`
+- `promptLlmProcessor` when `generate-and-save-note` calls
+  `patientEncounterCompleteBundle` — keep route; do not deprecate.
+
+**Not metered in v1:** `POST /api/jobs/prompt-llm/generate-note` (no increment on job create).
+
+### Period boundaries
+
+v1: **calendar month, UTC** — `period_start` = first instant of month UTC;
+`period_end` = first instant of next month. Stripe `current_period_end` alignment
+deferred.
+
+### Nova vs org / user
+
+Nova rows store both `user_id` and `organization_id`. **Limits are org-scoped**
+(personal org owner = same user). Keep `user_id` on `usage_events` for audit and
+future team seats.
+
+### Idempotency (follow-up)
+
+- Prefer `idempotency_key` = `job_id` when save is job-driven; `note_id` after first success for direct `/complete`.
+- Duplicate save retries (same job, encounter already created) are a **separate**
+  product concern from metering; not blocking v1 counters.
+
+---
+
+## 12. Implementation TODO
+
+Checklist for shipping usage limits. Order is a suggestion; adjust in PRs.
+
+### Database
+
+- [x] Migration: `plan_limits`, `usage_counters`, `usage_events` — `sql/migrations/20260528120000_usage_metering.sql`.
+- [x] Seed starter `plan_limits` rows (§11 table).
+- [x] RLS: authenticated users can **SELECT** counters/events for their personal org; **no** authenticated INSERT/UPDATE on metering tables (service role / API only).
+- [x] Indexes: `(organization_id, metric, period_start)` on counters; unique `idempotency_key` on events.
+
+### Server utilities
+
+- [x] `src/utils/billingUsage.js`: `getCalendarMonthPeriod()`, `getPlanLimit`, `getUsageQuantity`, `assertUsageAllowed`, `recordUsageSuccess`, `loadUsageForUserContext`.
+- [x] Wire bypass: `organizationHasProPlan` + `loadInternalAccess` (active → skip limits).
+- [x] Unit tests: `tests/billingUsage.unit.test.js` (allowance + period + `past_due` plan key).
+
+### Gate: saved notes
+
+- [x] In `patientEncounterCompleteBundle`: assert before RPC; record after RPC success (`sourceJobId` for generate-and-save idempotency).
+- [x] Map errors to **402** + `USAGE_LIMIT_EXCEEDED` on `POST /patient-encounters/complete`.
+- [x] E2E: `tests/billing-usage-limits.e2e.test.js` (`npm run test:billing-usage-limits`).
+
+### Gate: Nova
+
+- [x] `POST …/completions` asserts quota; processor re-checks and records `nova_response` on `complete`.
+- [x] E2E: same suite as above (Nova + notes 402).
+
+### API / FE contract
+
+- [x] Extend `GET /api/me/entitlements` and `GET /api/billing/status` with monthly `usage` block.
+- [x] Document 402 bodies in this doc (FE contract above).
+- [ ] FE: show “X / Y notes saved” and “Nova responses”; upgrade CTA on `USAGE_LIMIT_EXCEEDED`.
+
+### Existing concerns (unchanged priority)
+
+- [ ] Webhook insert-first idempotency (§4).
+- [ ] `loadInternalAccess` fail-closed on entitlements read (§5).
+- [ ] Optional: `assertUserEntitled` for features that are Pro-only with **no** free tier (distinct from quota).
+
+### Ops / hygiene
+
+- [ ] Audit `organizations` rows for test Stripe IDs on non-test accounts (shared DB).
+- [ ] Log / alert on `plan_key: 'pro'` + active-like status but `has_pro_plan: false` (price drift, `past_due`).

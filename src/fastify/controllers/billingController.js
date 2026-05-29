@@ -6,6 +6,7 @@ import {
   loadInternalAccess,
 } from '../../utils/billingEntitlements.js';
 import { syncOrganizationFromSubscription } from '../../utils/billingStripeSync.js';
+import { loadUsageForUserContext } from '../../utils/billingUsage.js';
 
 const PRO_PRICE_ENV = 'STRIPE_PRICE_PRO_MONTHLY';
 
@@ -90,6 +91,13 @@ export async function getBillingStatus(request, reply) {
     internalAccess,
   });
 
+  let usage = null;
+  try {
+    usage = await loadUsageForUserContext(request.user.id, org, internalAccess);
+  } catch (err) {
+    request.log?.error({ err }, '[billing] loadUsageForUserContext');
+  }
+
   return reply.status(200).send({
     organization: {
       id: org.id,
@@ -100,6 +108,7 @@ export async function getBillingStatus(request, reply) {
       stripe_customer_id: org.stripe_customer_id,
     },
     entitlements,
+    usage,
   });
 }
 

@@ -11,6 +11,13 @@ import {
   decryptTranscriptRowWithMasterKey,
 } from '../../utils/transcriptTextCrypto.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
+import {
+  USAGE_METRICS,
+  UsageLimitExceededError,
+  assertUsageAllowed,
+  recordUsageSuccess,
+  resolveBillingContext,
+} from '../../utils/billingUsage.js';
 
 const patientEncounterTable = 'patientEncounters';
 const recordingTable = 'recordings';
@@ -763,14 +770,23 @@ export async function getPatientEncounterBundleByNoteId(supabase, user, noteId) 
  * @param {*} supabase - Supabase client (user JWT)
  * @param {{ id: string }} user
  * @param {{ patientEncounter: { name: string }, recording: { recording_file_path: string }, note_text: string, transcript?: { transcript_text: string } }} body
+ * @param {{ sourceJobId?: string }} [options]
  * @returns {Promise<{ patientEncounter: object, recording: object, note: object, transcript: object|null }>}
  */
-export async function patientEncounterCompleteBundle(supabase, user, body) {
+export async function patientEncounterCompleteBundle(supabase, user, body, options = {}) {
   if (!user?.id) {
     const err = new Error('Unauthorized');
     err.statusCode = 401;
     throw err;
   }
+
+  const billingCtx = await resolveBillingContext(user.id);
+  await assertUsageAllowed({
+    organizationId: billingCtx.organizationId,
+    metric: USAGE_METRICS.NOTES_SAVED,
+    bypassUsageLimits: billingCtx.bypassUsageLimits,
+    planKeyForLimits: billingCtx.planKeyForLimits,
+  });
 
   const { patientEncounter, recording, note_text, transcript: transcriptBody } = body;
 
@@ -875,6 +891,25 @@ export async function patientEncounterCompleteBundle(supabase, user, body) {
     data.transcript = tr.transcript;
   }
 
+  const noteId = data.note?.id;
+  const idempotencyKey = options.sourceJobId
+    ? `notes_saved:job:${options.sourceJobId}`
+    : noteId != null
+      ? `notes_saved:note:${noteId}`
+      : `notes_saved:user:${user.id}:${Date.now()}`;
+
+  await recordUsageSuccess({
+    organizationId: billingCtx.organizationId,
+    userId: user.id,
+    metric: USAGE_METRICS.NOTES_SAVED,
+    idempotencyKey,
+    metadata: {
+      note_id: noteId ?? null,
+      source_job_id: options.sourceJobId ?? null,
+    },
+    bypassUsageLimits: billingCtx.bypassUsageLimits,
+  });
+
   return data;
 }
 
@@ -905,6 +940,9 @@ export async function completePatientEncounter(request, reply) {
     return reply.status(201).send(data);
   } catch (error) {
     console.error('Error in completePatientEncounter:', error);
+    if (error instanceof UsageLimitExceededError) {
+      return reply.status(402).send(error.toJSON());
+    }
     const status = error.statusCode && Number.isInteger(error.statusCode) ? error.statusCode : 500;
     return reply.status(status).send({ error: error.message });
   }

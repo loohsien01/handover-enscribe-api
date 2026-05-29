@@ -70,6 +70,27 @@ export function hasBillingTestAccount() {
 }
 
 /**
+ * Free-tier account for usage-limit E2E (no Pro, no active internal_access).
+ * Used by `tests/billing-usage-limits.e2e.test.js`.
+ */
+export function getBillingUsageLimitTestAccount() {
+  const email = process.env.TEST_BILLING_USAGE_LIMIT_EMAIL;
+  const password = process.env.TEST_BILLING_USAGE_LIMIT_PASSWORD;
+  if (!email || !password) {
+    return null;
+  }
+  return {
+    email,
+    password,
+    description: 'Billing usage limit E2E (402 USAGE_LIMIT_EXCEEDED)',
+  };
+}
+
+export function hasBillingUsageLimitTestAccount() {
+  return !!getBillingUsageLimitTestAccount();
+}
+
+/**
  * Get API base URL for tests
  * Can be overridden with API_BASE_URL environment variable
  * Default: http://localhost:3001 (local testing)

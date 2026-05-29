@@ -15,11 +15,12 @@ Backend routes live under the Fastify `/api` prefix (see [server.js](../src/fast
 ```bash
 cd /path/to/enscribe-api
 npm run migrate:apply-psql -- sql/migrations/20260430_organizations_billing.sql
+npm run migrate:apply-psql -- sql/migrations/20260528120000_usage_metering.sql
 ```
 
 The script resolves the SQL path from the **repo root** (next to `package.json`), loads **`.env.local` from that same root**, and logs a redacted DB URL plus `psql` exit code. If tables never appear, install the PostgreSQL client (`psql`), confirm the log shows **exit code 0**, and prefer a **direct** connection URI (`db.<project>.supabase.co:5432`) over port **6543** pooler for DDL if Supabase errors.
 
-This creates `organizations`, `organization_members`, and `stripe_webhook_events` with RLS.
+This creates `organizations`, `organization_members`, and `stripe_webhook_events` with RLS. The usage migration adds `plan_limits`, `usage_counters`, and `usage_events` (see [`BILLING_ARCHITECTURE.md`](./BILLING_ARCHITECTURE.md) §11–§12).
 
 ## Personal organization
 
