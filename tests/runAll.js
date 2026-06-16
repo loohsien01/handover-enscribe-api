@@ -104,7 +104,7 @@ async function runAllTests() {
 
   try {
     console.log('\n' + '-'.repeat(70));
-    console.log('TEST SUITE 2.15: NOVA CHAT-SESSIONS COMPLETIONS (API + optional Bedrock E2E via skipE2ETest)');
+    console.log('TEST SUITE 2.15: NOVA CHAT-SESSIONS COMPLETIONS (API — auth, Zod, 404)');
     console.log('-'.repeat(70) + '\n');
     const novaComp = await runNovaChatSessionsCompletionsTests();
     results.push({

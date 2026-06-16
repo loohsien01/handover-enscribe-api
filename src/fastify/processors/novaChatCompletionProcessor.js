@@ -34,6 +34,7 @@ import {
   recordUsageSuccess,
   resolveBillingContext,
 } from '../../utils/billingUsage.js';
+import { maybeRunNovaChatTitleAfterFirstCompletion } from '../../utils/novaChatTitleService.js';
 
 /**
  * @param {import('redis').RedisClientType} redis
@@ -297,5 +298,11 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
     error_code: null,
     error_message: null,
     completed_at: new Date().toISOString(),
+  });
+
+  setImmediate(() => {
+    maybeRunNovaChatTitleAfterFirstCompletion({ userId, chatId, authorizationHeader }).catch((err) => {
+      console.error(`[novaChatTitle] Unhandled error for chat ${chatId}:`, err);
+    });
   });
 }

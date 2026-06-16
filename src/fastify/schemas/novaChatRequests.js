@@ -1,10 +1,23 @@
 import { z } from 'zod';
 import { uuidRegex } from './regex.js';
+import { NOVA_CHAT_TITLE_MAX_LENGTH } from '../../utils/novaChatTitle.js';
 
 const novaMessageSchema = z.object({
   role: z.enum(['user', 'assistant', 'system']),
   content: z.string().max(500_000),
 });
+
+const novaChatTitleFieldSchema = z
+  .string()
+  .trim()
+  .min(1, 'title cannot be empty')
+  .max(NOVA_CHAT_TITLE_MAX_LENGTH);
+
+export const novaChatSessionCreateRequestSchema = z
+  .object({
+    title: novaChatTitleFieldSchema.optional(),
+  })
+  .strict();
 
 export const novaChatSessionPatchRequestSchema = z
   .object({
@@ -12,14 +25,16 @@ export const novaChatSessionPatchRequestSchema = z
     token_estimate: z.number().int().nonnegative().optional(),
     messages: z.array(novaMessageSchema).max(500).optional(),
     appendMessages: z.array(novaMessageSchema).max(50).optional(),
+    title: novaChatTitleFieldSchema.optional(),
   })
   .refine(
     (b) =>
       b.summary !== undefined ||
       b.token_estimate !== undefined ||
       b.messages !== undefined ||
-      b.appendMessages !== undefined,
-    { message: 'At least one of summary, token_estimate, messages, appendMessages is required' }
+      b.appendMessages !== undefined ||
+      b.title !== undefined,
+    { message: 'At least one of summary, token_estimate, messages, appendMessages, title is required' }
   )
   .refine((b) => !(b.messages != null && b.appendMessages != null), {
     message: 'Use either messages or appendMessages, not both',

@@ -309,3 +309,44 @@ export function getNovaSummarizeDeltaRequestBody({ modelId, deltaMessages, max_t
     max_tokens,
   };
 }
+
+const NOVA_CHAT_TITLE_SYSTEM =
+  'You label chat threads for a medical assistant sidebar. ' +
+  'Output a short plain-text title only: fewer than 6 words, about 25 characters, no quotes, no preamble.';
+
+/**
+ * Bedrock request for one-shot Nova chat session title (Haiku).
+ *
+ * @param {object} opts
+ * @param {string} opts.modelId
+ * @param {string} opts.userMessage
+ * @param {string} opts.assistantMessage
+ * @param {number} [opts.max_tokens]
+ */
+export function getNovaChatTitleRequestBody({
+  modelId,
+  userMessage,
+  assistantMessage,
+  max_tokens = 64,
+}) {
+  return {
+    modelId,
+    system: [
+      {
+        type: 'text',
+        text: NOVA_CHAT_TITLE_SYSTEM,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
+    messages: [
+      {
+        role: 'user',
+        content:
+          `First user message:\n${userMessage}\n\n` +
+          `First assistant reply:\n${assistantMessage}\n\n` +
+          'Title:',
+      },
+    ],
+    max_tokens,
+  };
+}

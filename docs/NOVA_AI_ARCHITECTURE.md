@@ -6,7 +6,7 @@ Base path: `/api/nova/…` on the Fastify API host (e.g. local `http://localhost
 
 **Auth:** every route requires a valid **Bearer JWT** (same Supabase session / `Authorization: Bearer <access_token>` pattern as the rest of the API). Unauthenticated requests are rejected by the server before Nova logic runs.
 
-**Listing:** `GET /api/nova/chat-sessions` returns paginated **metadata** from Supabase (`chatId`, org, token counters, timestamps). It does **not** require Redis. Load full transcript + summary with `GET …/:chatId` (Redis first, then hydrate).
+**Listing:** `GET /api/nova/chat-sessions` returns paginated **metadata** from Supabase (`chatId`, **`title`**, org, token counters, timestamps). It does **not** require Redis. Load full transcript + summary with `GET …/:chatId` (Redis first, then hydrate).
 
 ### Endpoints
 
@@ -15,7 +15,7 @@ Base path: `/api/nova/…` on the Fastify API host (e.g. local `http://localhost
 | `GET` | `/api/nova/chat-sessions` | List the signed-in user’s sessions (query: `limit`, `offset`, `sortBy`, `order`; see below). |
 | `POST` | `/api/nova/chat-sessions` | Create a new chat; returns `chatId` + initial `session`. |
 | `GET` | `/api/nova/chat-sessions/:chatId` | Load session (Redis first, else hydrate from Supabase). |
-| `PATCH` | `/api/nova/chat-sessions/:chatId` | Update `summary`, `token_estimate`, `messages`, or `appendMessages`. |
+| `PATCH` | `/api/nova/chat-sessions/:chatId` | Update `summary`, `token_estimate`, `messages`, `appendMessages`, or **`title`**. |
 | `POST` | `/api/nova/chat-sessions/:chatId/completions` | Enqueue one user turn: persists **user** message immediately; returns **202** + job id (or **200** idempotent replay if that `client_message_id` already completed). Bedrock runs asynchronously in-process (`setImmediate`, same pattern as `POST /api/jobs/prompt-llm/generate-note`). |
 | `GET` | `/api/nova/chat-sessions/:chatId/completion-jobs/:jobId` | Poll completion job until `complete` or `failed` (then includes `assistant`, `usage`, `session` when complete). |
 | `POST` | `/api/nova/chat-sessions/:chatId/token-usage` | Record token usage (optional path if the client meters separately). |
@@ -32,6 +32,7 @@ Mirrors Redis working state; use it to render the transcript and optional indica
 - **`summary_covered_message_count`** — how many leading `messages` are treated as folded into `summary` for model context (advanced; usually you still render all `messages` for the user).
 - **`summarize_pending`** — `true` when a rolling summarization job is queued or due; safe to show a subtle “updating memory…” or ignore.
 - **`token_estimate`**, **`last_active`** — hints / bookkeeping.
+- **`title`** — human-readable thread label for sidebar / history (default **`"New Chat"`**; optional create override; user `PATCH`; Haiku after first successful completion).
 
 Server-side env knobs (context limits, summarize thresholds, queue timing) **do not** need to be configured in the frontend.
 
@@ -121,12 +122,55 @@ When **`failed`:**
 
 ### `PATCH …/:chatId`
 
-Body must include **at least one** of: `summary`, `token_estimate`, `messages`, `appendMessages`.
+Body must include **at least one** of: `summary`, `token_estimate`, `messages`, `appendMessages`, **`title`** (trimmed, max **40** chars; empty after trim → **400**).
 
 - **`messages`** — replace the full transcript (and the server resets `summary_covered_message_count` to `0`).
 - **`appendMessages`** — append-only array of new `{ role, content }`; do **not** send both `messages` and `appendMessages` in the same request.
 
 Caps (from schema): e.g. up to **500** messages on full replace, **50** on append; content length limits per field apply — see `src/fastify/schemas/novaChatRequests.js` for exact numbers.
+
+### `POST /api/nova/chat-sessions` (create)
+
+**Body (optional, strict):** `{}` or `{ "title": "…" }` only. **`title`** — trimmed, **1–40** chars; server default **`"New Chat"`** when omitted.
+
+**Success (201):** `{ "chatId": "<uuid>", "session": <Session> }` — `session.title` matches what was stored (default or override).
+
+### Session title (frontend)
+
+Shipped on **`session.title`** (full session) and list row **`title`** (sidebar / history). Plaintext on the server — same PHI trust model as showing the transcript.
+
+| Source | Field | When to use |
+|--------|--------|-------------|
+| `GET /api/nova/chat-sessions` | `sessions[].title` | Sidebar / history list **without** loading transcripts |
+| `POST` create, `GET …/:chatId`, `PATCH`, terminal completion poll | `session.title` | Open thread header, detail view, after mutations |
+
+**Rules the UI should respect**
+
+1. **Default label** — Treat missing/`null` as **`"New Chat"`** only as a fallback; prefer the API value once integrated.
+2. **Create** — `POST` with no body or `{}` → `"New Chat"`. Optional `{ "title": "Custom label" }` (max **40** chars after trim) skips AI title generation later.
+3. **User rename** — `PATCH { "title": "New label" }` (only field required). Empty/whitespace → **400**. Updates list + open session on next GET/list refresh.
+4. **AI title (async)** — After the **first successful completion**, the server may replace `"New Chat"` with a short Haiku-generated label (**fire-and-forget**). The **completion poll** when `status: complete` may still show `"New Chat"`; the title can appear seconds later.
+5. **Refresh strategy** — After a job completes, optionally:
+   - merge `response.session.title` immediately (may still be `"New Chat"`), then
+   - re-fetch **`GET …/:chatId`** or **`GET /api/nova/chat-sessions`** once (or poll lightly for ~30s) if the sidebar/header should show the AI label; or refresh on next navigation/focus.
+6. **Never overwrite from the client** — Do not keep a local-only title after the server sends a different one; do not expect a second AI rename on later turns (server runs at most once; user **`PATCH`** is the only way to change a settled title).
+7. **List vs open thread** — Keep **`chatId` → title** in client state from the list; when opening a thread, prefer **`GET …/:chatId`** `session.title` if the user may have renamed on another device.
+
+**Example — create with custom title**
+
+```json
+POST /api/nova/chat-sessions
+{ "title": "Billing question" }
+→ 201 { "chatId": "…", "session": { "title": "Billing question", "messages": [], … } }
+```
+
+**Example — rename**
+
+```json
+PATCH /api/nova/chat-sessions/:chatId
+{ "title": "Renamed thread" }
+→ 200 { "session": { "title": "Renamed thread", … } }
+```
 
 ### `POST …/:chatId/token-usage`
 
@@ -161,12 +205,12 @@ Non-production errors may include a **`detail`** string (e.g. Bedrock message).
 
 ### Response envelopes & HTTP status (frontend)
 
-All successful bodies are JSON. `<Session>` means the [session object](#session-object-api-shape) (`chat_id`, `messages`, `summary`, …).
+All successful bodies are JSON. `<Session>` means the [session object](#session-object-api-shape) (`chat_id`, **`title`**, `messages`, `summary`, …).
 
 | Route | Success HTTP | Response body |
 |--------|----------------|----------------|
-| `GET /api/nova/chat-sessions` | **200** | `{ "sessions": [ { "chatId", "organizationId", "token_estimate", "total_tokens", "created_at", "updated_at", "last_active_at" } ], "total": <number>, "limit": <number>, "offset": <number> }` — metadata only; no transcript. |
-| `POST /api/nova/chat-sessions` | **201** | `{ "chatId": "<uuid>", "session": <Session> }` — **no request body** is required (empty body or `{}` is fine). |
+| `GET /api/nova/chat-sessions` | **200** | `{ "sessions": [ { "chatId", "organizationId", "title", "token_estimate", "total_tokens", "created_at", "updated_at", "last_active_at" } ], "total": <number>, "limit": <number>, "offset": <number> }` — metadata only; no transcript. |
+| `POST /api/nova/chat-sessions` | **201** | `{ "chatId": "<uuid>", "session": <Session> }` — optional body `{ "title": "…" }` (trimmed, max **40** chars); default **`"New Chat"`**. |
 | `GET /api/nova/chat-sessions/:chatId` | **200** | `{ "session": <Session> }` |
 | `PATCH /api/nova/chat-sessions/:chatId` | **200** | `{ "session": <Session> }` |
 | `POST /api/nova/chat-sessions/:chatId/completions` | **202** | `{ "id": "<job-uuid>", "status": "pending" \| "running", "chat_id": "<chatId>" }` — also **200** when replaying a finished turn with the same `client_message_id` (see POST section). |
@@ -179,19 +223,20 @@ All successful bodies are JSON. `<Session>` means the [session object](#session-
 
 ### Suggested chat UI flow (minimal)
 
-1. **New thread:** `POST /api/nova/chat-sessions` → persist `chatId` (URL query, client storage, or global state). Render `session.messages` (starts empty).
+1. **New thread:** `POST /api/nova/chat-sessions` (optional `{ "title": "…" }`) → persist `chatId`; show **`session.title`** in header/sidebar (default **`"New Chat"`**). Render `session.messages` (starts empty).
 2. **Open existing:** `GET /api/nova/chat-sessions/:chatId`; on **404** (`NOVA_SESSION_NOT_FOUND`), treat as unknown/expired id and start a new session or show an error.
 3. **Send a turn:** `POST …/completions` with `{ "model": "haiku" \| "sonnet" \| "opus", "message": "<non-empty string>", "client_message_id": "<uuid>" }` → **202** + `id` (job id). Poll **`GET …/completion-jobs/:id`** until `status` is `complete` or `failed`. The **user** message appears in `session.messages` as soon as **202** is returned (refresh `GET …/:chatId` if needed). Use **FE loading state** for the assistant reply (no placeholder row in the API). **Retry after `failed`:** same `client_message_id` and **same** `message` → **202** for a new job **without** duplicating the user row; if `message` does not match the pending user line, the API returns **400** (`NOVA_CLIENT_MESSAGE_MISMATCH` or `NOVA_COMPLETION_RETRY_INVALID_STATE`).
-4. **After a successful job:** drive the transcript from **`response.session.messages`** on the terminal poll (or **200** idempotent replay). Optionally show **`response.usage`**; tolerate **`usage: null`**.
+4. **After a successful job:** drive the transcript from **`response.session.messages`** on the terminal poll (or **200** idempotent replay). Update **`session.title`** from the same payload; if still **`"New Chat"`** after the **first** completion, optionally re-fetch session or list once for the [async AI title](#session-title-frontend). Optionally show **`response.usage`**; tolerate **`usage: null`**.
 5. **Rolling summary in the UI:** if you surface `summary` or “memory,” refresh via **`GET …/:chatId`** while `summarize_pending` is true (poll lightly or on focus) — the worker updates Redis/DB in the background. The next completion’s `session` is also fine without polling.
-6. **Session list / sidebar:** `GET /api/nova/chat-sessions` for **metadata** (ids, activity, token totals). For each row, call `GET …/:chatId` when the user opens a thread (or prefetch sparingly).
-7. **`PATCH`:** most UIs only need create + GET + completions. Use **`PATCH`** when the product edits the transcript, summary, or token hints client-side (see the PATCH section above).
+6. **Session list / sidebar:** `GET /api/nova/chat-sessions` for **metadata** (ids, **`title`**, activity, token totals). Bind row **`title`** in the list; refresh the list after create, rename **`PATCH`**, or when you detect an AI title update on the open thread. For transcript content, call `GET …/:chatId` when the user opens a thread (or prefetch sparingly).
+7. **`PATCH`:** use for **user rename** (`{ "title": "…" }`), transcript edits, or summary/token hints — see the PATCH section and [Session title (frontend)](#session-title-frontend) above.
 
-Reference tests for behavior (not a spec substitute): `tests/nova-chat-sessions-completions.test.js`.
+Reference tests: API **`tests/nova-chat-sessions-completions.test.js`**; Bedrock + title E2E **`tests/nova-chat-sessions-completions.e2e.test.js`** (`npm run test:nova-chat-sessions-completions-e2e`).
 
 ### UX tips for the client
 
-- After **201** create, keep `chatId` and use **`session.messages`** for the thread.
+- After **201** create, keep `chatId`, **`session.title`**, and use **`session.messages`** for the thread.
+- **Titles:** max **40** characters; server trims. Show list **`title`** without loading the full session; re-list or **GET …/:chatId** after rename or first completion if you want the AI label in the sidebar.
 - On **409**, another turn is already queued or running for this chat; poll the active job or wait before sending a **different** `client_message_id`.
 - **Summarization** runs in a **background worker**; the chat reply path does not block on it. `summarize_pending` may flicker `true` then `false` after a poll or next completion.
 
@@ -216,12 +261,12 @@ The system is built around a **stateless LLM with stateful application memory la
 | Reload Redis from Supabase | **Done** — GET misses cache: decrypt from Postgres, repopulate Redis. |
 | Token usage rows + session aggregate | **Done** — `chat_token_usage` + `POST .../token-usage`; `total_tokens` on `chat_sessions` incremented per event (per-seat `user_id` for metering). |
 | AWS Bedrock orchestration (chat turn) | **Done (async job + poll)** — `POST …/completions` returns **202** + job id, persists user message, `setImmediate` runs `novaChatCompletionProcessor` (JWT Supabase + Bedrock, same idea as prompt-llm jobs). Poll `GET …/completion-jobs/:jobId`. Table `nova_chat_completion_jobs` (`status` is Postgres enum `nova_chat_completion_job_status`); partial unique one active job per `chat_id`. |
-| Automated tests (completions) | **Done** — `tests/nova-chat-sessions-completions.test.js` (`npm run test:nova-chat-sessions-completions`); harness supports `timeoutMs` / `AbortSignal.timeout`; included in `tests/runAll.js` (suite 2.15). Unit: `tests/novaBedrockChat.unit.test.js`, `tests/novaSummarize.unit.test.js`. **Queue E2E** (opt-in, `.e2e.test.js`, not in runAll): `NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE=1` in `.env.local` (dev/staging only; server `NODE_ENV=production` ignores it), restart Fastify, then `npm run test:nova-summarize-queue-e2e` — spawns worker subprocess, two completion rounds after rolling summarize, asserts full persisted transcript length, `summary_covered_message_count`, and that the next Bedrock turn uses a single-message dialog (no duplicated pre-checkpoint pairs); writes `test-results/nova-summarize-queue-e2e.json`. |
+| Automated tests (completions) | **Done** — `tests/nova-chat-sessions-completions.test.js` (`npm run test:nova-chat-sessions-completions`; in `runAll.js` suite 2.15). **Bedrock E2E** (opt-in, `.e2e.test.js`, not in runAll): `npm run test:nova-chat-sessions-completions-e2e` — 2× completions, usage shape, AI `session.title` after first turn. Unit: `tests/novaBedrockChat.unit.test.js`, `tests/novaSummarize.unit.test.js`, `tests/novaChatTitle.unit.test.js`. **Summarize queue E2E:** `NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE=1` in `.env.local` (dev/staging only; server `NODE_ENV=production` ignores it), restart Fastify, then `npm run test:nova-summarize-queue-e2e` — spawns worker subprocess, two completion rounds after rolling summarize, asserts full persisted transcript length, `summary_covered_message_count`, and that the next Bedrock turn uses a single-message dialog (no duplicated pre-checkpoint pairs); writes `test-results/nova-summarize-queue-e2e.json`. |
 | Deploy secrets (Redis on EC2) | **Done** — GitHub Actions deploy writes `REDIS_URL` (required) and optional `REDIS_AUTH_TOKEN` into EC2 `.env.local`. |
 | Chat persistence path | **Done** — Nova create / PATCH persist synchronously; each completion **accept** appends the user message to Postgres + Redis; the async processor appends the assistant when Bedrock succeeds. **Deferred:** Postgres outbox / write-behind — only if synchronous writes become a bottleneck; there is **no** separate background worker process for chat completions today (in-process continuation only). |
 | Background worker (rolling summarization) | **Done** — `npm run worker:nova-summarize` (`src/workers/novaSummarizeWorker.js`): drains Redis list `nova:summarize:queue`, **sweep** re-queues members of `nova:summarize:due` on an interval. API enqueues after a completion job **finishes** when Bedrock `usage.input_tokens` ≥ `NOVA_SUMMARIZE_CONTEXT_THRESHOLD` (default `0.7`) of the preset context limit (non-production tests may use `NOVA_SUMMARIZE_TEST_FORCE_ENQUEUE=1` to enqueue without hitting threshold). Worker uses `SUPABASE_SERVICE_ROLE_KEY` and `getOrCreateUserMasterKey` to decrypt/load and encrypt/persist session summary + messages. |
 | Per-chat active completion guard | **Done** — Postgres partial unique index on `nova_chat_completion_jobs(chat_id)` where `status` ∈ (`pending`,`running`); second **different** turn → **409** `NOVA_COMPLETION_IN_FLIGHT`. Same `client_message_id` while in-flight → same **202** job id. |
-| Chat session display title | **Planned** — human-readable **title** per thread for session lists (default **"New Chat"** at create; optional later **AI-generated** title from early user/assistant text). Requires `chat_sessions` (or metadata) column + API list/create/PATCH exposure; not implemented in this repo yet. |
+| Chat session display title | **Done** — `session.title`, Postgres `chat_sessions.title`, optional create/`PATCH`, Haiku fire-and-forget after first successful completion (`src/utils/novaChatTitleService.js`). |
 | Full transcript vs Bedrock message list | **Done** — After each completion, `session.messages` is the **full** ordered transcript (append user + assistant). The Bedrock request uses **`novaPriorDialogMessagesForBedrock`**: `messages.slice(summary_covered_message_count)` only, so turns already folded into the rolling summary are not duplicated in the model’s `messages` array. |
 | Redis failure → regenerate summary | **Partial** — history reloads from Supabase; rolling summary is whatever was last persisted. **Rolling LLM summarize** runs via worker when enqueued; not automatically replayed on cold Redis rebuild unless a job remains in `nova:summarize:due`. |
 
@@ -229,9 +274,50 @@ The system is built around a **stateless LLM with stateful application memory la
 
 - **Deferred (by design):** **Postgres outbox / write-behind** — optional pattern if per-turn Supabase + Redis ever becomes too slow; not a “chat message worker”; normal turns stay on the API path above.
 - **Partial:** **Redis cold / loss** — full message history reloads from Supabase; rolling `summary` is last-persisted only. The summarize worker does not auto-run unless a job remains queued (`nova:summarize:queue` / `nova:summarize:due`). **`summarize_pending` and `summary_covered_message_count` are not faithfully restored from Postgres on hydrate** — `loadNovaChatSessionFromSupabase` resets `summarize_pending` to `false` and derives checkpoint from summary vs messages only; durable flags + reconciliation described in [Total Redis loss](#total-redis-loss-flush-new-cluster-prolonged-outage) are recommendations, not fully implemented.
-- **Planned (not shipped):** [Rolling summary — structured JSON](#rolling-summary--structured-json-planned) (`schema_version` 1: `facts`, `decisions`, `constraints`, `follow_ups`, `open_questions`). **Session list title** — per-chat **display name** (default **"New Chat"**; optional AI-generated from first messages for sidebar/history).
+- **Planned (not shipped):** [Rolling summary — structured JSON](#rolling-summary--structured-json-planned) (`schema_version` 1: `facts`, `decisions`, `constraints`, `follow_ups`, `open_questions`).
 - **Doc vs code:** [Failure Handling](#failure-handling) “buffer in Redis / retry async persistence” on Supabase failure is an **architectural option**, not the current Nova completion path (today a failed persist surfaces as an error to the client after Bedrock may already have run).
 - **Not implemented:** **Streaming tokens** (SSE/WebSocket) for assistant output; **vector / RAG**, multimodal, encounter-linked sessions — see [Future enhancements](#future-enhancements) and [Implementation open questions](#implementation-open-questions). (**Note:** `client_message_id` on `POST …/completions` is implemented for idempotent / retry semantics.)
+
+### Chat session title (shipped)
+
+Per-thread **display title** for session lists and the open thread header.
+
+#### Product rules
+
+| Rule | Decision |
+|------|----------|
+| **Default** | Server writes **`"New Chat"`** into Postgres on `POST /api/nova/chat-sessions` create. |
+| **Create override** | Optional request body `{ "title": "…" }` (trimmed, max **40** chars). If omitted, default `"New Chat"`. |
+| **User rename** | `PATCH /api/nova/chat-sessions/:chatId` accepts **`title`** (trimmed, max **40** chars; reject empty after trim with **400**). |
+| **AI generation trigger** | **Once**, after the **first successful completion** (first user + first assistant both persisted). **Fire-and-forget** at end of `novaChatCompletionProcessor` — do **not** block the completion poll on title Bedrock. |
+| **Skip AI when** | At first completion, `title !== "New Chat"` (FE set a custom title at create, or user already renamed). |
+| **Never overwrite** | AI runs at most once; later turns do not replace an AI or user title. User `PATCH` is the only way to change a non-default title after AI. |
+| **AI failure** | **Fail open** — keep current title (`"New Chat"` or user-set); log; no user-visible error. |
+| **Model** | **Haiku** one-liner Bedrock pass (`resolveNovaBedrockModelId('haiku')` or dedicated env override). |
+| **Billing** | Title generation does **not** count toward **`NOVA_RESPONSE`** usage limits (no `assertUsageAllowed` / `recordUsageSuccess` on this path). |
+| **Prompt input** | First **user** message + first **assistant** reply only (truncate each for prompt bounds if needed). |
+| **Prompt guidance** | Ask for a short label: **&lt;6 words**, ~**25** chars target, plain text only, no quotes or preamble. |
+| **Post-process** | Trim; if over **40** chars, truncate to fit (word-aware strip preferred). Same **40** char cap as user PATCH. |
+| **Encryption** | **Plaintext** `title` column on `chat_sessions` (sidebar must list without decrypting message bodies). Titles may echo PHI from the first turn — same trust model as showing the transcript in the UI. |
+
+#### API / session shape
+
+- **`title` lives on `<Session>`** as **`session.title`** everywhere the session object is returned (`POST` create, `GET …/:chatId`, `PATCH`, terminal completion poll / idempotent **200** replay). Keeps one object for render state.
+- **`GET /api/nova/chat-sessions` list rows** also include **`title`** (read from Postgres; no Redis required).
+- **Breaking change?** **Additive only** for HTTP clients: new field on existing envelopes. Clients that ignore unknown keys keep working. **Frontend:** bind **`session.title`** / list row **`title`**; stop hardcoding `"New Chat"` except as a display fallback when the field is absent (legacy rows).
+
+#### Persistence
+
+- **Postgres:** add `chat_sessions.title text not null default 'New Chat'` (backfill existing rows to default).
+- **Redis:** include **`title`** in the hot-session JSON (`nova:chat:{userId}:{chatId}`); load/save with other session fields; hydrate from Supabase on cache miss.
+
+#### Implementation checklist
+
+- [x] Migration: `chat_sessions.title` (`sql/migrations/20260616_chat_sessions_title.sql`)
+- [x] `createEmptyNovaSession` / `normalizeNovaSessionShape` / load & persist paths
+- [x] `POST` create optional body; `PATCH` `title`; list select + map
+- [x] Haiku title helper + fire-and-forget hook after first successful completion
+- [x] Tests + [Response envelopes](#response-envelopes--http-status-frontend) table updated
 
 ---
 
@@ -322,7 +408,8 @@ Scoped by Supabase `user_id` so a `chat_id` UUID alone cannot access another use
   "last_active": 1710000000,
   "token_estimate": 3200,
   "summary_covered_message_count": 4,
-  "summarize_pending": false
+  "summarize_pending": false,
+  "title": "New Chat"
 }
 ```
 
@@ -361,6 +448,7 @@ Supabase is the **immutable audit log**.
 - `token_estimate` (runtime hint, mirrored in Redis)
 - `total_tokens` (running sum; incremented when token-usage rows are recorded)
 - `created_at`, `updated_at`, `last_active_at`
+- `title` — plaintext display label, default **`'New Chat'`**
 
 #### chat_messages
 
@@ -656,7 +744,7 @@ Memory is entirely application-controlled for:
 ## Future Enhancements
 
 - **Async Nova completions** — **Shipped:** job table + **202** + poll under `/api/nova/chat-sessions/…`; optional later: dedicated queue workers, SSE push.
-- **Chat session title** — Per-thread **display title** for lists: default **"New Chat"** at session creation; optional **AI-generated** label (e.g. after first successful completion) from a short model pass on a non-sensitive excerpt or structured summary. Needs DB column + list API field + optional PATCH.
+- **Chat session title** — **Shipped:** `session.title`, Haiku after first completion, plaintext DB column (`NOVA_TITLE_BEDROCK_MODEL_ID` optional override).
 - Vector database for long-term semantic retrieval
 - Multi-modal inputs (audio, EMR integration)
 - Insurance contract reasoning module

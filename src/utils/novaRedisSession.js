@@ -3,6 +3,8 @@
  * Keys are scoped per Supabase user id so one user cannot read another's cache by chat id alone.
  */
 
+import { NOVA_CHAT_DEFAULT_TITLE } from './novaChatTitle.js';
+
 /** @typedef {{ role: 'user' | 'assistant' | 'system', content: string }} NovaChatMessage */
 
 /**
@@ -12,6 +14,7 @@
  * @property {string} summary
  * @property {number} last_active - unix seconds
  * @property {number} token_estimate
+ * @property {string} [title] - sidebar display label (plaintext; mirrored from Postgres)
  * @property {number} [summary_covered_message_count] - messages[0..count) folded into `summary`
  * @property {boolean} [summarize_pending] - summarization queued or still due
  */
@@ -27,13 +30,15 @@ export function novaSessionRedisKey(userId, chatId) {
 
 /**
  * @param {string} chatId
+ * @param {string} [title]
  * @returns {NovaChatSession}
  */
-export function createEmptyNovaSession(chatId) {
+export function createEmptyNovaSession(chatId, title = NOVA_CHAT_DEFAULT_TITLE) {
   return {
     chat_id: chatId,
     messages: [],
     summary: '',
+    title,
     last_active: Math.floor(Date.now() / 1000),
     token_estimate: 0,
     summary_covered_message_count: 0,
@@ -58,6 +63,9 @@ export function normalizeNovaSessionShape(session) {
   }
   if (typeof session.summarize_pending !== 'boolean') {
     session.summarize_pending = false;
+  }
+  if (typeof session.title !== 'string' || session.title.trim() === '') {
+    session.title = NOVA_CHAT_DEFAULT_TITLE;
   }
   return session;
 }

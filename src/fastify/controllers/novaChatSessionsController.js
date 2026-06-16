@@ -20,6 +20,7 @@ import { ensurePersonalOrganization } from '../../services/personalOrganization.
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
 import { novaChatCompletionProcessor } from '../processors/novaChatCompletionProcessor.js';
+import { NOVA_CHAT_DEFAULT_TITLE, normalizeNovaChatTitle } from '../../utils/novaChatTitle.js';
 import {
   USAGE_METRICS,
   UsageLimitExceededError,
@@ -90,6 +91,8 @@ export async function createNovaChatSession(request, reply) {
   const supabase = getSupabaseClient(request.headers.authorization);
   const userId = request.user.id;
   const chatId = randomUUID();
+  const body = request.body ?? {};
+  const sessionTitle = body.title != null ? normalizeNovaChatTitle(body.title) : NOVA_CHAT_DEFAULT_TITLE;
 
   let organizationId;
   try {
@@ -104,6 +107,7 @@ export async function createNovaChatSession(request, reply) {
     chatId,
     userId,
     organizationId,
+    title: sessionTitle,
   });
   if (!insertResult.success) {
     return reply.status(500).send({
@@ -112,7 +116,7 @@ export async function createNovaChatSession(request, reply) {
     });
   }
 
-  const session = createEmptyNovaSession(chatId);
+  const session = createEmptyNovaSession(chatId, sessionTitle);
   const ttl = novaSessionTtlSeconds();
   await novaSessionSave(redis, userId, session, ttl);
 
@@ -213,6 +217,7 @@ export async function patchNovaChatSession(request, reply) {
 
   if (body.summary !== undefined) session.summary = body.summary;
   if (body.token_estimate !== undefined) session.token_estimate = body.token_estimate;
+  if (body.title !== undefined) session.title = normalizeNovaChatTitle(body.title);
   if (body.messages !== undefined) {
     session.messages = body.messages;
     messageSync = 'full';

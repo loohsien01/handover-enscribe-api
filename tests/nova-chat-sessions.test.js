@@ -3,15 +3,17 @@
  * Requires: Fastify server, Redis, REDIS_URL in .env.local (same as server); optional REDIS_AUTH_TOKEN
  * Requires: TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local
  * Requires: Supabase migrations including `chat_sessions` / `chat_messages` / `chat_token_usage`
- *   (`sql/migrations/20260507_nova_chat_sessions.sql`), `nova_chat_completion_jobs`
+ *   (`sql/migrations/20260507_nova_chat_sessions.sql`), `chat_sessions.title`
+ *   (`sql/migrations/20260616_chat_sessions_title.sql`), `nova_chat_completion_jobs`
  *   (`sql/migrations/20260514_nova_chat_completion_jobs.sql` — enum `nova_chat_completion_job_status`; if you applied an older TEXT-only 20260514, also run `sql/migrations/20260515_nova_chat_completion_jobs_status_enum.sql` once),
  *   (`sql/policies/nova_chat_completion_jobs_RLS.sql`),
  *   and organizations billing tables.
  *
  * Does not call Bedrock or `POST .../completions`. Saved JSON has no assistant/LLM turns — only
- * PATCH append (e.g. `nova-test-message`). Completions + optional Bedrock E2E:
- * `tests/nova-chat-sessions-completions.test.js` (`npm run test:nova-chat-sessions-completions`);
- * set `skipE2ETest = false` there to run Test 8.
+ * PATCH append (e.g. `nova-test-message`). Completions API tests (no Bedrock):
+ * `tests/nova-chat-sessions-completions.test.js` (`npm run test:nova-chat-sessions-completions`).
+ * Bedrock E2E: `tests/nova-chat-sessions-completions.e2e.test.js`
+ * (`npm run test:nova-chat-sessions-completions-e2e`).
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -46,9 +48,12 @@ function expectChatSessionShape(data) {
   if (!data || typeof data !== 'object') {
     return { passed: false, message: 'Response body is not an object' };
   }
-  const s = /** @type {{ messages?: unknown, summary?: unknown, last_active?: unknown, token_estimate?: unknown, chat_id?: unknown }} */ (data);
+  const s = /** @type {{ messages?: unknown, summary?: unknown, last_active?: unknown, token_estimate?: unknown, chat_id?: unknown, title?: unknown }} */ (data);
   if (typeof s.chat_id !== 'string') {
     return { passed: false, message: 'session.chat_id missing or not a string' };
+  }
+  if (typeof s.title !== 'string') {
+    return { passed: false, message: 'session.title missing or not a string' };
   }
   if (!Array.isArray(s.messages)) {
     return { passed: false, message: 'session.messages is not an array' };
@@ -157,6 +162,9 @@ export async function runNovaChatSessionsTests() {
       if (data.session.chat_id !== data.chatId) {
         return { passed: false, message: 'session.chat_id must match chatId' };
       }
+      if (data.session.title !== 'New Chat') {
+        return { passed: false, message: `expected default title "New Chat", got ${data.session.title}` };
+      }
       return { passed: true, message: '' };
     },
     onSuccess: (data) => {
@@ -189,6 +197,9 @@ export async function runNovaChatSessionsTests() {
       }
       if (typeof row.token_estimate !== 'number' || typeof row.total_tokens !== 'number') {
         return { passed: false, message: 'list row token fields' };
+      }
+      if (typeof row.title !== 'string' || row.title !== 'New Chat') {
+        return { passed: false, message: 'list row title missing or not default' };
       }
       return { passed: true, message: '' };
     },
@@ -239,7 +250,32 @@ export async function runNovaChatSessionsTests() {
     },
   });
 
-  await runner.test('Test 7: PATCH appendMessages', {
+  await runner.test('Test 7: PATCH title rename', {
+    method: 'PATCH',
+    endpoint: `/api/nova/chat-sessions/${cachedChatId}`,
+    headers: authHeaders,
+    body: { title: 'Renamed thread' },
+    expectedStatus: 200,
+    expectedFields: ['session'],
+    customValidator: (data) => {
+      const inner = expectChatSessionShape(data.session);
+      if (!inner.passed) return inner;
+      if (data.session.title !== 'Renamed thread') {
+        return { passed: false, message: `title mismatch: ${data.session.title}` };
+      }
+      return { passed: true, message: '' };
+    },
+  });
+
+  await runner.test('Test 7b: PATCH rejects empty title', {
+    method: 'PATCH',
+    endpoint: `/api/nova/chat-sessions/${cachedChatId}`,
+    headers: authHeaders,
+    body: { title: '   ' },
+    expectedStatus: 400,
+  });
+
+  await runner.test('Test 8: PATCH appendMessages', {
     method: 'PATCH',
     endpoint: `/api/nova/chat-sessions/${cachedChatId}`,
     headers: authHeaders,
@@ -262,7 +298,7 @@ export async function runNovaChatSessionsTests() {
     },
   });
 
-  await runner.test('Test 8: PATCH rejects messages and appendMessages together', {
+  await runner.test('Test 9: PATCH rejects messages and appendMessages together', {
     method: 'PATCH',
     endpoint: `/api/nova/chat-sessions/${cachedChatId}`,
     headers: authHeaders,
@@ -273,7 +309,7 @@ export async function runNovaChatSessionsTests() {
     expectedStatus: 400,
   });
 
-  await runner.test('Test 9: POST token-usage without authentication', {
+  await runner.test('Test 10: POST token-usage without authentication', {
     method: 'POST',
     endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/token-usage`,
     headers: { 'Content-Type': 'application/json' },
@@ -281,7 +317,7 @@ export async function runNovaChatSessionsTests() {
     expectedStatus: 401,
   });
 
-  await runner.test('Test 10: POST token-usage invalid body (400)', {
+  await runner.test('Test 11: POST token-usage invalid body (400)', {
     method: 'POST',
     endpoint: `/api/nova/chat-sessions/${cachedChatId}/token-usage`,
     headers: { ...authHeaders, 'Content-Type': 'application/json' },
@@ -289,7 +325,7 @@ export async function runNovaChatSessionsTests() {
     expectedStatus: 400,
   });
 
-  await runner.test('Test 11: POST token-usage records usage (201)', {
+  await runner.test('Test 12: POST token-usage records usage (201)', {
     method: 'POST',
     endpoint: `/api/nova/chat-sessions/${cachedChatId}/token-usage`,
     headers: { ...authHeaders, 'Content-Type': 'application/json' },

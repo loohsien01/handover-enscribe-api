@@ -1,6 +1,7 @@
 import fp from 'fastify-plugin';
 import { serializeZodError } from '../../utils/serializeZodError.js';
 import {
+  novaChatSessionCreateRequestSchema,
   novaChatSessionIdParamsSchema,
   novaChatCompletionJobParamsSchema,
   novaChatSessionPatchRequestSchema,
@@ -48,6 +49,11 @@ export default fp(async function novaChatSessionsRoutes(fastify) {
 
   fastify.post('/nova/chat-sessions', preAuth, async (request, reply) => {
     try {
+      const bodyResult = novaChatSessionCreateRequestSchema.safeParse(request.body ?? {});
+      if (!bodyResult.success) {
+        return reply.status(400).send({ error: serializeZodError(bodyResult.error) });
+      }
+      request.body = bodyResult.data;
       return createNovaChatSession(request, reply);
     } catch (err) {
       fastify.log.error('POST /nova/chat-sessions:', err);

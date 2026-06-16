@@ -4,6 +4,7 @@
  */
 import * as encryptionUtils from './encryptionUtils.js';
 import { createEmptyNovaSession, normalizeNovaSessionShape } from './novaRedisSession.js';
+import { NOVA_CHAT_DEFAULT_TITLE } from './novaChatTitle.js';
 
 export const chatSessionsTable = 'chat_sessions';
 export const chatMessagesTable = 'chat_messages';
@@ -101,6 +102,7 @@ export async function loadNovaChatSessionFromSupabase(supabase, userId, chatId, 
     chat_id: row.id,
     messages,
     summary: sumDec.text ?? '',
+    title: row.title ?? NOVA_CHAT_DEFAULT_TITLE,
     token_estimate: row.token_estimate ?? 0,
     last_active: lastActiveSec,
     summary_covered_message_count: sumStr ? messages.length : 0,
@@ -112,7 +114,7 @@ export async function loadNovaChatSessionFromSupabase(supabase, userId, chatId, 
 
 /**
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
- * @param {{ chatId: string, userId: string, organizationId: string }} ids
+ * @param {{ chatId: string, userId: string, organizationId: string, title?: string }} ids
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
 export async function insertChatSessionRow(supabase, ids) {
@@ -120,6 +122,7 @@ export async function insertChatSessionRow(supabase, ids) {
     id: ids.chatId,
     user_id: ids.userId,
     organization_id: ids.organizationId,
+    title: ids.title ?? NOVA_CHAT_DEFAULT_TITLE,
     encrypted_summary: null,
     summary_iv: null,
     token_estimate: 0,
@@ -140,7 +143,7 @@ export async function insertChatSessionRow(supabase, ids) {
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
  * @param {{ limit: number, offset: number, sortBy: 'last_active_at' | 'created_at' | 'updated_at', order: 'asc' | 'desc' }} opts
- * @returns {Promise<{ success: true, sessions: Array<{ chatId: string, organizationId: string, token_estimate: number, total_tokens: number, created_at: string, updated_at: string, last_active_at: string }>, total: number } | { success: false, error: string }>}
+ * @returns {Promise<{ success: true, sessions: Array<{ chatId: string, organizationId: string, title: string, token_estimate: number, total_tokens: number, created_at: string, updated_at: string, last_active_at: string }>, total: number } | { success: false, error: string }>}
  */
 export async function listChatSessionsForUser(supabase, userId, opts) {
   const { limit, offset, sortBy, order } = opts;
@@ -149,7 +152,7 @@ export async function listChatSessionsForUser(supabase, userId, opts) {
   const { data, error, count } = await supabase
     .from(chatSessionsTable)
     .select(
-      'id, organization_id, token_estimate, total_tokens, created_at, updated_at, last_active_at',
+      'id, organization_id, title, token_estimate, total_tokens, created_at, updated_at, last_active_at',
       { count: 'exact' }
     )
     .eq('user_id', userId)
@@ -164,6 +167,7 @@ export async function listChatSessionsForUser(supabase, userId, opts) {
   const sessions = (data || []).map((row) => ({
     chatId: row.id,
     organizationId: row.organization_id,
+    title: row.title ?? NOVA_CHAT_DEFAULT_TITLE,
     token_estimate: row.token_estimate ?? 0,
     total_tokens: typeof row.total_tokens === 'string' ? Number(row.total_tokens) : row.total_tokens ?? 0,
     created_at: row.created_at,
@@ -202,6 +206,7 @@ export async function persistNovaChatSession(supabase, args) {
       encrypted_summary: encSummary,
       summary_iv: ivSummary,
       token_estimate: session.token_estimate ?? 0,
+      title: session.title ?? NOVA_CHAT_DEFAULT_TITLE,
       last_active_at: new Date().toISOString(),
     })
     .eq('id', chatId)
