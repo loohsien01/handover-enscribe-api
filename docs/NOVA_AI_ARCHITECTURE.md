@@ -17,7 +17,7 @@ Base path: `/api/nova/…` on the Fastify API host (e.g. local `http://localhost
 | `GET` | `/api/nova/chat-sessions/:chatId` | Load session (Redis first, else hydrate from Supabase). |
 | `PATCH` | `/api/nova/chat-sessions/:chatId` | Update `summary`, `token_estimate`, `messages`, `appendMessages`, or **`title`**. |
 | `POST` | `/api/nova/chat-sessions/:chatId/completions` | Enqueue one user turn: persists **user** message immediately; returns **202** + job id (or **200** idempotent replay if that `client_message_id` already completed). Bedrock runs asynchronously in-process (`setImmediate`, same pattern as `POST /api/jobs/prompt-llm/generate-note`). |
-| `GET` | `/api/nova/chat-sessions/:chatId/completion-jobs/:jobId` | Poll completion job until `complete` or `failed` (then includes `assistant`, `usage`, `session` when complete). |
+| `GET` | `/api/nova/chat-sessions/:chatId/completion-jobs/:jobId` | Poll completion job until `complete` or `failed`. While `running`, may include growing `assistant_partial` (see [Frontend: partial completions](#frontend-partial-completions-poll-pseudo-stream)). Terminal `complete` includes `assistant`, `usage`, `session`. |
 | `POST` | `/api/nova/chat-sessions/:chatId/token-usage` | Record token usage (optional path if the client meters separately). |
 
 `:chatId` must be a UUID. Validation errors return **400** with a serialized Zod `error` payload.
@@ -81,19 +81,31 @@ Server-side env knobs (context limits, summarize thresholds, queue timing) **do 
 
 `usage` may be **`null`** when Bedrock did not return usage for that turn; tolerate it in the UI.
 
-**Behavior:** `POST` returns quickly after persisting the **user** line (first attempt) and enqueueing work, or after accepting a **retry** for the same `client_message_id` when a prior job **`failed`** (no second user row — same text must match the pending user line at end of session). Poll **`GET …/completion-jobs/:jobId`** until `status` is `complete` or `failed`. The **user** message **stays** in the transcript when a job fails (no server-side delete). At most **one** non-terminal job per `chatId` (Postgres partial unique index); a second turn with a different `client_message_id` while another job is active yields **409** `NOVA_COMPLETION_IN_FLIGHT`. Bedrock or persist failures set the job to `status: failed`; see poll response below.
+**Behavior:** `POST` returns quickly after persisting the **user** line (first attempt) and enqueueing work, or after accepting a **retry** for the same `client_message_id` when a prior job **`failed`** (no second user row — same text must match the pending user line at end of session). Poll **`GET …/completion-jobs/:jobId`** until `status` is `complete` or `failed`. While `running`, the poll may include **`assistant_partial`** (cumulative assistant text; not in `session.messages` until `complete`) — see [Frontend: partial completions](#frontend-partial-completions-poll-pseudo-stream). The **user** message **stays** in the transcript when a job fails (no server-side delete). At most **one** non-terminal job per `chatId` (Postgres partial unique index); a second turn with a different `client_message_id` while another job is active yields **409** `NOVA_COMPLETION_IN_FLIGHT`. Bedrock or persist failures set the job to `status: failed`; see poll response below.
 
 ### `GET …/completion-jobs/:jobId`
 
-**Success (200):** while running:
+**Success (200):** while **`pending`** (no assistant text yet):
 
 ```json
 { "id": "<job-uuid>", "status": "pending", "chat_id": "<chatId>" }
 ```
 
-(or `"status": "running"` after the worker claims the job)
+While **`running`** — same base fields; once Bedrock has emitted at least one token, the poll may also include:
 
-When **`complete`:**
+```json
+{
+  "id": "<job-uuid>",
+  "status": "running",
+  "chat_id": "<chatId>",
+  "assistant_partial": "The reply accumulated so far…",
+  "partial_revision": 12
+}
+```
+
+`assistant_partial` is the **full** assistant text so far (not a delta). `partial_revision` increments on each server-side partial write (~every 150 ms while streaming). Omit both fields when still waiting for the first token.
+
+When **`complete`** (unchanged — source of truth for the persisted transcript):
 
 ```json
 {
@@ -106,7 +118,9 @@ When **`complete`:**
 }
 ```
 
-When **`failed`:**
+No `assistant_partial` on `complete`. Replace any in-flight assistant bubble from **`session.messages`** (last assistant line).
+
+When **`failed`**:
 
 ```json
 {
@@ -114,9 +128,13 @@ When **`failed`:**
   "status": "failed",
   "chat_id": "<chatId>",
   "code": "NOVA_BEDROCK_FAILED",
-  "error": "…"
+  "error": "…",
+  "assistant_partial": "Text received before failure, if any",
+  "partial_revision": 12
 }
 ```
+
+`assistant_partial` on **`failed`** is **poll-only** — it is **not** written to `session.messages`. The user line remains in the transcript. Whether to keep showing the partial in the UI is a **frontend** choice (see [Frontend: partial completions](#frontend-partial-completions-poll-pseudo-stream)).
 
 **404:** `NOVA_COMPLETION_JOB_NOT_FOUND` — wrong `jobId`, or job does not belong to this `:chatId`.
 
@@ -214,7 +232,7 @@ All successful bodies are JSON. `<Session>` means the [session object](#session-
 | `GET /api/nova/chat-sessions/:chatId` | **200** | `{ "session": <Session> }` |
 | `PATCH /api/nova/chat-sessions/:chatId` | **200** | `{ "session": <Session> }` |
 | `POST /api/nova/chat-sessions/:chatId/completions` | **202** | `{ "id": "<job-uuid>", "status": "pending" \| "running", "chat_id": "<chatId>" }` — also **200** when replaying a finished turn with the same `client_message_id` (see POST section). |
-| `GET /api/nova/chat-sessions/:chatId/completion-jobs/:jobId` | **200** | `{ "id", "status", "chat_id" }` — when `status` is `complete`, includes `assistant`, `usage` (\| null), `session`; when `failed`, includes `code`, `error`. |
+| `GET /api/nova/chat-sessions/:chatId/completion-jobs/:jobId` | **200** | `{ "id", "status", "chat_id" }` — when `status` is `complete`, includes `assistant`, `usage` (\| null), `session`; when `failed`, includes `code`, `error`; while `running`, optional `assistant_partial`, `partial_revision`; on `failed`, optional last `assistant_partial` (see [Completion partial streaming](#completion-partial-streaming)). |
 | `POST /api/nova/chat-sessions/:chatId/token-usage` | **201** | `{ "ok": true, "total_tokens": <number> }` |
 
 **Headers:** send **`Authorization: Bearer <access_token>`** on every call. For routes with a JSON body, use **`Content-Type: application/json`**.
@@ -225,7 +243,7 @@ All successful bodies are JSON. `<Session>` means the [session object](#session-
 
 1. **New thread:** `POST /api/nova/chat-sessions` (optional `{ "title": "…" }`) → persist `chatId`; show **`session.title`** in header/sidebar (default **`"New Chat"`**). Render `session.messages` (starts empty).
 2. **Open existing:** `GET /api/nova/chat-sessions/:chatId`; on **404** (`NOVA_SESSION_NOT_FOUND`), treat as unknown/expired id and start a new session or show an error.
-3. **Send a turn:** `POST …/completions` with `{ "model": "haiku" \| "sonnet" \| "opus", "message": "<non-empty string>", "client_message_id": "<uuid>" }` → **202** + `id` (job id). Poll **`GET …/completion-jobs/:id`** until `status` is `complete` or `failed`. The **user** message appears in `session.messages` as soon as **202** is returned (refresh `GET …/:chatId` if needed). Use **FE loading state** for the assistant reply (no placeholder row in the API). **Retry after `failed`:** same `client_message_id` and **same** `message` → **202** for a new job **without** duplicating the user row; if `message` does not match the pending user line, the API returns **400** (`NOVA_CLIENT_MESSAGE_MISMATCH` or `NOVA_COMPLETION_RETRY_INVALID_STATE`).
+3. **Send a turn:** `POST …/completions` with `{ "model": "haiku" \| "sonnet" \| "opus", "message": "<non-empty string>", "client_message_id": "<uuid>" }` → **202** + `id` (job id). Poll **`GET …/completion-jobs/:id`** until `status` is `complete` or `failed`. The **user** message appears in `session.messages` as soon as **202** is returned (refresh `GET …/:chatId` if needed). While `running`, poll may return growing **`assistant_partial`** — render that in **local UI state** until `complete` (see [Frontend: partial completions](#frontend-partial-completions-poll-pseudo-stream)). **Retry after `failed`:** same `client_message_id` and **same** `message` → **202** for a new job **without** duplicating the user row; if `message` does not match the pending user line, the API returns **400** (`NOVA_CLIENT_MESSAGE_MISMATCH` or `NOVA_COMPLETION_RETRY_INVALID_STATE`).
 4. **After a successful job:** drive the transcript from **`response.session.messages`** on the terminal poll (or **200** idempotent replay). Update **`session.title`** from the same payload; if still **`"New Chat"`** after the **first** completion, optionally re-fetch session or list once for the [async AI title](#session-title-frontend). Optionally show **`response.usage`**; tolerate **`usage: null`**.
 5. **Rolling summary in the UI:** if you surface `summary` or “memory,” refresh via **`GET …/:chatId`** while `summarize_pending` is true (poll lightly or on focus) — the worker updates Redis/DB in the background. The next completion’s `session` is also fine without polling.
 6. **Session list / sidebar:** `GET /api/nova/chat-sessions` for **metadata** (ids, **`title`**, activity, token totals). Bind row **`title`** in the list; refresh the list after create, rename **`PATCH`**, or when you detect an AI title update on the open thread. For transcript content, call `GET …/:chatId` when the user opens a thread (or prefetch sparingly).
@@ -233,11 +251,116 @@ All successful bodies are JSON. `<Session>` means the [session object](#session-
 
 Reference tests: API **`tests/nova-chat-sessions-completions.test.js`**; Bedrock + title E2E **`tests/nova-chat-sessions-completions.e2e.test.js`** (`npm run test:nova-chat-sessions-completions-e2e`).
 
+### Frontend: partial completions (poll pseudo-stream)
+
+**Shipped.** The API exposes incremental assistant text during an in-flight job by extending the existing **202 + poll** flow. There is **no** SSE or WebSocket — the frontend polls `GET …/completion-jobs/:jobId` and reads optional `assistant_partial` while `status` is `running`.
+
+Full backend notes: [Completion partial streaming](#completion-partial-streaming) (debounce, Redis TTL, feature flag).
+
+#### What changed vs the pre-partial API
+
+| Area | Before | Now |
+|------|--------|-----|
+| `POST …/completions` | **202** + `{ id, status, chat_id }` | **Unchanged** |
+| Poll while `pending` / early `running` | `{ id, status, chat_id }` only | Same until first token; then optional `assistant_partial` |
+| Poll on `complete` | `assistant`, `usage`, `session` | **Unchanged** — no partial fields |
+| Poll on `failed` | `code`, `error` | Same + optional **last** `assistant_partial` (ephemeral) |
+| `GET …/:chatId` during a turn | User line present; **no** assistant line until job completes | **Still true** — partial text exists **only** on the job poll, not in `session.messages` |
+| Client integration | Show a loading placeholder until terminal poll | May render a **local** assistant bubble from `assistant_partial` while polling |
+
+**Additive only:** clients that ignore unknown JSON keys keep working. To opt out server-side (e.g. staging), set `NOVA_COMPLETION_PARTIAL=0` — poll responses revert to the old shape and Bedrock uses non-streaming invoke.
+
+#### New poll fields (frontend contract)
+
+| Field | Type | When present |
+|-------|------|----------------|
+| `assistant_partial` | string | `running` and ≥1 token received; or `failed` if any text was streamed before failure. **Omit** on `pending`, when empty, and on `complete`. |
+| `partial_revision` | integer | Present whenever `assistant_partial` is present. Monotonic per job; use to skip redundant re-renders when unchanged. |
+
+`assistant_partial` is always the **cumulative** assistant reply, not a token delta.
+
+#### Recommended UI pattern
+
+1. **After `POST …/completions` → 202:** show the user message (refresh `GET …/:chatId` or optimistically append locally). Start polling with `jobId`.
+2. **While `pending` or `running` without `assistant_partial`:** show a typing / loading indicator for the assistant (same as before partials shipped).
+3. **When `assistant_partial` appears:** render one **local** assistant bubble bound to `assistant_partial` (do **not** expect it in `session.messages` yet). Update the bubble text on each poll when `partial_revision` changes.
+4. **On `complete`:** stop polling. **Discard** the local partial bubble and render from **`response.session.messages`** (or `response.assistant.content`). Persisted transcript is authoritative.
+5. **On `failed`:** stop polling. Either keep showing the last `assistant_partial` with an error + retry affordance, or clear the bubble — partial is **not** saved server-side until a successful `complete`.
+
+Do **not** append `assistant_partial` into your persisted message list; wait for `complete` (or use `GET …/:chatId` after success).
+
+#### Poll intervals (suggested)
+
+| Job state | Suggested interval |
+|-----------|-------------------|
+| `pending` | 500 ms – 1 s |
+| `running`, no `assistant_partial` yet | 300 – 500 ms |
+| `running`, `assistant_partial` updating | 200 – 400 ms |
+| `complete` or `failed` | Stop polling |
+| HTTP 5xx / network error | Exponential backoff, cap ~5 s |
+
+Compare `partial_revision` (or string length) before updating the DOM.
+
+#### Reload / tab refresh
+
+There is **no** `GET …/active-completion-job` in v1. After **202**, persist in `sessionStorage` (or equivalent):
+
+```javascript
+{ chatId, jobId, client_message_id }
+```
+
+On thread mount: if the stored `chatId` matches, resume polling `GET …/completion-jobs/:jobId` until terminal. Duplicate `POST …/completions` with the same `client_message_id` while still in-flight returns the **same** job id — resume polling; do not create a second assistant bubble.
+
+#### Animation (suggested)
+
+While `running`, prefer a **cursor at the end** of `assistant_partial` and replace text directly each poll. Avoid typewriter animation over text already received via poll.
+
+#### Minimal poll handler sketch
+
+```javascript
+let lastRevision = -1;
+
+async function pollCompletionJob(chatId, jobId) {
+  const res = await fetch(`/api/nova/chat-sessions/${chatId}/completion-jobs/${jobId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const job = await res.json();
+
+  if (job.status === 'running' && job.assistant_partial != null) {
+    if (job.partial_revision !== lastRevision) {
+      lastRevision = job.partial_revision;
+      setInFlightAssistantText(job.assistant_partial); // local UI state only
+    }
+    return 'continue';
+  }
+
+  if (job.status === 'complete') {
+    setTranscriptFromSession(job.session); // replaces in-flight bubble
+    return 'done';
+  }
+
+  if (job.status === 'failed') {
+    // optional: job.assistant_partial + job.error + retry
+    return 'failed';
+  }
+
+  return 'continue'; // pending / running, no partial yet
+}
+```
+
+#### Explicitly not provided to the frontend
+
+- SSE / WebSocket streaming
+- `assistant_partial` on `GET …/:chatId` or in `session.messages` until `complete`
+- Server-enforced poll rate limits
+- Persisted partial text after `failed` (retry starts a **new** job; same `client_message_id` + same `message` does not duplicate the user row)
+
 ### UX tips for the client
 
 - After **201** create, keep `chatId`, **`session.title`**, and use **`session.messages`** for the thread.
 - **Titles:** max **40** characters; server trims. Show list **`title`** without loading the full session; re-list or **GET …/:chatId** after rename or first completion if you want the AI label in the sidebar.
 - On **409**, another turn is already queued or running for this chat; poll the active job or wait before sending a **different** `client_message_id`.
+- **Partial completions:** while a job is `running`, bind a local assistant bubble to poll `assistant_partial`; on `complete`, switch to `session.messages`. See [Frontend: partial completions](#frontend-partial-completions-poll-pseudo-stream).
 - **Summarization** runs in a **background worker**; the chat reply path does not block on it. `summarize_pending` may flicker `true` then `false` after a poll or next completion.
 
 Deeper behavior (Redis keys, worker queue, encryption, Bedrock prompt assembly) is described below in this same document.
@@ -269,6 +392,7 @@ The system is built around a **stateless LLM with stateful application memory la
 | Chat session display title | **Done** — `session.title`, Postgres `chat_sessions.title`, optional create/`PATCH`, Haiku fire-and-forget after first successful completion (`src/utils/novaChatTitleService.js`). |
 | Full transcript vs Bedrock message list | **Done** — After each completion, `session.messages` is the **full** ordered transcript (append user + assistant). The Bedrock request uses **`novaPriorDialogMessagesForBedrock`**: `messages.slice(summary_covered_message_count)` only, so turns already folded into the rolling summary are not duplicated in the model’s `messages` array. |
 | Redis failure → regenerate summary | **Partial** — history reloads from Supabase; rolling summary is whatever was last persisted. **Rolling LLM summarize** runs via worker when enqueued; not automatically replayed on cold Redis rebuild unless a job remains in `nova:summarize:due`. |
+| Completion partial streaming (poll) | **Done** — pseudo-stream via frequent poll + `assistant_partial` on `running`/`failed`; Bedrock streams server-side only. **No SSE/WebSocket.** See [Completion partial streaming](#completion-partial-streaming). Disable with `NOVA_COMPLETION_PARTIAL=0`. |
 
 #### What is still partial, deferred, or not implemented?
 
@@ -276,7 +400,7 @@ The system is built around a **stateless LLM with stateful application memory la
 - **Partial:** **Redis cold / loss** — full message history reloads from Supabase; rolling `summary` is last-persisted only. The summarize worker does not auto-run unless a job remains queued (`nova:summarize:queue` / `nova:summarize:due`). **`summarize_pending` and `summary_covered_message_count` are not faithfully restored from Postgres on hydrate** — `loadNovaChatSessionFromSupabase` resets `summarize_pending` to `false` and derives checkpoint from summary vs messages only; durable flags + reconciliation described in [Total Redis loss](#total-redis-loss-flush-new-cluster-prolonged-outage) are recommendations, not fully implemented.
 - **Planned (not shipped):** [Rolling summary — structured JSON](#rolling-summary--structured-json-planned) (`schema_version` 1: `facts`, `decisions`, `constraints`, `follow_ups`, `open_questions`).
 - **Doc vs code:** [Failure Handling](#failure-handling) “buffer in Redis / retry async persistence” on Supabase failure is an **architectural option**, not the current Nova completion path (today a failed persist surfaces as an error to the client after Bedrock may already have run).
-- **Not implemented:** **Streaming tokens** (SSE/WebSocket) for assistant output; **vector / RAG**, multimodal, encounter-linked sessions — see [Future enhancements](#future-enhancements) and [Implementation open questions](#implementation-open-questions). (**Note:** `client_message_id` on `POST …/completions` is implemented for idempotent / retry semantics.)
+- **Not implemented:** **Client-side streaming** (SSE/WebSocket) for assistant output; vector / RAG, multimodal, encounter-linked sessions — see [Future enhancements](#future-enhancements) and [Implementation open questions](#implementation-open-questions). (**Note:** `client_message_id` on `POST …/completions` is implemented for idempotent / retry semantics.)
 
 ### Chat session title (shipped)
 
@@ -318,6 +442,120 @@ Per-thread **display title** for session lists and the open thread header.
 - [x] `POST` create optional body; `PATCH` `title`; list select + map
 - [x] Haiku title helper + fire-and-forget hook after first successful completion
 - [x] Tests + [Response envelopes](#response-envelopes--http-status-frontend) table updated
+
+---
+
+### Completion partial streaming
+
+**Status: shipped** (API v1). Server-side Bedrock streaming + Redis partial cache; client consumes via poll only.
+
+Expose **incremental assistant text** during an in-flight completion job by extending the existing **202 + poll** flow. **No SSE / WebSocket.** The server invokes Bedrock with **response streaming internally**, debounces accumulated text into Redis, and returns it on **`GET …/completion-jobs/:jobId`** while `status` is `running`. Terminal behavior (`complete` / `failed`) stays compatible with the pre-partial contract.
+
+**Frontend integration:** [Frontend: partial completions](#frontend-partial-completions-poll-pseudo-stream) (recommended starting point for UI work).
+
+#### Rationale
+
+- Polling is resilient on flaky networks (each poll is a stateless authenticated GET).
+- Aligns with the shipped async job model; no long-lived HTTP connections or proxy timeout issues.
+- Additive API change — clients that ignore new fields keep working.
+
+#### Locked decisions
+
+| # | Topic | Decision |
+|---|--------|----------|
+| 1 | **Reload recovery** | **FE `sessionStorage` (option A).** Persist `{ chatId, jobId, client_message_id }` after **202**; on mount, resume polling if job is non-terminal. **No new backend “active job” endpoint in v1.** |
+| 2 | **Failed after partial** | **Option B — FE may keep showing last partial in the UI.** Backend **includes** `assistant_partial` (and `partial_revision`) on **`failed`** poll responses when any text was accumulated; **does not persist** partial to Postgres / `session.messages`. Whether to display or clear that text is a **frontend** choice. |
+| 3 | **In-flight idempotent replay** | **Yes.** Same `client_message_id` while job is `pending`/`running` → **202** with same job id; FE resumes poll and consumes partials. |
+| 4 | **V1 scope** | **API-only** in `enscribe-api`: processor, Redis partial cache, poll payload extension, tests, docs. Frontend UX (animation, pre-first-token spinner, etc.) is **out of scope** for v1. |
+| 5 | **Pre-first-token UX** | **Frontend decision** (out of scope for API v1). |
+| 6 | **Animation** | **Frontend decision** (out of scope for API v1). Suggested: cursor at end of growing text, not full typewriter over already-received partials. |
+| 7 | **Poll intervals** | **Frontend decision** — suggested defaults documented below (guidance only, not enforced by API). |
+| 8 | **Redis write debounce** | **150 ms** between partial writes while Bedrock streams. |
+| 9 | **Partial Redis TTL** | **30 minutes** (or job max duration + buffer). Key deleted on `complete`; expires automatically if job stalls without terminal status. |
+| 10 | **Poll rate limit** | **None** in v1. |
+
+#### API contract
+
+**Unchanged routes**
+
+- `POST /api/nova/chat-sessions/:chatId/completions` — still **202** + `{ id, status, chat_id }` (or **200** idempotent replay when already `complete`).
+- Terminal **`complete`** poll — unchanged: `assistant`, `usage`, full `session` (source of truth for persisted transcript).
+
+**Extended poll response — `GET …/completion-jobs/:jobId`**
+
+While `pending` or `running` (additive fields; omit when not applicable):
+
+```json
+{
+  "id": "<job-uuid>",
+  "status": "pending | running",
+  "chat_id": "<chatId>",
+  "assistant_partial": "<full assistant text accumulated so far>",
+  "partial_revision": 12
+}
+```
+
+| Field | Type | When present |
+|-------|------|----------------|
+| `assistant_partial` | string | `running` and at least one token received; **omit** on `pending` and when empty |
+| `partial_revision` | integer | Monotonic counter incremented on each Redis partial write; FE may skip re-render when unchanged |
+
+On `failed` (extends current shape):
+
+```json
+{
+  "id": "<job-uuid>",
+  "status": "failed",
+  "chat_id": "<chatId>",
+  "code": "NOVA_BEDROCK_FAILED",
+  "error": "Model request failed",
+  "assistant_partial": "<last accumulated text, if any>",
+  "partial_revision": 12
+}
+```
+
+- `assistant_partial` on **`failed`** is **ephemeral** (poll-only); not written to `session.messages`.
+- Retry semantics unchanged: same `client_message_id` + same `message` → new job without duplicating the user row.
+
+On **`complete`** — no partial fields; partial Redis key is deleted. FE should replace any in-flight bubble from **`response.session.messages`**.
+
+#### Backend behavior
+
+1. **`novaChatCompletionProcessor`** calls Bedrock via **`InvokeModelWithResponseStream`** (stream server-side only).
+2. Accumulate text chunks in memory; **debounce Redis writes every 150 ms** (and flush on stream end).
+3. **Redis key:** `nova:completion:partial:{jobId}` — JSON `{ text, revision }` or equivalent; **TTL 30 min**; scoped to job id (RLS on poll still enforced via job row ownership).
+4. **Poll handler:** if job `status` is `running`, read partial from Redis and attach to JSON. If `failed`, attach last partial if key still exists, then delete key.
+5. **On successful `complete`:** persist full assistant message (existing path), update job row, delete partial key.
+6. **Billing / usage:** unchanged — recorded only on successful **`complete`**.
+7. **Feature flag (optional):** `NOVA_COMPLETION_PARTIAL=0` disables partial writes (poll behaves as today).
+
+**PHI / trust model:** partial text in Redis is **plaintext**, same as the hot session cache — user-scoped, short-lived.
+
+#### Frontend guidance (summary)
+
+Normative detail for UI integration lives in [Frontend: partial completions](#frontend-partial-completions-poll-pseudo-stream) at the top of this document. Quick reference:
+
+- **Reload recovery** — after **202**, store `{ chatId, jobId, client_message_id }`; resume poll on mount.
+- **Failed after partial** — optional `assistant_partial` on `failed` poll; not persisted until `complete`.
+- **In-flight replay** — same `client_message_id` → same job id → resume poll; one assistant bubble.
+- **Poll intervals & animation** — see the frontend section above.
+
+#### Explicitly out of scope (v1)
+
+- SSE / WebSocket streaming to the client
+- `GET …/active-completion-job` or `active_completion_job_id` on session GET
+- Server-enforced poll rate limits
+- Persisting partial assistant text on **`failed`**
+- Frontend implementation in this repo
+
+#### Implementation checklist (API v1)
+
+- [x] `claudeStreamModel` in `bedrockClient.js` using `InvokeModelWithResponseStreamCommand`
+- [x] Redis partial read/write helpers + TTL (`src/utils/novaCompletionPartial.js`)
+- [x] Processor: stream → debounced partial writes → flush on end → existing persist path
+- [x] `buildNovaCompletionPollPayload`: attach partial on `running` and `failed`
+- [x] Unit tests (stream chunk parse; poll shape for `running` / `failed` / disabled flag)
+- [x] Update implementation status table in this document
 
 ---
 
@@ -743,7 +981,8 @@ Memory is entirely application-controlled for:
 
 ## Future Enhancements
 
-- **Async Nova completions** — **Shipped:** job table + **202** + poll under `/api/nova/chat-sessions/…`; optional later: dedicated queue workers, SSE push.
+- **Async Nova completions** — **Shipped:** job table + **202** + poll under `/api/nova/chat-sessions/…`; optional later: dedicated queue workers.
+- **Completion partial streaming (poll)** — **Done:** [pseudo-stream via poll](#completion-partial-streaming) (`assistant_partial` while `running`); **not** client SSE/WebSocket. Disable with `NOVA_COMPLETION_PARTIAL=0`.
 - **Chat session title** — **Shipped:** `session.title`, Haiku after first completion, plaintext DB column (`NOVA_TITLE_BEDROCK_MODEL_ID` optional override).
 - Vector database for long-term semantic retrieval
 - Multi-modal inputs (audio, EMR integration)

@@ -12,7 +12,7 @@
     "worker:nova-summarize": "node src/workers/novaSummarizeWorker.js",
     "lint": "eslint .",
     "test": "node tests/runAll.js",
-    "test:unit": "node tests/soapNoteValidator.unit.test.js && node tests/expandDotPhrases.unit.test.js && node tests/novaBedrockChat.unit.test.js && node tests/novaSummarize.unit.test.js && node tests/novaChatTitle.unit.test.js && node tests/billingEntitlements.unit.test.js && node tests/billingStripeSync.unit.test.js && node tests/billingUsage.unit.test.js",
+    "test:unit": "node tests/soapNoteValidator.unit.test.js && node tests/expandDotPhrases.unit.test.js && node tests/novaBedrockChat.unit.test.js && node tests/novaCompletionPartial.unit.test.js && node tests/novaSummarize.unit.test.js && node tests/novaChatTitle.unit.test.js && node tests/billingEntitlements.unit.test.js && node tests/billingStripeSync.unit.test.js && node tests/billingUsage.unit.test.js",
     "test:auth": "node tests/auth.test.js",
     "test:aws": "node tests/aws.test.js",
     "test:dot-phrases": "node tests/dot-phrases.test.js",
@@ -77,6 +77,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
+    "baseline-browser-mapping": "^2.10.38",
     "eslint": "^9",
     "eslint-config-next": "15.4.2",
     "tailwindcss": "^4",

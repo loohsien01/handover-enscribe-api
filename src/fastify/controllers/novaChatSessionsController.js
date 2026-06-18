@@ -20,6 +20,7 @@ import { ensurePersonalOrganization } from '../../services/personalOrganization.
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
 import { novaChatCompletionProcessor } from '../processors/novaChatCompletionProcessor.js';
+import { enrichNovaCompletionPollWithPartial } from '../../utils/novaCompletionPartial.js';
 import { NOVA_CHAT_DEFAULT_TITLE, normalizeNovaChatTitle } from '../../utils/novaChatTitle.js';
 import {
   USAGE_METRICS,
@@ -309,16 +310,20 @@ export async function postNovaChatTokenUsage(request, reply) {
  */
 async function buildNovaCompletionPollPayload(request, redis, userId, chatId, masterKey, job) {
   if (job.status === 'pending' || job.status === 'running') {
-    return { id: job.id, status: job.status, chat_id: chatId };
+    return enrichNovaCompletionPollWithPartial(redis, job, {
+      id: job.id,
+      status: job.status,
+      chat_id: chatId,
+    });
   }
   if (job.status === 'failed') {
-    return {
+    return enrichNovaCompletionPollWithPartial(redis, job, {
       id: job.id,
       status: 'failed',
       chat_id: chatId,
       code: job.error_code || 'NOVA_COMPLETION_FAILED',
       error: job.error_message || 'Completion failed',
-    };
+    });
   }
   const session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
   if (!session) {

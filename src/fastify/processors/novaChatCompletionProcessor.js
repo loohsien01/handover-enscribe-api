@@ -25,7 +25,12 @@ import {
 } from '../../utils/novaChatPersistence.js';
 import * as userSecurityConfigController from '../controllers/userSecurityConfigController.js';
 import { getNovaChatCompletionRequestBody } from '../../utils/claudeRequestBody.js';
-import { claudeInvokeModel } from '../../utils/bedrockClient.js';
+import { claudeInvokeModel, claudeStreamModel } from '../../utils/bedrockClient.js';
+import {
+  createNovaCompletionPartialWriter,
+  deleteNovaCompletionPartial,
+  isNovaCompletionPartialEnabled,
+} from '../../utils/novaCompletionPartial.js';
 import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
 import {
   USAGE_METRICS,
@@ -209,8 +214,17 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
   });
 
   let inv;
+  const partialEnabled = isNovaCompletionPartialEnabled();
+  const partialWriter = partialEnabled ? createNovaCompletionPartialWriter(redis, jobId) : null;
   try {
-    inv = await claudeInvokeModel(reqBody);
+    if (partialEnabled) {
+      inv = await claudeStreamModel(reqBody, {
+        onText: (accumulated) => partialWriter.onText(accumulated),
+      });
+      await partialWriter.flush(inv.text);
+    } else {
+      inv = await claudeInvokeModel(reqBody);
+    }
   } catch (err) {
     console.error('[novaChatCompletionProcessor] Bedrock invoke failed:', err);
     await updateJobRow(supabase, jobId, userId, 'failed', {
@@ -299,6 +313,10 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
     error_message: null,
     completed_at: new Date().toISOString(),
   });
+
+  if (partialEnabled) {
+    await deleteNovaCompletionPartial(redis, jobId);
+  }
 
   setImmediate(() => {
     maybeRunNovaChatTitleAfterFirstCompletion({ userId, chatId, authorizationHeader }).catch((err) => {
