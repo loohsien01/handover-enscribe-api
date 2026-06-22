@@ -22,6 +22,7 @@
     "test:nova-summarize-queue-e2e": "node tests/novaSummarize.queue.e2e.test.js",
     "test:user-profile": "node tests/user-profile.test.js",
     "test:billing-org": "node tests/billing-org.test.js",
+    "test:baa": "node tests/baaStatus.unit.test.js && node tests/baa.test.js",
     "test:billing-usage-limits": "node tests/billing-usage-limits.e2e.test.js",
     "test:patient-encounters": "node tests/patient-encounters.test.js",
     "test:setup": "node tests/setup.test.js",

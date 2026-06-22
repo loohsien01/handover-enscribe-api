@@ -735,3 +735,15 @@ export const billingCheckoutRequestSchema = z
           : 'Invalid planKey. Only "pro" is supported for checkout-session.',
     });
   });
+
+// ============================================================================
+// BAA (Business Associate Addendum)
+// ============================================================================
+
+/**
+ * POST /api/me/baa/accept
+ * version_number optional — when provided, must match the currently active version.
+ */
+export const baaAcceptRequestSchema = z.object({
+  version_number: z.string().min(1).optional(),
+});
