@@ -13,6 +13,20 @@ const SchemaType = {
     STRING: "string"
 };
 
+const SOAP_NOTE_SYSTEM_PREAMBLE =
+    'You are a clinical documentation assistant trained to generate SOAP notes from detailed patient encounters. ' +
+    'Your output must be accurate and avoid omitting important clinical details. ' +
+    'Default: base the note solely on the encounter transcript — summarize clinician speech; do not add clinical content that was not discussed. ' +
+    'Leave fields blank when not discussed. Never use \'•\' symbol - use \'-\' for bullet points instead.';
+
+const SOAP_NOTE_MEDICATION_NAME_EXCEPTION =
+    'Exception (medication names only): Speech-to-text often mistranscribes drug names. This is the only case where you may depart from verbatim transcript wording. ' +
+    'For Medications and medication references in Plan: treat <dotphrase source="doctor">…</dotphrase> text as authoritative; ' +
+    'do not copy obvious mistranscriptions when dose, route, indication, or drug class clearly identifies the intended medication — use standard drug naming instead; ' +
+    'if the intended drug is ambiguous, omit the specific name and document only what is clearly stated, or leave blank; ' +
+    'use a generic drug class only when clearly supported. ' +
+    'This exception applies only to drug-name spelling/normalization — it does not permit adding medications, doses, or plan changes not discussed.';
+
 /**
  * Helper: Escape special characters in template section fields for safe JSON embedding
  * Handles quotes, newlines, backslashes, and other JSON escape sequences
@@ -66,7 +80,7 @@ You MUST return a valid JSON object with this exact structure:
     "HPI": "string - History of Present Illnesses",
     "History": "string - Past medical, surgical, family, and social history",
     "ROS": "string - Review of Systems",
-    "Medications": "string - Current medications",
+    "Medications": "string - Current medications. Apply medication-name exception: do not reproduce obvious ASR misspellings verbatim.",
     "Allergies": "string - Known allergies"
   },
   "Objective": {
@@ -77,7 +91,7 @@ You MUST return a valid JSON object with this exact structure:
     "Other": "string - Other objective findings (vitals, physical exam, lab results)"
   },
   "Assessment": "string - Clinical assessment and diagnosis based on subjective and objective findings",
-  "Plan": "string - Treatment plan, medications, follow-up instructions and next steps. Base solely on transcript - do not include assumptions. Only output data if present in transcript."
+  "Plan": "string - Treatment plan, medications, follow-up instructions and next steps. Base solely on transcript - do not include assumptions. Only output data if present in transcript. Apply medication-name exception for drug names."
 }`;
     }
 
@@ -86,7 +100,7 @@ You MUST return a valid JSON object with this exact structure:
         system: [
             {
                 type: "text",
-                text: "You are a clinical documentation assistant trained to generate SOAP notes from detailed patient encounters. Your output must be accurate and avoid omitting important clinical details. Only output data if present in the transcript, otherwise leave it blank. Never use '•' symbol - use '-' for bullet points instead.",
+                text: `${SOAP_NOTE_SYSTEM_PREAMBLE}\n\n${SOAP_NOTE_MEDICATION_NAME_EXCEPTION}`,
                 cache_control: { type: "ephemeral" }
             },
             {
@@ -104,6 +118,7 @@ ${transcript}
 
 Generate SOAP note. PHI information has been masked for privacy. Example (for reference only): Evan is 105 years old --> {{NAME_1}} is {{AGE_2}} years old.
 Use bullet points (marked by '-' symbols, '•' is invalid symbol) and markdown formatting and "\\n" for clarity.
+For medication names only: apply the system exception for speech-to-text errors — do not copy garbled drug spellings verbatim.
 
 IMPORTANT: Return ONLY valid JSON matching the structure above. Do not include any text before or after the JSON.`
             }

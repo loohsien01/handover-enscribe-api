@@ -36,7 +36,7 @@ const noteTemplateSections = [
   {
     name: 'Example Section',
     layout: 'paragraph',
-    details: 'Treatment plan, medications, follow-up instructions and next steps. Base solely on transcript - do not include assumptions. Only output data if present in transcript.',
+    details: 'Current medications. Apply medication-name exception: speech-to-text often garbles drug names — prefer dotphrase text or standard names when clearly identified; omit or use generic class if ambiguous. Do not add meds not discussed.',
   },
 ];
 

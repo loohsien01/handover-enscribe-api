@@ -66,7 +66,8 @@ const noteTemplateSections = [
   {
     name: 'Medications',
     layout: 'bullet points',
-    details: 'Current medications',
+    details:
+      'Current medications. Apply medication-name exception: speech-to-text often garbles drug names — prefer dotphrase text or standard names when clearly identified; omit or use generic class if ambiguous. Do not add meds not discussed.',
   },
   {
     name: 'Allergies',
@@ -108,7 +109,7 @@ const noteTemplateSections = [
   {
     name: 'Plan',
     layout: 'bullet points',
-    details: 'Treatment plan, medications, follow-up instructions and next steps. Base solely on transcript - do not include assumptions. Only output data if present in transcript.',
+    details: 'Treatment plan, medications, follow-up instructions and next steps. Base solely on transcript - do not include assumptions. Only output data if present in transcript. Apply medication-name exception for drug names.',
   },
   // Billing section
   {

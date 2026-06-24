@@ -4,6 +4,7 @@ import { resolveNovaBedrockModelId } from '../src/utils/bedrockClaudeModels.js';
 import {
   getNovaChatCompletionRequestBody,
   getNovaSummarizeDeltaRequestBody,
+  getSoapNoteRequestBody,
 } from '../src/utils/claudeRequestBody.js';
 
 test('resolveNovaBedrockModelId returns defaults for presets', () => {
@@ -66,4 +67,13 @@ test('getNovaChatCompletionRequestBody hoists system-role history into system bl
     { role: 'user', content: 'Q' },
     { role: 'user', content: 'Follow-up' },
   ]);
+});
+
+test('getSoapNoteRequestBody includes medication-name exception in system prompt', () => {
+  const body = getSoapNoteRequestBody('Doctor: continue met Foreman ten milligrams daily.');
+  const systemText = body.system.map((b) => b.text).join('\n');
+  assert.ok(systemText.includes('Default: base the note solely on the encounter transcript'));
+  assert.ok(systemText.includes('Exception (medication names only)'));
+  assert.ok(systemText.includes('<dotphrase source="doctor">'));
+  assert.ok(String(body.messages[0].content).includes('medication names only'));
 });
