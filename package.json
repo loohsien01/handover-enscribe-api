@@ -19,6 +19,7 @@
     "test:nova-chat-sessions": "node tests/nova-chat-sessions.test.js",
     "test:nova-chat-sessions-completions": "node tests/nova-chat-sessions-completions.test.js",
     "test:nova-chat-sessions-completions-e2e": "node tests/nova-chat-sessions-completions.e2e.test.js",
+    "test:nova-save-visit-prep-e2e": "node tests/nova-chat-sessions-save-visit-prep.e2e.test.js",
     "test:nova-summarize-queue-e2e": "node tests/novaSummarize.queue.e2e.test.js",
     "test:user-profile": "node tests/user-profile.test.js",
     "test:billing-org": "node tests/billing-org.test.js",
@@ -38,6 +39,7 @@
     "test:note-templates": "node tests/note-templates.test.js",
     "test:note-templates-complete": "node tests/note-templates-complete.test.js",
     "test:note-template-section-orders": "node tests/note-template-section-orders.test.js",
+    "test:visit-preps": "node tests/visit-preps.test.js",
     "test:cleanup": "node tests/cleanup.test.js",
     "migrate:apply-psql": "node sql/scripts/apply-psql-migration.mjs"
   },

@@ -27,6 +27,7 @@ import {
   UsageLimitExceededError,
   assertUsageAllowedForUser,
 } from '../../utils/billingUsage.js';
+import { loadVisitPrepForPoll } from './visitPrepsController.js';
 
 async function redisOr503(reply) {
   const redis = await getRedisClient();
@@ -306,7 +307,7 @@ export async function postNovaChatTokenUsage(request, reply) {
  * @param {string} userId
  * @param {string} chatId
  * @param {Buffer} masterKey
- * @param {{ id: string, status: string, usage?: object | null, error_code?: string | null, error_message?: string | null }} job
+ * @param {{ id: string, status: string, usage?: object | null, visit_prep_id?: string | null, error_code?: string | null, error_message?: string | null }} job
  */
 async function buildNovaCompletionPollPayload(request, redis, userId, chatId, masterKey, job) {
   if (job.status === 'pending' || job.status === 'running') {
@@ -317,6 +318,23 @@ async function buildNovaCompletionPollPayload(request, redis, userId, chatId, ma
     });
   }
   if (job.status === 'failed') {
+    if (job.error_code === 'VISIT_PREP_PERSIST_FAILED') {
+      const session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
+      const last = session?.messages?.[session.messages.length - 1];
+      const assistantContent = last?.role === 'assistant' ? last.content : '';
+      return enrichNovaCompletionPollWithPartial(redis, job, {
+        id: job.id,
+        status: 'failed',
+        chat_id: chatId,
+        code: job.error_code,
+        error: job.error_message || 'Failed to persist visit prep',
+        assistant: { role: 'assistant', content: assistantContent },
+        usage: job.usage ?? null,
+        session: session ?? null,
+        visit_prep_id: null,
+      });
+    }
+
     return enrichNovaCompletionPollWithPartial(redis, job, {
       id: job.id,
       status: 'failed',
@@ -340,7 +358,9 @@ async function buildNovaCompletionPollPayload(request, redis, userId, chatId, ma
   }
   const last = session.messages?.[session.messages.length - 1];
   const assistantContent = last?.role === 'assistant' ? last.content : '';
-  return {
+
+  /** @type {Record<string, unknown>} */
+  const payload = {
     id: job.id,
     status: 'complete',
     chat_id: chatId,
@@ -348,16 +368,27 @@ async function buildNovaCompletionPollPayload(request, redis, userId, chatId, ma
     usage: job.usage ?? null,
     session,
   };
+
+  if (job.visit_prep_id) {
+    const supabase = getSupabaseClient(request.headers.authorization);
+    const visitPrep = await loadVisitPrepForPoll(supabase, userId, job.visit_prep_id, masterKey);
+    payload.visit_prep_id = job.visit_prep_id;
+    if (visitPrep) {
+      payload.visit_prep = visitPrep;
+    }
+  }
+
+  return payload;
 }
 
 /**
  * POST /api/nova/chat-sessions/:chatId/completions
- * Enqueues one async Bedrock turn: persists the user message on first attempt, returns **202** + job id;
- * poll **GET** `/api/nova/chat-sessions/:chatId/completion-jobs/:jobId`. Idempotent replay of the same
- * `client_message_id` after **complete** returns **200** with the final payload (no second Bedrock call).
- * After a **failed** job, the same `client_message_id` + same `message` retries without appending a duplicate user row.
+ * @param {import('fastify').FastifyRequest} request
+ * @param {import('fastify').FastifyReply} reply
+ * @param {{ saveVisitPrep?: boolean }} [completionOptions]
  */
-export async function postNovaChatCompletion(request, reply) {
+export async function postNovaChatCompletion(request, reply, completionOptions = {}) {
+  const { saveVisitPrep = false } = completionOptions;
   const redis = await redisOr503(reply);
   if (!redis) return;
 
@@ -388,7 +419,7 @@ export async function postNovaChatCompletion(request, reply) {
 
   const { data: doneJob } = await supabase
     .from(novaChatCompletionJobsTable)
-    .select('id, status, usage, error_code, error_message')
+    .select('id, status, usage, visit_prep_id, error_code, error_message')
     .eq('chat_id', chatId)
     .eq('user_id', userId)
     .eq('client_message_id', body.client_message_id)
@@ -549,8 +580,9 @@ export async function postNovaChatCompletion(request, reply) {
   await novaSessionSave(redis, userId, session, ttl);
 
   const authHeader = request.headers.authorization;
+  const processorOptions = saveVisitPrep ? { saveVisitPrep: true } : {};
   setImmediate(() => {
-    novaChatCompletionProcessor(newJob.id, userId, chatId, authHeader).catch((err) => {
+    novaChatCompletionProcessor(newJob.id, userId, chatId, authHeader, processorOptions).catch((err) => {
       console.error(`[novaChatCompletionProcessor] Unhandled error for job ${newJob.id}:`, err);
     });
   });
@@ -560,6 +592,13 @@ export async function postNovaChatCompletion(request, reply) {
     status: 'pending',
     chat_id: chatId,
   });
+}
+
+/**
+ * POST /api/nova/chat-sessions/:chatId/completions-and-save-visit-prep
+ */
+export async function postNovaChatCompletionAndSaveVisitPrep(request, reply) {
+  return postNovaChatCompletion(request, reply, { saveVisitPrep: true });
 }
 
 /**
@@ -575,7 +614,7 @@ export async function getNovaChatCompletionJob(request, reply) {
 
   const { data: job, error } = await supabase
     .from(novaChatCompletionJobsTable)
-    .select('id, chat_id, status, usage, error_code, error_message')
+    .select('id, chat_id, status, usage, visit_prep_id, error_code, error_message')
     .eq('id', jobId)
     .eq('user_id', userId)
     .maybeSingle();
@@ -592,4 +631,50 @@ export async function getNovaChatCompletionJob(request, reply) {
 
   const payload = await buildNovaCompletionPollPayload(request, redis, userId, chatId, masterKey, job);
   return reply.send(payload);
+}
+
+/**
+ * GET /api/nova/chat-sessions/:chatId/completion-jobs/:jobId/visit-prep
+ */
+export async function getNovaChatCompletionJobVisitPrep(request, reply) {
+  const redis = await redisOr503(reply);
+  if (!redis) return;
+
+  const userId = request.user.id;
+  const { chatId, jobId } = request.params;
+  const supabase = getSupabaseClient(request.headers.authorization);
+
+  const { data: job, error } = await supabase
+    .from(novaChatCompletionJobsTable)
+    .select('id, chat_id, visit_prep_id')
+    .eq('id', jobId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error || !job || job.chat_id !== chatId) {
+    return reply.status(404).send({
+      error: 'Job not found',
+      code: 'NOVA_COMPLETION_JOB_NOT_FOUND',
+    });
+  }
+
+  if (!job.visit_prep_id) {
+    return reply.status(404).send({
+      error: 'No visit prep saved for this job',
+      code: 'VISIT_PREP_NOT_FOUND',
+    });
+  }
+
+  const masterKey = await userMasterKeyOr500(request, reply);
+  if (!masterKey) return;
+
+  const visitPrep = await loadVisitPrepForPoll(supabase, userId, job.visit_prep_id, masterKey);
+  if (!visitPrep) {
+    return reply.status(404).send({
+      error: 'Visit prep not found',
+      code: 'VISIT_PREP_NOT_FOUND',
+    });
+  }
+
+  return reply.send(visitPrep);
 }

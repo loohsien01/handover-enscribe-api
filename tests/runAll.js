@@ -16,6 +16,7 @@ import { runRecordingsTests } from './recordings.test.js';
 import { runTranscriptsTests } from './transcripts.test.js';
 import { runSoapNotesTests } from './soap-notes.test.js';
 import { runNotesTests } from './notes.test.js';
+import { runVisitPrepsTests } from './visit-preps.test.js';
 import { runNoteTemplateSectionsTests } from './note-template-sections.test.js';
 import { runNoteTemplateTests } from './note-templates.test.js';
 import { runAwsTests } from './aws.test.js';
@@ -231,6 +232,25 @@ async function runAllTests() {
   } catch (error) {
     console.error('❌ Notes tests failed:', error.message);
     results.push({ suite: 'Notes', status: 'failed', error: error.message });
+  }
+
+  // Run Visit Preps Tests
+  try {
+    console.log('\n' + '-'.repeat(70));
+    console.log('TEST SUITE 5.55: VISIT PREPS API');
+    console.log('-'.repeat(70) + '\n');
+    const visitPrepsResult = await runVisitPrepsTests();
+    results.push({
+      suite: 'Visit Preps',
+      status: 'completed',
+      tests: visitPrepsResult?.total || 0,
+      passed: visitPrepsResult?.passed || 0,
+      failed: visitPrepsResult?.failed || 0,
+      passRate: visitPrepsResult?.passRate || '0%',
+    });
+  } catch (error) {
+    console.error('❌ Visit Preps tests failed:', error.message);
+    results.push({ suite: 'Visit Preps', status: 'failed', error: error.message });
   }
 
   // Run Note Template Sections Tests

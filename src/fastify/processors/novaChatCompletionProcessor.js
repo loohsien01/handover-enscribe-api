@@ -40,6 +40,7 @@ import {
   resolveBillingContext,
 } from '../../utils/billingUsage.js';
 import { maybeRunNovaChatTitleAfterFirstCompletion } from '../../utils/novaChatTitleService.js';
+import { createVisitPrep } from '../controllers/visitPrepsController.js';
 
 /**
  * @param {import('redis').RedisClientType} redis
@@ -90,8 +91,10 @@ async function updateJobRow(supabase, jobId, userId, status, extra = {}) {
  * @param {string} userId
  * @param {string} chatId
  * @param {string} authorizationHeader - e.g. `Bearer <jwt>`
+ * @param {{ saveVisitPrep?: boolean }} [options]
  */
-export async function novaChatCompletionProcessor(jobId, userId, chatId, authorizationHeader) {
+export async function novaChatCompletionProcessor(jobId, userId, chatId, authorizationHeader, options = {}) {
+  const { saveVisitPrep = false } = options;
   const supabase = getSupabaseClient(authorizationHeader);
 
   const { data: claimed, error: claimErr } = await supabase
@@ -298,14 +301,58 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
       }
     : null;
 
-  await recordUsageSuccess({
-    organizationId: orgRow.organization_id,
-    userId,
-    metric: USAGE_METRICS.NOVA_RESPONSE,
-    idempotencyKey: `nova_response:job:${jobId}`,
-    metadata: { chat_id: chatId, job_id: jobId },
-    bypassUsageLimits: billingCtx.bypassUsageLimits,
-  });
+  const recordNovaUsage = () =>
+    recordUsageSuccess({
+      organizationId: orgRow.organization_id,
+      userId,
+      metric: USAGE_METRICS.NOVA_RESPONSE,
+      idempotencyKey: `nova_response:job:${jobId}`,
+      metadata: { chat_id: chatId, job_id: jobId },
+      bypassUsageLimits: billingCtx.bypassUsageLimits,
+    });
+
+  if (saveVisitPrep) {
+    const createResult = await createVisitPrep(supabase, userId, masterKey, {
+      text: assistantText,
+    });
+
+    if (!createResult.success) {
+      console.error('[novaChatCompletionProcessor] createVisitPrep failed:', createResult.error);
+      await recordNovaUsage();
+      await updateJobRow(supabase, jobId, userId, 'failed', {
+        error_code: 'VISIT_PREP_PERSIST_FAILED',
+        error_message: createResult.error || 'Failed to persist visit prep',
+        usage: usagePayload,
+        completed_at: new Date().toISOString(),
+      });
+      if (partialEnabled) {
+        await deleteNovaCompletionPartial(redis, jobId);
+      }
+      return;
+    }
+
+    await recordNovaUsage();
+    await updateJobRow(supabase, jobId, userId, 'complete', {
+      visit_prep_id: createResult.visitPrep.id,
+      usage: usagePayload,
+      error_code: null,
+      error_message: null,
+      completed_at: new Date().toISOString(),
+    });
+
+    if (partialEnabled) {
+      await deleteNovaCompletionPartial(redis, jobId);
+    }
+
+    setImmediate(() => {
+      maybeRunNovaChatTitleAfterFirstCompletion({ userId, chatId, authorizationHeader }).catch((err) => {
+        console.error(`[novaChatTitle] Unhandled error for chat ${chatId}:`, err);
+      });
+    });
+    return;
+  }
+
+  await recordNovaUsage();
 
   await updateJobRow(supabase, jobId, userId, 'complete', {
     usage: usagePayload,

@@ -6,6 +6,8 @@
  *
  * Bedrock E2E (2× completions + AI title): `tests/nova-chat-sessions-completions.e2e.test.js`
  * (`npm run test:nova-chat-sessions-completions-e2e`).
+ * Save visit prep E2E: `tests/nova-chat-sessions-save-visit-prep.e2e.test.js`
+ * (`npm run test:nova-save-visit-prep-e2e`).
  *
  * Env: `API_BASE_URL`, `REDIS_URL`, `TEST_ACCOUNT_*`.
  */
@@ -79,7 +81,7 @@ export async function runNovaChatSessionsCompletionsTests() {
   });
 
   if (!accessToken) {
-    console.warn('\n⚠️  Skipping 2–9: no access token\n');
+    console.warn('\n⚠️  Skipping 2–13: no access token\n');
     runner.printResults();
     runner.saveResults('nova-chat-sessions-completions-tests.json');
     return runner.getSummary();
@@ -168,6 +170,55 @@ export async function runNovaChatSessionsCompletionsTests() {
     customValidator: (data) => {
       if (data?.code !== 'NOVA_SESSION_NOT_FOUND') {
         return { passed: false, message: `Expected code NOVA_SESSION_NOT_FOUND, got ${data?.code}` };
+      }
+      return { passed: true, message: '' };
+    },
+  });
+
+  await runner.test('10 — save-visit-prep without auth', {
+    testNumber: 10,
+    method: 'POST',
+    endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions-and-save-visit-prep`,
+    body: { model: 'sonnet', message: 'prep', client_message_id: randomUUID() },
+    expectedStatus: 401,
+    expectedFields: ['error'],
+  });
+
+  await runner.test('11 — save-visit-prep invalid chatId', {
+    testNumber: 11,
+    method: 'POST',
+    endpoint: '/api/nova/chat-sessions/not-a-uuid/completions-and-save-visit-prep',
+    headers: authHeaders,
+    body: { model: 'sonnet', message: 'prep', client_message_id: randomUUID() },
+    expectedStatus: 400,
+    expectedFields: ['error'],
+  });
+
+  await runner.test('12 — save-visit-prep missing client_message_id', {
+    testNumber: 12,
+    method: 'POST',
+    endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions-and-save-visit-prep`,
+    headers: authHeaders,
+    body: { model: 'sonnet', message: 'prep' },
+    expectedStatus: 400,
+    expectedFields: ['error'],
+  });
+
+  await runner.test('13 — save-visit-prep unknown session', {
+    testNumber: 13,
+    method: 'POST',
+    endpoint: `/api/nova/chat-sessions/${UNKNOWN_CHAT_ID}/completions-and-save-visit-prep`,
+    headers: authHeaders,
+    body: {
+      model: 'sonnet',
+      message: 'prep instructions',
+      client_message_id: randomUUID(),
+    },
+    expectedStatus: 404,
+    expectedFields: ['error', 'code'],
+    customValidator: (data) => {
+      if (data?.code !== 'NOVA_SESSION_NOT_FOUND') {
+        return { passed: false, message: `Expected NOVA_SESSION_NOT_FOUND, got ${data?.code}` };
       }
       return { passed: true, message: '' };
     },
