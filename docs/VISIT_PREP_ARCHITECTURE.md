@@ -10,7 +10,7 @@ AI-assisted visit preparation from past clinical notes. The **Visit prep page (F
 
 | Deliverable | Scope | Status |
 |-------------|--------|--------|
-| **Database** | `visit_preps` table + `nova_chat_completion_jobs.visit_prep_id`, RLS | 🔲 Not started |
+| **Database** | `visit_preps` table (`chat_id`) + `nova_chat_completion_jobs.visit_prep_id`, RLS | 🔲 Not started |
 | **API — CRUD** | `GET` / `POST` / `PATCH` / `DELETE` `/api/visit-preps` | 🔲 Not started |
 | **API — Nova** | `POST …/completions-and-save-visit-prep` + existing completion poll | 🔲 Not started |
 | **API — Nova title** | `extract_title_details` + `visit_prep_title_details` poll field (ephemeral) | ✅ Shipped |
@@ -19,7 +19,7 @@ AI-assisted visit preparation from past clinical notes. The **Visit prep page (F
 
 **Backend deliverables (planned, v1):**
 
-- Migration: `sql/migrations/YYYYMMDD_visit_preps.sql`
+- Migration: `sql/migrations/YYYYMMDD_visit_preps.sql` (includes **`chat_id uuid`** nullable)
 - Migration: `sql/migrations/YYYYMMDD_nova_chat_completion_jobs_visit_prep_id.sql`
 - RLS: `sql/policies/visit_preps_RLS.sql`
 - Controller: `src/fastify/controllers/visitPrepsController.js` — exports **`createVisitPrep`** (and update/get/list/delete)
@@ -36,7 +36,8 @@ AI-assisted visit preparation from past clinical notes. The **Visit prep page (F
 1. Let clinicians select **two or more** past visit charts (enscribe notes), add free-form instructions (output format, sections, tone), and generate a visit prep document via Nova.
 2. Persist each generated prep as an encrypted **`text`** string (same opaque-string model as [`notes.text`](./NOTES_API.md)), retained **indefinitely**.
 3. Reuse Nova chat for **follow-up** refinement in the same session after turn 1 — no separate chat product or extra API phase.
-4. Keep **`createVisitPrep`** as the single write path for new rows; the Nova processor calls it when the save route was used; the public **`POST /api/visit-preps`** handler calls the same function (manual create / ops / future callers).
+4. Keep **`createVisitPrep`** as the single write path for new rows; the Nova processor calls it when the save route was used; the public **`POST /api/visit-preps`** handler calls the same function (manual recovery / rare direct create — still requires an existing Nova chat).
+5. Every visit prep row is tied to a Nova chat session via **`visit_preps.chat_id`** — visit prep is always generated from (or recovered into) a **`chat_sessions`** thread; the visit-prep page lists **`visit_preps`**, not all Nova chats.
 
 **Non-goals (v1):**
 
@@ -44,7 +45,7 @@ AI-assisted visit preparation from past clinical notes. The **Visit prep page (F
 - No JSON schema on the **visit prep document** (main Sonnet assistant output) — clinicians control format via natural-language instructions in the user message. (Separate Haiku JSON extraction for **session title fields** is documented under [Session title](#session-title).)
 - No `patient_encounter_id` or encounter linkage on `visit_preps`.
 - No `visit_prep_templates` table (phase 2).
-- No `source_note_ids` or `nova_chat_id` on `visit_preps` — input charts live only in the Nova user `message`; chat linkage is on **`nova_chat_completion_jobs`** (`visit_prep_id` + `chat_id`).
+- No `source_note_ids` on `visit_preps` — input charts live only in the Nova user `message`.
 - No second job table or poll URL — reuse `nova_chat_completion_jobs` and **`GET …/completion-jobs/:jobId`**.
 
 ---
@@ -63,6 +64,15 @@ AI-assisted visit preparation from past clinical notes. The **Visit prep page (F
 Job → artifact link lives on the **high-volume job row** as a nullable UUID (`visit_prep_id`), same as `note_id` on `jobs`. Most completion rows keep `visit_prep_id` null; that is expected and cheap in Postgres.
 
 **No** `persist_visit_prep` boolean on `nova_chat_completion_jobs`. **No** `nova_completion_job_id` on `visit_preps` — redundant once the job stores `visit_prep_id`.
+
+**Dual link (both kept):**
+
+| Column | Table | Direction | Purpose |
+|--------|-------|-----------|---------|
+| `chat_id` | `visit_preps` | prep → chat | Visit-prep page list; open transcript on click (`GET …/chat-sessions/:chatId`) |
+| `visit_prep_id` | `nova_chat_completion_jobs` | job → prep | Completion poll, idempotency replay, “this save job created this row” |
+
+Resolve prep → chat via **`visit_preps.chat_id`** (primary for UI). Job row is still the source of truth for which completion created which prep on the save route.
 
 ---
 
@@ -96,6 +106,13 @@ Visit prep page (FE)
   │     until terminal (complete or failed); re-poll for visit_prep_title_details when async
   │
   └─ Later: POST …/completions (normal) in same chatId for follow-up questions
+
+Visit prep page (returning user)
+  │
+  ├─ GET /api/visit-preps              recent rows (each includes chat_id)
+  ├─ User selects a prep
+  ├─ GET /api/visit-preps/:id            prep text (+ chat_id)
+  └─ GET /api/nova/chat-sessions/:chatId transcript for follow-up / context
 ```
 
 **Turn 1:** `completions-and-save-visit-prep` only.  
@@ -123,8 +140,10 @@ If **`createVisitPrep`** fails after Bedrock and chat persist succeed, mark job 
 Implementation: extend **`novaChatCompletionProcessor(jobId, userId, chatId, authorizationHeader, options?)`** where `options.saveVisitPrep` is set only when the save route enqueued the job (same pattern as `promptLlmProcessor(…, { persistEncounterName })`). Processor order on the save path:
 
 1. Bedrock → append assistant to session → **persist session** (same as normal completion).
-2. **`createVisitPrep`** — on failure → **`failed`** / `VISIT_PREP_PERSIST_FAILED` (do **not** set `visit_prep_id`).
+2. **`createVisitPrep({ text, chatId })`** — on failure → **`failed`** / `VISIT_PREP_PERSIST_FAILED` (do **not** set `visit_prep_id`).
 3. On success → set **`visit_prep_id`** on job → **`recordUsageSuccess`** (`nova_response`) → **`status: 'complete'`**.
+
+The processor always passes **`chatId`** from its closure (session persist already succeeded). **`chat_id`** on the new `visit_preps` row matches the URL `:chatId`.
 
 Bill **`nova_response`** when Bedrock + session persist succeed, **even if** step 2 fails (the model turn completed; save is a separate step). Persist **`usage`** on the job row before marking **`failed`** for `VISIT_PREP_PERSIST_FAILED` so the failure poll can return it.
 
@@ -157,16 +176,24 @@ The model returns **free-form text** (markdown, bullets, tables, etc.) per those
 |--------|------|--------|
 | `id` | `uuid` | PK, `gen_random_uuid()` |
 | `user_id` | `uuid` | Owner; `NOT NULL`, references `auth.users` |
+| `chat_id` | `uuid` | Nova thread (`chat_sessions.id`). **Required on all API creates**; column is **nullable in Postgres** (service-role / ops inserts may omit). **No FK** (logical ref). |
 | `encrypted_text` | `text` | Ciphertext of prep body; user master key. Nullable if empty. |
 | `text_iv` | `text` | IV for text encryption. Nullable when empty. |
 | `created_at` | `timestamptz` | `DEFAULT now()` |
 | `updated_at` | `timestamptz` | `DEFAULT now()`; bump on PATCH |
 
-**Not on `visit_preps`:** `source_note_ids` (prior charts are plain text in the Nova user message only). **`nova_chat_id`** (use `nova_chat_completion_jobs.chat_id` where `visit_prep_id` matches).
+**Not on `visit_preps`:** `source_note_ids` (prior charts are plain text in the Nova user message only).
+
+**`chat_id` rules:**
+
+- **Product invariant:** a visit prep row always belongs to an existing Nova chat — there is no visit prep without a chat thread.
+- **API (`POST /api/visit-preps` and Nova save processor):** **`chat_id` is required** — Zod rejects missing/invalid UUID; handler should verify the session exists and is owned by the caller before insert.
+- **Postgres:** column **nullable** — no `NOT NULL` constraint so service-role scripts are not blocked; all authenticated API paths still mandate it.
 
 **Indexes (suggested):**
 
 - `visit_preps_user_id_created_at_idx` on `(user_id, created_at DESC)`
+- `visit_preps_chat_id_idx` on `(chat_id)` where `chat_id IS NOT NULL` (optional; useful if joining preps to sessions)
 
 **DDL sketch:**
 
@@ -174,6 +201,7 @@ The model returns **free-form text** (markdown, bullets, tables, etc.) per those
 CREATE TABLE public.visit_preps (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
+  chat_id uuid,
   encrypted_text text,
   text_iv text,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -182,11 +210,15 @@ CREATE TABLE public.visit_preps (
 
 CREATE INDEX visit_preps_user_id_created_at_idx
   ON public.visit_preps (user_id, created_at DESC);
+
+CREATE INDEX visit_preps_chat_id_idx
+  ON public.visit_preps (chat_id)
+  WHERE chat_id IS NOT NULL;
 ```
 
 **Retention:** indefinite — no purge job tied to encounter archive.
 
-**Regeneration:** each successful save completion → **new row** via **`createVisitPrep`**. User edits → **`PATCH`** on existing row.
+**Regeneration:** each successful save completion → **new row** via **`createVisitPrep`** (same **`chat_id`** if the user re-saves in the same thread). User edits → **`PATCH`** on existing row (does not change **`chat_id`**).
 
 ### Extend: `public.nova_chat_completion_jobs`
 
@@ -235,13 +267,13 @@ Helpers: reuse `encryptNoteText` / `decryptNoteText` from `src/utils/encryptionU
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
  * @param {Buffer} masterKey
- * @param {{ text: string }} input
+ * @param {{ text?: string, chatId: string }} input — `chatId` required (processor + POST handler)
  * @returns {Promise<{ success: boolean, visitPrep?: { id: string, … }, error?: string, code?: string }>}
  */
 export async function createVisitPrep(supabase, userId, masterKey, input) { … }
 ```
 
-Processor flow after **`createVisitPrep`** returns `visitPrep.id`:
+Before insert, verify **`chat_sessions`** row exists for **`input.chatId`** and **`user_id`** (404 / validation error if not). Processor flow after **`createVisitPrep`** returns `visitPrep.id`:
 
 1. `UPDATE nova_chat_completion_jobs SET visit_prep_id = $id WHERE id = $jobId`
 2. `UPDATE … SET status = 'complete', …`
@@ -250,18 +282,20 @@ Public route handler validates body, unwraps master key, calls **`createVisitPre
 
 ### `POST /api/visit-preps`
 
-Create a row directly (without Nova). Primary production path is completions-and-save-visit-prep → processor → **`createVisitPrep`**.
+Create a row without running Bedrock again (manual recovery or rare direct create). **Primary production path** is completions-and-save-visit-prep → processor → **`createVisitPrep`**. Even manual creates **must** reference an existing Nova chat — visit prep is never a standalone artifact.
 
 **Request:**
 
 ```json
 {
+  "chat_id": "660e8400-e29b-41d4-a716-446655440001",
   "text": "Visit prep content…"
 }
 ```
 
 | Field | Type | Required | Notes |
 |-------|------|----------|--------|
+| `chat_id` | UUID | **Yes** | Must match an existing owned **`chat_sessions`** row |
 | `text` | `string` | No | Defaults to `""`; encrypted when non-empty |
 
 **Response 201:**
@@ -270,6 +304,7 @@ Create a row directly (without Nova). Primary production path is completions-and
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "user_id": "…",
+  "chat_id": "660e8400-e29b-41d4-a716-446655440001",
   "text": "Visit prep content…",
   "created_at": "2026-06-23T14:30:00.000Z",
   "updated_at": "2026-06-23T14:30:00.000Z"
@@ -278,11 +313,11 @@ Create a row directly (without Nova). Primary production path is completions-and
 
 ### `GET /api/visit-preps`
 
-List own rows (paginated: `limit`, `offset`, `sortBy`, `order` — mirror notes list patterns).
+List own rows (paginated: `limit`, `offset`, `sortBy`, `order` — mirror notes list patterns). Each item includes **`chat_id`**. Optional enhancement: join **`chat_sessions.title`** as **`chat_title`** for sidebar labels (plaintext; no message decrypt).
 
 ### `GET /api/visit-preps/:id`
 
-Single row with decrypted **`text`**.
+Single row with decrypted **`text`** and **`chat_id`**.
 
 ### `PATCH /api/visit-preps/:id`
 
@@ -347,6 +382,7 @@ Unchanged route. When job **`status`** is **`complete`** and **`visit_prep_id`**
   "visit_prep_id": "550e8400-e29b-41d4-a716-446655440000",
   "visit_prep": {
     "id": "550e8400-e29b-41d4-a716-446655440000",
+    "chat_id": "<chatId>",
     "text": "…",
     "created_at": "…",
     "updated_at": "…"
@@ -388,7 +424,7 @@ Unlike generic Nova **`failed`** polls (which return only `code` / `error`), thi
 
 Implement in **`buildNovaCompletionPollPayload`**: when `job.status === 'failed'` and `error_code === 'VISIT_PREP_PERSIST_FAILED'`, load session (same path as **`complete`**) and attach **`assistant`**, **`session`**, and **`usage`** from the job row. **`visit_prep_id`** absent or null. **`visit_prep_title_details`** may still appear when extraction completed (same ephemeral cache as **`complete`** polls).
 
-**Fallback (always available):** `GET …/:chatId` after failure — last message in **`session.messages`** is the assistant reply. Manual save: **`POST /api/visit-preps`** with `{ "text": "<assistant.content>" }`.
+**Fallback (always available):** `GET …/:chatId` after failure — last message in **`session.messages`** is the assistant reply. Manual save: **`POST /api/visit-preps`** with `{ "chat_id": "<chatId>", "text": "<assistant.content>" }` ( **`chat_id`** from failure poll or URL).
 
 Other failure codes (`NOVA_BEDROCK_FAILED`, `NOVA_SESSION_PERSIST_FAILED`, etc.) keep the existing Nova **`failed`** shape (no **`session`** unless partial streaming applied).
 
@@ -402,7 +438,7 @@ This repo is API-only; document expected client behavior for the FE repo:
 |---------|----------|
 | **Main chat** | Treat as a **successful Nova turn** — render **`assistant.content`** from the failure poll (or **`GET …/:chatId`**). Follow-up **`POST …/completions`** works in the same thread. |
 | **Visit prep sidebar / panel** | Show **save failed** (`code`, `error`). No **`visit_prep_id`**. |
-| **Recovery** | User copies or confirms assistant text → **`POST /api/visit-preps`** (manual create). No requirement to retry **`completions-and-save-visit-prep`** unless the product prefers automatic retry. |
+| **Recovery** | User copies or confirms assistant text → **`POST /api/visit-preps`** with **`chat_id`** from the failure poll / URL + assistant **`text`**. No requirement to retry **`completions-and-save-visit-prep`** unless the product prefers automatic retry. |
 
 Contrast with prompt-llm **generate-and-save-note**: job stays **`complete`** with SOAP on the job row when encounter save fails (**fail-open**). Visit prep save is **fail-closed** on job status, but the API still exposes the Nova output for manual **`POST /api/visit-preps`**.
 
@@ -466,7 +502,7 @@ This API repo documents the poll contract only. Expected FE behavior (not implem
 
 After turn 1, the FE uses **`POST …/completions`** in the **same `chatId`**. Rolling summary, partial streaming, billing, and transcript rules unchanged.
 
-The FE may copy assistant text via **`POST /api/visit-preps`**, or run another **`completions-and-save-visit-prep`** with a new `client_message_id` — product choice; v1 does not auto-create rows on follow-up turns.
+The FE may copy assistant text via **`POST /api/visit-preps`** (with the same **`chat_id`**), or run another **`completions-and-save-visit-prep`** with a new `client_message_id` — product choice; v1 does not auto-create rows on follow-up turns.
 
 ---
 
@@ -502,7 +538,8 @@ CRUD + “use template” on visit prep page. Does not change Nova save contract
 2. **No schema validation on model output:** Treat assistant `content` as opaque string for persistence.
 3. **Plain-text input only:** Prior charts are pasted into the Nova user `message`; prep **`text`** is the durable artifact.
 4. **Logical `visit_prep_id` on job:** No FK to `visit_preps`; prep row may be deleted while job row retains id (ops should treat as dangling ref).
-5. **HTTPS + Bearer JWT:** Same as all `/api` routes.
+5. **Logical `chat_id` on prep:** No FK to `chat_sessions`; verify ownership on create; chat may be deleted while prep row retains id (UI should handle missing session **404**).
+6. **HTTPS + Bearer JWT:** Same as all `/api` routes.
 
 ---
 
@@ -510,20 +547,21 @@ CRUD + “use template” on visit prep page. Does not change Nova save contract
 
 ### Migrations
 
-- [ ] `visit_preps` table + RLS
+- [ ] `visit_preps` table (`chat_id uuid` nullable) + RLS
+- [x] Migration: `sql/migrations/20260625_visit_preps_chat_id.sql`
 - [ ] `nova_chat_completion_jobs.visit_prep_id uuid null`
 
 ### `visitPrepsController.js`
 
-- [ ] **`createVisitPrep`** — single insert + encrypt path
-- [ ] `createVisitPrepHandler` → **POST**
-- [ ] `getVisitPrep`, `listVisitPreps`, `updateVisitPrep`, `deleteVisitPrep`
+- [x] **`createVisitPrep`** — single insert + encrypt path; require **`chatId`**; verify owned **`chat_sessions`** row
+- [x] `createVisitPrepHandler` → **POST** (Zod: **`chat_id`** required)
+- [x] `getVisitPrep`, `listVisitPreps`, `updateVisitPrep`, `deleteVisitPrep` — responses include **`chat_id`**
 - [ ] Decrypt on read — mirror `notesController.js`
 
 ### `novaChatCompletionProcessor.js`
 
 - [ ] Optional 5th arg `options?: { saveVisitPrep?: boolean, extractTitleDetails?: boolean }`
-- [ ] When `saveVisitPrep`: after session persist → **`createVisitPrep({ text })`**
+- [x] When `saveVisitPrep`: after session persist → **`createVisitPrep({ text, chatId })`**
 - [ ] On success: set **`visit_prep_id`** on job → **`recordUsageSuccess`** → **`complete`**
 - [ ] On **`createVisitPrep`** failure: write **`usage`** to job row → **`failed`** / `VISIT_PREP_PERSIST_FAILED` (no **`visit_prep_id`**); still **`recordUsageSuccess`** if Bedrock + session persist succeeded
 - [ ] **`buildNovaCompletionPollPayload`**: enrich **`VISIT_PREP_PERSIST_FAILED`** with **`assistant`**, **`session`**, **`usage`**
@@ -536,13 +574,14 @@ CRUD + “use template” on visit prep page. Does not change Nova save contract
 
 - [ ] `POST …/completions-and-save-visit-prep` → shared handler with save flag
 - [ ] Extend poll payload when `job.visit_prep_id` set
+- [x] Zod: **`visitPrepCreateRequestSchema`** — **`chat_id`** required UUID
 - [x] Zod: save route extends `novaChatCompletionRequestSchema` with **`extract_title_details`**
 - [x] Unit tests: extraction schema post-process, poll attaches **`visit_prep_title_details`**
 
 ### Tests
 
-- [ ] **`createVisitPrep`** handler + encryption round-trip
-- [ ] Save route: poll **`complete`** includes **`visit_prep_id`**; job row matches
+- [ ] **`createVisitPrep`** handler + encryption round-trip; **400** without **`chat_id`** (covered in **`tests/visit-preps.test.js`**)
+- [ ] Save route: poll **`complete`** includes **`visit_prep_id`**; created prep has **`chat_id`** === session id; job row matches
 - [ ] Save route: persist failure → **`VISIT_PREP_PERSIST_FAILED`**, no **`visit_prep_id`**
 - [ ] Normal **`completions`**: **`visit_prep_id`** stays null
 - [ ] PATCH / DELETE / RLS ownership

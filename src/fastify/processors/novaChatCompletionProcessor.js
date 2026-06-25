@@ -324,6 +324,7 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
   if (saveVisitPrep) {
     const createResult = await createVisitPrep(supabase, userId, masterKey, {
       text: assistantText,
+      chatId,
     });
 
     if (!createResult.success) {

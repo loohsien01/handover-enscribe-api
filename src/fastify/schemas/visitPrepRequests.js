@@ -8,6 +8,7 @@ export const visitPrepIdParamsSchema = z.object({
 
 export const visitPrepCreateRequestSchema = z
   .object({
+    chat_id: z.string().regex(uuidRegex, 'Invalid chat_id'),
     text: z.string().default(''),
   })
   .strict();

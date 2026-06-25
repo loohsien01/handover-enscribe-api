@@ -4,6 +4,7 @@
  */
 import { getSupabaseClient } from '../../utils/supabase.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
+import { chatSessionsTable } from '../../utils/novaChatPersistence.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 
 const visitPrepsTable = 'visit_preps';
@@ -40,11 +41,57 @@ function formatVisitPrepRow(row, masterKey, textOverride) {
 /**
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
+ * @param {string} chatId
+ */
+async function verifyOwnedChatSession(supabase, userId, chatId) {
+  const { data, error } = await supabase
+    .from(chatSessionsTable)
+    .select('id')
+    .eq('id', chatId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[createVisitPrep] chat session lookup failed:', error);
+    return {
+      success: false,
+      error: error.message || 'Failed to verify chat session',
+      code: 'VISIT_PREP_CHAT_LOOKUP_FAILED',
+    };
+  }
+
+  if (!data) {
+    return {
+      success: false,
+      error: 'Chat session not found',
+      code: 'VISIT_PREP_CHAT_NOT_FOUND',
+    };
+  }
+
+  return { success: true };
+}
+
+/**
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase
+ * @param {string} userId
  * @param {Buffer} masterKey
- * @param {{ text?: string }} input
+ * @param {{ text?: string, chatId: string }} input
  */
 export async function createVisitPrep(supabase, userId, masterKey, input) {
-  const { text = '' } = input;
+  const { text = '', chatId } = input;
+
+  if (!chatId || !isValidUuid(chatId)) {
+    return {
+      success: false,
+      error: 'chat_id is required',
+      code: 'VISIT_PREP_CHAT_ID_REQUIRED',
+    };
+  }
+
+  const chatCheck = await verifyOwnedChatSession(supabase, userId, chatId);
+  if (!chatCheck.success) {
+    return chatCheck;
+  }
 
   let encryptedText = null;
   let textIv = null;
@@ -66,6 +113,7 @@ export async function createVisitPrep(supabase, userId, masterKey, input) {
     .from(visitPrepsTable)
     .insert({
       user_id: userId,
+      chat_id: chatId,
       encrypted_text: encryptedText,
       text_iv: textIv,
     })
@@ -103,16 +151,22 @@ export async function createVisitPrepHandler(request, reply) {
     return reply.status(401).send({ error: 'Unauthorized' });
   }
 
-  const { text = '' } = request.body;
+  const { text = '', chat_id: chatId } = request.body;
 
   const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, user.id);
   if (!keyResult.success) {
     return reply.status(500).send({ error: keyResult.error });
   }
 
-  const result = await createVisitPrep(supabase, user.id, keyResult.masterKey, { text });
+  const result = await createVisitPrep(supabase, user.id, keyResult.masterKey, { text, chatId });
 
   if (!result.success) {
+    if (result.code === 'VISIT_PREP_CHAT_NOT_FOUND') {
+      return reply.status(404).send({ error: result.error, code: result.code });
+    }
+    if (result.code === 'VISIT_PREP_CHAT_ID_REQUIRED') {
+      return reply.status(400).send({ error: result.error, code: result.code });
+    }
     return reply.status(500).send({ error: result.error, code: result.code });
   }
 

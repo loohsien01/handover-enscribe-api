@@ -10,7 +10,7 @@
  * Prerequisites:
  * - Fastify running (`npm run dev:fastify`)
  * - `REDIS_URL`, `TEST_ACCOUNT_EMAIL`, `TEST_ACCOUNT_PASSWORD` in `.env.local`
- * - visit_preps + nova_chat_completion_jobs.visit_prep_id migrations applied
+ * - visit_preps (with chat_id) + nova_chat_completion_jobs.visit_prep_id migrations applied
  * - Bedrock credentials / IAM on the API host
  *
  * Env: `NOVA_VISIT_PREP_E2E_MODEL` (default sonnet), `NOVA_E2E_COMPLETION_TIMEOUT_MS` (default 120000),
@@ -48,21 +48,22 @@ const TITLE_POLL_TIMEOUT_MS = (() => {
 const POLL_MS = 400;
 
 const NOVA_DEFAULT_TITLE = 'New Chat';
+const E2E_PATIENT_NAME = 'Test Doe';
 
 /**
  * FE-assembled turn-1 user message: instructions + pasted prior chart text in one string.
  */
-const VISIT_PREP_USER_MESSAGE = `Create a concise visit prep document for today's follow-up.
+const VISIT_PREP_USER_MESSAGE = `Create a concise visit prep document for today's follow-up for patient ${E2E_PATIENT_NAME}.
 
 Use short bullet points under: Key issues, Meds, Follow-up questions.
 Tone: clinical, scannable. Do not invent data beyond the charts below.
 
---- Prior visit 1 (2026-05-10, note id 10001) ---
+--- Prior visit 1 (2026-05-10, note id 10001, patient: ${E2E_PATIENT_NAME}) ---
 CC: Fatigue and occasional dizziness.
 Assessment: Hypertension, suboptimal control. Type 2 diabetes, stable.
 Plan: Continue lisinopril 10 mg daily. Recheck BMP in 3 months. Discuss home BP log.
 
---- Prior visit 2 (2026-06-02, note id 10042) ---
+--- Prior visit 2 (2026-06-02, note id 10042, patient: ${E2E_PATIENT_NAME}) ---
 CC: Follow-up HTN; reports improved energy.
 Vitals: BP 128/82 (home avg). A1c 7.1%.
 Assessment: HTN improved. DM at goal.
@@ -159,7 +160,7 @@ async function pollCompletionJobForVisitPrepTitleDetails(base, authHeaders, chat
 function assertVisitPrepTitleDetails(details) {
   assert.ok(details != null && typeof details === 'object');
   assert.equal(typeof details.patient_display_name, 'string');
-  assert.ok(details.patient_display_name.trim().length > 0);
+  assert.equal(details.patient_display_name, E2E_PATIENT_NAME);
   assert.ok(details.visit_kind === 'F/U' || details.visit_kind === 'NP');
 }
 
@@ -254,6 +255,7 @@ test('1: completions-and-save-visit-prep → complete + visit_prep persisted', a
   const embedded = final?.visit_prep;
   assert.ok(embedded != null, 'missing embedded visit_prep');
   assert.equal(embedded.id, visitPrepId);
+  assert.equal(embedded.chat_id, chatId);
   assert.equal(embedded.text, assistantText);
 
   assert.equal(
@@ -282,6 +284,7 @@ test('1: completions-and-save-visit-prep → complete + visit_prep persisted', a
   });
   assert.equal(getPrep.passed, true);
   assert.equal(getPrep.body?.id, visitPrepId);
+  assert.equal(getPrep.body?.chat_id, chatId);
   assert.equal(getPrep.body?.text, assistantText);
 
   logStep('GET …/completion-jobs/:jobId/visit-prep…');
@@ -292,6 +295,7 @@ test('1: completions-and-save-visit-prep → complete + visit_prep persisted', a
   );
   assert.equal(getJobPrep.passed, true);
   assert.equal(getJobPrep.body?.id, visitPrepId);
+  assert.equal(getJobPrep.body?.chat_id, chatId);
   assert.equal(getJobPrep.body?.text, assistantText);
 
   logStep('cleanup: DELETE /api/visit-preps/:id…');
