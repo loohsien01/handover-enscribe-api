@@ -13,6 +13,7 @@ AI-assisted visit preparation from past clinical notes. The **Visit prep page (F
 | **Database** | `visit_preps` table + `nova_chat_completion_jobs.visit_prep_id`, RLS | 🔲 Not started |
 | **API — CRUD** | `GET` / `POST` / `PATCH` / `DELETE` `/api/visit-preps` | 🔲 Not started |
 | **API — Nova** | `POST …/completions-and-save-visit-prep` + existing completion poll | 🔲 Not started |
+| **API — Nova title** | `extract_title_details` + `visit_prep_title_details` poll field (ephemeral) | ✅ Shipped |
 | **Tests** | CRUD + save-visit-prep completion + encryption round-trip | 🔲 Not started |
 | **Templates** | `visit_prep_templates` table + CRUD | 🔲 Phase 2 |
 
@@ -24,6 +25,7 @@ AI-assisted visit preparation from past clinical notes. The **Visit prep page (F
 - Controller: `src/fastify/controllers/visitPrepsController.js` — exports **`createVisitPrep`** (and update/get/list/delete)
 - Routes: `src/fastify/routes/visitPreps.js`
 - Extend: `novaChatCompletionProcessor` + `novaChatSessionsController` (save option via processor closure, like `persistEncounterName` in `promptLlmProcessor`)
+- Title: `maybeRunVisitPrepTitleDetailsExtraction` + ephemeral Redis cache for poll (`visit_prep_title_details`)
 - Routes: `POST …/completions-and-save-visit-prep` alias in `src/fastify/routes/novaChatSessions.js`
 - Tests: `tests/visit-preps.test.js`, extend `tests/nova-chat-sessions-completions.test.js`
 
@@ -39,7 +41,7 @@ AI-assisted visit preparation from past clinical notes. The **Visit prep page (F
 **Non-goals (v1):**
 
 - No server-side assembly of the Nova user message (FE builds the message from fetched notes + instructions).
-- No JSON schema enforced on model output — clinicians control format via natural-language instructions in the user message.
+- No JSON schema on the **visit prep document** (main Sonnet assistant output) — clinicians control format via natural-language instructions in the user message. (Separate Haiku JSON extraction for **session title fields** is documented under [Session title](#session-title).)
 - No `patient_encounter_id` or encounter linkage on `visit_preps`.
 - No `visit_prep_templates` table (phase 2).
 - No `source_note_ids` or `nova_chat_id` on `visit_preps` — input charts live only in the Nova user `message`; chat linkage is on **`nova_chat_completion_jobs`** (`visit_prep_id` + `chat_id`).
@@ -71,6 +73,7 @@ Job → artifact link lives on the **high-volume job row** as a nullable UUID (`
 | **Normal Nova completion** | `POST …/completions` — async Bedrock turn; job `complete` when assistant message is persisted. |
 | **Completion and save visit prep** | `POST …/completions-and-save-visit-prep` — thin alias; same handler/processor with save enabled. **`createVisitPrep`** must succeed before job → `complete`. |
 | **`createVisitPrep`** | Shared controller function for **`POST /api/visit-preps`** insert + encrypt; called from the Nova processor when save is enabled — not a Nova-specific wrapper name. |
+| **`maybeRunVisitPrepTitleDetailsExtraction`** | Save-route-only fire-and-forget Haiku pass; returns structured **`visit_prep_title_details`** for poll (not generic sidebar title). |
 
 ---
 
@@ -83,14 +86,14 @@ Visit prep page (FE)
   ├─ Build user message           instructions + pasted note text (no BE assembly)
   │
   ├─ POST /api/nova/chat-sessions
-  │     default "New Chat"; AI title runs after turn 1 (fire-and-forget, non-blocking)
+  │     default "New Chat" (visit prep uses a different title path — see Session title)
   │
   ├─ POST …/completions-and-save-visit-prep
-  │     { model: "sonnet", message, client_message_id }
+  │     { model, message, client_message_id, extract_title_details? }
   │     → 202 + job id
   │
   ├─ Poll GET …/completion-jobs/:jobId
-  │     until status complete (visit_prep_id set) or failed
+  │     until terminal (complete or failed); re-poll for visit_prep_title_details when async
   │
   └─ Later: POST …/completions (normal) in same chatId for follow-up questions
 ```
@@ -112,8 +115,8 @@ Both paths share the same **`nova_chat_completion_jobs`** row shape, Redis sessi
 | **`createVisitPrep`** | No | **Yes — must succeed before `complete`** |
 | Job `complete` | After session persist | After session persist **and** visit prep persist |
 | Job row | `visit_prep_id` null | `visit_prep_id` set |
-| Terminal poll | `assistant`, `session`, `usage` | Above **+** `visit_prep_id`, optional embedded `visit_prep` |
-| Session title (Haiku) | Fire-and-forget after `complete` | Same — does not block job or save |
+| Terminal poll | `assistant`, `session`, `usage` | Above **+** `visit_prep_id`, optional embedded `visit_prep`; optional **`visit_prep_title_details`** |
+| Session title | Generic Haiku → `session.title` (fire-and-forget after `complete`) | **`maybeRunVisitPrepTitleDetailsExtraction`** (fire-and-forget); **no** generic Haiku; FE **`PATCH`** final title |
 
 If **`createVisitPrep`** fails after Bedrock and chat persist succeed, mark job **`failed`** (`VISIT_PREP_PERSIST_FAILED`). User and assistant lines **remain in the transcript** (session persist already succeeded). The Nova turn itself succeeded; only the visit prep row was not created.
 
@@ -124,6 +127,8 @@ Implementation: extend **`novaChatCompletionProcessor(jobId, userId, chatId, aut
 3. On success → set **`visit_prep_id`** on job → **`recordUsageSuccess`** (`nova_response`) → **`status: 'complete'`**.
 
 Bill **`nova_response`** when Bedrock + session persist succeed, **even if** step 2 fails (the model turn completed; save is a separate step). Persist **`usage`** on the job row before marking **`failed`** for `VISIT_PREP_PERSIST_FAILED` so the failure poll can return it.
+
+**Title extraction (save route only):** after step 1 (session persist), when **`extract_title_details`** was true on the enqueueing POST, fire-and-forget **`maybeRunVisitPrepTitleDetailsExtraction`** — **once per chat, first successful Nova turn**, same guard as generic title. Runs whether step 2 succeeds (**`complete`**) or fails (**`VISIT_PREP_PERSIST_FAILED`**) because Bedrock + session persist already succeeded. Does **not** block the job row transition. Does **not** call **`maybeRunNovaChatTitleAfterFirstCompletion`**.
 
 ---
 
@@ -303,7 +308,7 @@ Same async job + poll model as normal completions (`client_message_id` idempoten
 
 ### `POST …/completions-and-save-visit-prep`
 
-Thin alias: validates the **same body as completions**, then enqueues the shared completion handler with **`saveVisitPrep: true**.
+Thin alias: validates the **completions body plus optional title flag**, then enqueues the shared completion handler with **`saveVisitPrep: true`**.
 
 **Body:**
 
@@ -311,7 +316,8 @@ Thin alias: validates the **same body as completions**, then enqueues the shared
 {
   "model": "sonnet",
   "message": "Use concise clinical language…\n\n--- Prior visit 1 ---\n…",
-  "client_message_id": "550e8400-e29b-41d4-a716-446655440000"
+  "client_message_id": "550e8400-e29b-41d4-a716-446655440000",
+  "extract_title_details": true
 }
 ```
 
@@ -320,6 +326,7 @@ Thin alias: validates the **same body as completions**, then enqueues the shared
 | `model` | `haiku` \| `sonnet` \| `opus` | Yes | FE uses **`sonnet`** for visit prep |
 | `message` | `string` | Yes | FE-assembled plain text (instructions + pasted charts); max 100_000 chars |
 | `client_message_id` | UUID | Yes | Idempotency per turn |
+| `extract_title_details` | `boolean` | No | Default **`true`**. When **`true`**, run structured title-field extraction (Haiku) after first successful session persist; skip generic Nova sidebar title. When **`false`**, skip extraction; **`session.title`** stays **`"New Chat"`** unless the client **`PATCH`**es. |
 
 **Success (202):** `{ "id": "<job-uuid>", "status": "pending", "chat_id": "<chatId>" }`
 
@@ -343,11 +350,17 @@ Unchanged route. When job **`status`** is **`complete`** and **`visit_prep_id`**
     "text": "…",
     "created_at": "…",
     "updated_at": "…"
+  },
+  "visit_prep_title_details": {
+    "patient_display_name": "Jane Doe",
+    "visit_kind": "F/U"
   }
 }
 ```
 
-Normal completions omit **`visit_prep_id`** / **`visit_prep`** (both absent or null).
+**`visit_prep_title_details`:** present when title extraction finished successfully for this job; **absent** on the first terminal poll if extraction is still in flight (client re-polls the same job URL). **Not** persisted to Postgres — ephemeral cache only (e.g. Redis keyed by `jobId`, TTL aligned with completion partial / poll window). The server does **not** compose or write the final sidebar title; the client **`PATCH`**es **`session.title`** after merging local date (see [Session title](#session-title)).
+
+Normal completions omit **`visit_prep_id`** / **`visit_prep`** / **`visit_prep_title_details`**.
 
 Optional (mirror `GET …/encounter-bundle`): **`GET …/completion-jobs/:jobId/visit-prep`** returns the saved prep when **`visit_prep_id`** is set; **404** otherwise.
 
@@ -365,11 +378,15 @@ Unlike generic Nova **`failed`** polls (which return only `code` / `error`), thi
   "assistant": { "role": "assistant", "content": "…" },
   "usage": { "input_tokens": 1234, "output_tokens": 567, "total_tokens": 1801, "model": "…" },
   "session": { },
-  "visit_prep_id": null
+  "visit_prep_id": null,
+  "visit_prep_title_details": {
+    "patient_display_name": "Jane Doe",
+    "visit_kind": "NP"
+  }
 }
 ```
 
-Implement in **`buildNovaCompletionPollPayload`**: when `job.status === 'failed'` and `error_code === 'VISIT_PREP_PERSIST_FAILED'`, load session (same path as **`complete`**) and attach **`assistant`**, **`session`**, and **`usage`** from the job row. **`visit_prep_id`** absent or null.
+Implement in **`buildNovaCompletionPollPayload`**: when `job.status === 'failed'` and `error_code === 'VISIT_PREP_PERSIST_FAILED'`, load session (same path as **`complete`**) and attach **`assistant`**, **`session`**, and **`usage`** from the job row. **`visit_prep_id`** absent or null. **`visit_prep_title_details`** may still appear when extraction completed (same ephemeral cache as **`complete`** polls).
 
 **Fallback (always available):** `GET …/:chatId` after failure — last message in **`session.messages`** is the assistant reply. Manual save: **`POST /api/visit-preps`** with `{ "text": "<assistant.content>" }`.
 
@@ -393,11 +410,55 @@ Contrast with prompt-llm **generate-and-save-note**: job stays **`complete`** wi
 
 ## Session title
 
-Default Nova behavior: **`maybeRunNovaChatTitleAfterFirstCompletion`** runs only when the job reaches **`complete`** (fire-and-forget).
+Visit prep turn 1 uses a **different title path** from generic Nova chat. Detail lives here only (not in [`NOVA_AI_ARCHITECTURE.md`](./NOVA_AI_ARCHITECTURE.md)).
 
-On **`VISIT_PREP_PERSIST_FAILED`**, the job is **`failed`**, so the automatic Haiku title **does not** run (same as any non-`complete` job). The transcript still has user + assistant lines; the client may **`PATCH { "title": "…" }`** or leave **`"New Chat"`**.
+### Generic Nova (`POST …/completions`)
 
-When the save path succeeds, title runs after **`complete`** as today — see [`NOVA_AI_ARCHITECTURE.md` — Session title](./NOVA_AI_ARCHITECTURE.md#session-title-frontend).
+After the first job reaches **`complete`**, **`maybeRunNovaChatTitleAfterFirstCompletion`** (Haiku, plain text) may replace **`"New Chat"`** on **`chat_sessions.title`** — fire-and-forget, non-blocking. See Nova architecture doc for client refresh behavior.
+
+### Visit prep save route (`POST …/completions-and-save-visit-prep`)
+
+| Rule | Decision |
+|------|----------|
+| **Generic Haiku title** | **Disabled** — do **not** call **`maybeRunNovaChatTitleAfterFirstCompletion`** on this route. |
+| **New step** | **`maybeRunVisitPrepTitleDetailsExtraction`** — fire-and-forget Haiku pass with **JSON schema** (separate from main Sonnet visit-prep output). |
+| **Request flag** | **`extract_title_details`** on POST body; default **`true`**. When **`false`**, skip extraction entirely. |
+| **Trigger** | Once per chat, after the **first successful Nova turn** (user + assistant persisted) — same “first completion” guard as generic title. |
+| **When it runs** | After session persist on the save route, whether the job ends **`complete`** or **`failed`** / **`VISIT_PREP_PERSIST_FAILED`** (Bedrock + transcript already succeeded). |
+| **Billing** | Title extraction does **not** record **`nova_response`** usage (mirror generic title Haiku). |
+| **Failure** | **Fail open** — log errors; poll omits **`visit_prep_title_details`**; **`session.title`** stays **`"New Chat"`** until client **`PATCH`** or manual rename. |
+| **Postgres** | **No** new column on **`nova_chat_completion_jobs`** for title fields. Ephemeral cache (e.g. Redis) holds extraction result for poll delivery only. |
+| **Final title** | **Not** written by the server. Client composes sidebar string and **`PATCH /api/nova/chat-sessions/:chatId`**. Max **40** chars enforced by **`normalizeNovaChatTitle`** on PATCH. |
+
+### Extraction output schema (API contract)
+
+Haiku structured output (Bedrock **`output_config.format`** / JSON schema) — **not** stored as assistant message content:
+
+```json
+{
+  "patient_display_name": "Jane Doe",
+  "visit_kind": "F/U"
+}
+```
+
+| Field | Type | Values / notes |
+|-------|------|----------------|
+| `patient_display_name` | `string` | Patient name when clearly identifiable in the user message (pasted charts + instructions); otherwise **`"Unknown Patient"`**. |
+| `visit_kind` | `string` | **`"F/U"`** (follow-up) or **`"NP"`** (new patient). |
+
+**Prompt input:** first user message (required); first assistant reply optional context. Truncate for prompt bounds (mirror **`truncateNovaChatTitlePromptText`**).
+
+**Poll field:** **`visit_prep_title_details`** on terminal **`GET …/completion-jobs/:jobId`** responses (`complete` or **`VISIT_PREP_PERSIST_FAILED`**). May be absent on the first terminal poll; client re-polls until present or timeout (~30s, same spirit as generic Nova title refresh). Idempotent **200** replay includes the field when still in ephemeral cache.
+
+### Client integration (separate FE repo — out of scope here)
+
+This API repo documents the poll contract only. Expected FE behavior (not implemented here):
+
+1. After terminal job poll, re-poll until **`visit_prep_title_details`** appears (or timeout).
+2. Compose final sidebar title from **`patient_display_name`**, **`visit_kind`**, and **today’s date in the user’s local timezone** (formatting — e.g. spaces between segments — is FE-owned).
+3. Truncate to **40** characters if needed, then **`PATCH { "title": "…" }`**.
+
+**`session.title`** in poll payloads remains **`"New Chat"`** until that PATCH; it is **never** JSON.
 
 ---
 
@@ -461,18 +522,22 @@ CRUD + “use template” on visit prep page. Does not change Nova save contract
 
 ### `novaChatCompletionProcessor.js`
 
-- [ ] Optional 5th arg `options?: { saveVisitPrep?: boolean }`
+- [ ] Optional 5th arg `options?: { saveVisitPrep?: boolean, extractTitleDetails?: boolean }`
 - [ ] When `saveVisitPrep`: after session persist → **`createVisitPrep({ text })`**
 - [ ] On success: set **`visit_prep_id`** on job → **`recordUsageSuccess`** → **`complete`**
 - [ ] On **`createVisitPrep`** failure: write **`usage`** to job row → **`failed`** / `VISIT_PREP_PERSIST_FAILED` (no **`visit_prep_id`**); still **`recordUsageSuccess`** if Bedrock + session persist succeeded
 - [ ] **`buildNovaCompletionPollPayload`**: enrich **`VISIT_PREP_PERSIST_FAILED`** with **`assistant`**, **`session`**, **`usage`**
-- [ ] Title: fire-and-forget only after job **`complete`** (not after visit-prep save failure)
+- [x] After session persist on save route: **`maybeRunVisitPrepTitleDetailsExtraction`** when **`extractTitleDetails`** (skip **`maybeRunNovaChatTitleAfterFirstCompletion`**)
+- [x] Run title extraction on both **`complete`** and **`VISIT_PREP_PERSIST_FAILED`** when first turn succeeded
+- [x] Ephemeral Redis cache for **`visit_prep_title_details`**; attach on poll when ready (no Postgres column)
+- [x] Bedrock JSON schema support for extraction Haiku pass
 
 ### Routes & schemas
 
 - [ ] `POST …/completions-and-save-visit-prep` → shared handler with save flag
 - [ ] Extend poll payload when `job.visit_prep_id` set
-- [ ] Zod: `visitPrepCreateRequestSchema`, `visitPrepPatchRequestSchema`; save route uses same body as `novaChatCompletionRequestSchema`
+- [x] Zod: save route extends `novaChatCompletionRequestSchema` with **`extract_title_details`**
+- [x] Unit tests: extraction schema post-process, poll attaches **`visit_prep_title_details`**
 
 ### Tests
 
@@ -491,7 +556,8 @@ CRUD + “use template” on visit prep page. Does not change Nova save contract
 | Prompt-llm save pattern | `src/fastify/routes/promptLlmJobs.js`, `src/fastify/processors/promptLlmProcessor.js`, `src/fastify/controllers/jobController.js` |
 | Nova completion processor | `src/fastify/processors/novaChatCompletionProcessor.js` |
 | Nova routes / poll | `src/fastify/routes/novaChatSessions.js`, `src/fastify/controllers/novaChatSessionsController.js` |
-| Session title (non-blocking) | `src/utils/novaChatTitleService.js` |
+| Generic session title (non-blocking) | `src/utils/novaChatTitleService.js` |
+| Visit prep title details | `src/utils/novaVisitPrepTitleDetailsService.js`, `src/utils/novaVisitPrepTitleDetails.js`, `src/utils/novaVisitPrepTitleDetailsCache.js` |
 | Notes encrypt/decrypt | `src/fastify/controllers/notesController.js`, `src/utils/encryptionUtils.js` |
 | Completion request limits | `src/fastify/schemas/novaChatRequests.js` |
 | User master key | `src/fastify/controllers/userSecurityConfigController.js` → `getOrCreateUserMasterKey()` |

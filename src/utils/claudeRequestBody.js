@@ -365,3 +365,59 @@ export function getNovaChatTitleRequestBody({
     max_tokens,
   };
 }
+
+const NOVA_VISIT_PREP_TITLE_DETAILS_SYSTEM =
+  'You extract visit prep sidebar metadata from a clinical assistant thread. ' +
+  'Read the first user message (pasted charts and instructions) and optional first assistant reply. ' +
+  'Return JSON only matching the schema. ' +
+  'Use patient_display_name "Unknown Patient" when no patient name is clearly identifiable. ' +
+  'Use visit_kind "F/U" for follow-up or return visit prep; "NP" for new patient visit prep.';
+
+/**
+ * Bedrock request for visit prep title-field extraction (Haiku + JSON schema).
+ *
+ * @param {object} opts
+ * @param {string} opts.modelId
+ * @param {string} opts.userMessage
+ * @param {string} [opts.assistantMessage]
+ * @param {object} opts.outputSchema
+ * @param {number} [opts.max_tokens]
+ */
+export function getNovaVisitPrepTitleDetailsRequestBody({
+  modelId,
+  userMessage,
+  assistantMessage,
+  outputSchema,
+  max_tokens = 256,
+}) {
+  let content =
+    `Visit prep user message:\n${userMessage}\n\n`;
+  if (assistantMessage != null && String(assistantMessage).trim()) {
+    content += `First assistant reply (optional context):\n${assistantMessage}\n\n`;
+  }
+  content += 'Extract patient_display_name and visit_kind.';
+
+  return {
+    modelId,
+    system: [
+      {
+        type: 'text',
+        text: NOVA_VISIT_PREP_TITLE_DETAILS_SYSTEM,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
+    messages: [
+      {
+        role: 'user',
+        content,
+      },
+    ],
+    max_tokens,
+    output_config: {
+      format: {
+        type: 'json_schema',
+        schema: outputSchema,
+      },
+    },
+  };
+}

@@ -224,6 +224,36 @@ export async function runNovaChatSessionsCompletionsTests() {
     },
   });
 
+  await runner.test('14 — save-visit-prep accepts extract_title_details', {
+    testNumber: 14,
+    method: 'POST',
+    endpoint: `/api/nova/chat-sessions/${UNKNOWN_CHAT_ID}/completions-and-save-visit-prep`,
+    headers: authHeaders,
+    body: {
+      model: 'sonnet',
+      message: 'prep',
+      client_message_id: randomUUID(),
+      extract_title_details: false,
+    },
+    expectedStatus: 404,
+    expectedFields: ['error', 'code'],
+  });
+
+  await runner.test('15 — normal completions rejects extract_title_details', {
+    testNumber: 15,
+    method: 'POST',
+    endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions`,
+    headers: authHeaders,
+    body: {
+      model: 'haiku',
+      message: 'hello',
+      client_message_id: randomUUID(),
+      extract_title_details: true,
+    },
+    expectedStatus: 400,
+    expectedFields: ['error'],
+  });
+
   runner.printResults();
   const resultsFile = runner.saveResults('nova-chat-sessions-completions-tests.json');
   console.log(`✅ Test results saved to: ${resultsFile}\n`);

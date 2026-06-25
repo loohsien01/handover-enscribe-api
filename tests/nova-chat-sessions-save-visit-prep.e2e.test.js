@@ -4,8 +4,8 @@
  * **Not** in `npm test` / `runAll.js` — suffix `.e2e.test.js` marks opt-in suites.
  *
  * Full flow: create session → save-visit-prep (one FE-assembled plain-text message) →
- * poll until complete → assert visit_prep_id, embedded visit_prep, GET /api/visit-preps/:id,
- * and GET …/visit-prep.
+ * poll until complete → assert visit_prep_id, embedded visit_prep, visit_prep_title_details
+ * (async Haiku extraction), GET /api/visit-preps/:id, and GET …/visit-prep.
  *
  * Prerequisites:
  * - Fastify running (`npm run dev:fastify`)
@@ -13,7 +13,8 @@
  * - visit_preps + nova_chat_completion_jobs.visit_prep_id migrations applied
  * - Bedrock credentials / IAM on the API host
  *
- * Env: `NOVA_VISIT_PREP_E2E_MODEL` (default sonnet), `NOVA_E2E_COMPLETION_TIMEOUT_MS` (default 120000).
+ * Env: `NOVA_VISIT_PREP_E2E_MODEL` (default sonnet), `NOVA_E2E_COMPLETION_TIMEOUT_MS` (default 120000),
+ *   `NOVA_E2E_TITLE_POLL_TIMEOUT_MS` (default 30000).
  *
  * Run: `npm run test:nova-save-visit-prep-e2e`
  */
@@ -40,7 +41,13 @@ const COMPLETION_TIMEOUT_MS = (() => {
   const n = Number.parseInt(process.env.NOVA_E2E_COMPLETION_TIMEOUT_MS || '120000', 10);
   return Number.isFinite(n) && n >= 10_000 ? n : 120_000;
 })();
+const TITLE_POLL_TIMEOUT_MS = (() => {
+  const n = Number.parseInt(process.env.NOVA_E2E_TITLE_POLL_TIMEOUT_MS || '30000', 10);
+  return Number.isFinite(n) && n >= 3_000 ? n : 30_000;
+})();
 const POLL_MS = 400;
+
+const NOVA_DEFAULT_TITLE = 'New Chat';
 
 /**
  * FE-assembled turn-1 user message: instructions + pasted prior chart text in one string.
@@ -112,6 +119,48 @@ async function pollCompletionJobUntilTerminal(base, authHeaders, chatId, jobId, 
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
   throw new Error('poll timeout waiting for completion job');
+}
+
+/**
+ * After terminal job poll, re-poll until visit_prep_title_details appears (fire-and-forget Haiku).
+ *
+ * @param {string} base
+ * @param {Record<string, string>} authHeaders
+ * @param {string} chatId
+ * @param {string} jobId
+ * @param {number} timeoutMs
+ */
+async function pollCompletionJobForVisitPrepTitleDetails(base, authHeaders, chatId, jobId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await makeRequest(
+      'GET',
+      `${base}/api/nova/chat-sessions/${chatId}/completion-jobs/${jobId}`,
+      { headers: authHeaders, expectedStatus: 200 }
+    );
+    assert.equal(res.passed, true, JSON.stringify(res.body));
+    const details = res.body?.visit_prep_title_details;
+    if (
+      details != null &&
+      typeof details.patient_display_name === 'string' &&
+      details.patient_display_name.trim().length > 0 &&
+      (details.visit_kind === 'F/U' || details.visit_kind === 'NP')
+    ) {
+      return { pollRes: res, titleDetails: details };
+    }
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
+  throw new Error('poll timeout waiting for visit_prep_title_details on completion job');
+}
+
+/**
+ * @param {unknown} details
+ */
+function assertVisitPrepTitleDetails(details) {
+  assert.ok(details != null && typeof details === 'object');
+  assert.equal(typeof details.patient_display_name, 'string');
+  assert.ok(details.patient_display_name.trim().length > 0);
+  assert.ok(details.visit_kind === 'F/U' || details.visit_kind === 'NP');
 }
 
 test('1: completions-and-save-visit-prep → complete + visit_prep persisted', async (t) => {
@@ -207,6 +256,25 @@ test('1: completions-and-save-visit-prep → complete + visit_prep persisted', a
   assert.equal(embedded.id, visitPrepId);
   assert.equal(embedded.text, assistantText);
 
+  assert.equal(
+    final?.session?.title,
+    NOVA_DEFAULT_TITLE,
+    'save route does not write sidebar title; FE PATCHes after visit_prep_title_details'
+  );
+
+  logStep(`poll visit_prep_title_details (up to ${TITLE_POLL_TIMEOUT_MS}ms)…`);
+  const { titleDetails } = await pollCompletionJobForVisitPrepTitleDetails(
+    base,
+    authHeaders,
+    chatId,
+    jobId,
+    TITLE_POLL_TIMEOUT_MS
+  );
+  assertVisitPrepTitleDetails(titleDetails);
+  logStep(
+    `visit_prep_title_details: ${titleDetails.patient_display_name}, ${titleDetails.visit_kind}`
+  );
+
   logStep('GET /api/visit-preps/:id…');
   const getPrep = await makeRequest('GET', `${base}/api/visit-preps/${visitPrepId}`, {
     headers: authHeaders,
@@ -233,5 +301,7 @@ test('1: completions-and-save-visit-prep → complete + visit_prep persisted', a
   });
   assert.equal(del.passed, true);
 
-  logStep(`OK — visit_prep_id=${visitPrepId}, assistant chars=${assistantText.length}`);
+  logStep(
+    `OK — visit_prep_id=${visitPrepId}, title_details=${titleDetails.patient_display_name}, ${titleDetails.visit_kind}, assistant chars=${assistantText.length}`
+  );
 });

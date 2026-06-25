@@ -40,6 +40,7 @@ import {
   resolveBillingContext,
 } from '../../utils/billingUsage.js';
 import { maybeRunNovaChatTitleAfterFirstCompletion } from '../../utils/novaChatTitleService.js';
+import { maybeRunVisitPrepTitleDetailsExtraction } from '../../utils/novaVisitPrepTitleDetailsService.js';
 import { createVisitPrep } from '../controllers/visitPrepsController.js';
 
 /**
@@ -91,10 +92,10 @@ async function updateJobRow(supabase, jobId, userId, status, extra = {}) {
  * @param {string} userId
  * @param {string} chatId
  * @param {string} authorizationHeader - e.g. `Bearer <jwt>`
- * @param {{ saveVisitPrep?: boolean }} [options]
+ * @param {{ saveVisitPrep?: boolean, extractTitleDetails?: boolean }} [options]
  */
 export async function novaChatCompletionProcessor(jobId, userId, chatId, authorizationHeader, options = {}) {
-  const { saveVisitPrep = false } = options;
+  const { saveVisitPrep = false, extractTitleDetails = false } = options;
   const supabase = getSupabaseClient(authorizationHeader);
 
   const { data: claimed, error: claimErr } = await supabase
@@ -311,6 +312,15 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
       bypassUsageLimits: billingCtx.bypassUsageLimits,
     });
 
+  const scheduleVisitPrepTitleExtraction = () => {
+    if (!saveVisitPrep || !extractTitleDetails) return;
+    setImmediate(() => {
+      maybeRunVisitPrepTitleDetailsExtraction({ userId, chatId, jobId, authorizationHeader }).catch((err) => {
+        console.error(`[novaVisitPrepTitleDetails] Unhandled error for job ${jobId}:`, err);
+      });
+    });
+  };
+
   if (saveVisitPrep) {
     const createResult = await createVisitPrep(supabase, userId, masterKey, {
       text: assistantText,
@@ -328,6 +338,7 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
       if (partialEnabled) {
         await deleteNovaCompletionPartial(redis, jobId);
       }
+      scheduleVisitPrepTitleExtraction();
       return;
     }
 
@@ -344,11 +355,7 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
       await deleteNovaCompletionPartial(redis, jobId);
     }
 
-    setImmediate(() => {
-      maybeRunNovaChatTitleAfterFirstCompletion({ userId, chatId, authorizationHeader }).catch((err) => {
-        console.error(`[novaChatTitle] Unhandled error for chat ${chatId}:`, err);
-      });
-    });
+    scheduleVisitPrepTitleExtraction();
     return;
   }
 

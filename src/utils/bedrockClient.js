@@ -83,6 +83,10 @@ export async function claudeInvokeModel(reqBody) {
     max_tokens: reqBody.max_tokens,
   };
 
+  if (reqBody.output_config != null) {
+    requestBody.output_config = reqBody.output_config;
+  }
+
   const command = new InvokeModelCommand({
     modelId: reqBody.modelId,
     body: JSON.stringify(requestBody),

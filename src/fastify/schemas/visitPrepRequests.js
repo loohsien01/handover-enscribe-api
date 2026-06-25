@@ -32,5 +32,7 @@ export const visitPrepListQuerySchema = z
     order: d.order ?? 'desc',
   }));
 
-/** POST …/completions-and-save-visit-prep — same body as normal completions */
-export const novaChatCompletionAndSaveVisitPrepRequestSchema = novaChatCompletionRequestSchema;
+/** POST …/completions-and-save-visit-prep — completions body + optional extract_title_details */
+export const novaChatCompletionAndSaveVisitPrepRequestSchema = novaChatCompletionRequestSchema.extend({
+  extract_title_details: z.boolean().optional(),
+});

@@ -21,6 +21,7 @@ import * as userSecurityConfigController from './userSecurityConfigController.js
 import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
 import { novaChatCompletionProcessor } from '../processors/novaChatCompletionProcessor.js';
 import { enrichNovaCompletionPollWithPartial } from '../../utils/novaCompletionPartial.js';
+import { enrichNovaCompletionPollWithVisitPrepTitleDetails } from '../../utils/novaVisitPrepTitleDetailsCache.js';
 import { NOVA_CHAT_DEFAULT_TITLE, normalizeNovaChatTitle } from '../../utils/novaChatTitle.js';
 import {
   USAGE_METRICS,
@@ -299,6 +300,17 @@ export async function postNovaChatTokenUsage(request, reply) {
 }
 
 /**
+ * @param {import('redis').RedisClientType} redis
+ * @param {{ id: string, status: string, error_code?: string | null }} job
+ * @param {Record<string, unknown>} payload
+ */
+async function enrichNovaCompletionPollPayload(redis, job, payload) {
+  let out = await enrichNovaCompletionPollWithPartial(redis, job, payload);
+  out = await enrichNovaCompletionPollWithVisitPrepTitleDetails(redis, job, out);
+  return out;
+}
+
+/**
  * Build JSON for GET …/completion-jobs/:jobId and for POST idempotent replay (200) when the job
  * already completed for the same `client_message_id`.
  *
@@ -322,7 +334,7 @@ async function buildNovaCompletionPollPayload(request, redis, userId, chatId, ma
       const session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
       const last = session?.messages?.[session.messages.length - 1];
       const assistantContent = last?.role === 'assistant' ? last.content : '';
-      return enrichNovaCompletionPollWithPartial(redis, job, {
+      return enrichNovaCompletionPollPayload(redis, job, {
         id: job.id,
         status: 'failed',
         chat_id: chatId,
@@ -345,7 +357,7 @@ async function buildNovaCompletionPollPayload(request, redis, userId, chatId, ma
   }
   const session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
   if (!session) {
-    return {
+    return enrichNovaCompletionPollWithVisitPrepTitleDetails(redis, job, {
       id: job.id,
       status: 'complete',
       chat_id: chatId,
@@ -354,7 +366,7 @@ async function buildNovaCompletionPollPayload(request, redis, userId, chatId, ma
       session: null,
       code: 'NOVA_SESSION_NOT_FOUND',
       error: 'Session could not be loaded after completion',
-    };
+    });
   }
   const last = session.messages?.[session.messages.length - 1];
   const assistantContent = last?.role === 'assistant' ? last.content : '';
@@ -378,7 +390,7 @@ async function buildNovaCompletionPollPayload(request, redis, userId, chatId, ma
     }
   }
 
-  return payload;
+  return enrichNovaCompletionPollWithVisitPrepTitleDetails(redis, job, payload);
 }
 
 /**
@@ -580,7 +592,8 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
   await novaSessionSave(redis, userId, session, ttl);
 
   const authHeader = request.headers.authorization;
-  const processorOptions = saveVisitPrep ? { saveVisitPrep: true } : {};
+  const extractTitleDetails = saveVisitPrep && body.extract_title_details !== false;
+  const processorOptions = saveVisitPrep ? { saveVisitPrep: true, extractTitleDetails } : {};
   setImmediate(() => {
     novaChatCompletionProcessor(newJob.id, userId, chatId, authHeader, processorOptions).catch((err) => {
       console.error(`[novaChatCompletionProcessor] Unhandled error for job ${newJob.id}:`, err);
