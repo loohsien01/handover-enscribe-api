@@ -40,8 +40,8 @@ import {
   resolveBillingContext,
 } from '../../utils/billingUsage.js';
 import { maybeRunNovaChatTitleAfterFirstCompletion } from '../../utils/novaChatTitleService.js';
-import { maybeRunVisitPrepTitleDetailsExtraction } from '../../utils/novaVisitPrepTitleDetailsService.js';
-import { createVisitPrep } from '../controllers/visitPrepsController.js';
+import { maybeRunPreVisitSummaryTitleDetailsExtraction } from '../../utils/novaPreVisitSummaryTitleDetailsService.js';
+import { createPreVisitSummary } from '../controllers/preVisitSummariesController.js';
 
 /**
  * @param {import('redis').RedisClientType} redis
@@ -92,10 +92,10 @@ async function updateJobRow(supabase, jobId, userId, status, extra = {}) {
  * @param {string} userId
  * @param {string} chatId
  * @param {string} authorizationHeader - e.g. `Bearer <jwt>`
- * @param {{ saveVisitPrep?: boolean, extractTitleDetails?: boolean }} [options]
+ * @param {{ savePreVisitSummary?: boolean, extractTitleDetails?: boolean }} [options]
  */
 export async function novaChatCompletionProcessor(jobId, userId, chatId, authorizationHeader, options = {}) {
-  const { saveVisitPrep = false, extractTitleDetails = false } = options;
+  const { savePreVisitSummary = false, extractTitleDetails = false } = options;
   const supabase = getSupabaseClient(authorizationHeader);
 
   const { data: claimed, error: claimErr } = await supabase
@@ -210,11 +210,24 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
     return;
   }
 
+  let forPreVisitSummary = savePreVisitSummary;
+  if (!forPreVisitSummary) {
+    const { data: preVisitSummaryRow } = await supabase
+      .from('pre_visit_summaries')
+      .select('id')
+      .eq('chat_id', chatId)
+      .eq('user_id', userId)
+      .limit(1)
+      .maybeSingle();
+    forPreVisitSummary = !!preVisitSummaryRow?.id;
+  }
+
   const reqBody = getNovaChatCompletionRequestBody({
     modelId,
     summary: session.summary ?? '',
     priorMessages: priorForBedrock,
     userMessage: userMessageForBedrock,
+    forPreVisitSummary,
   });
 
   let inv;
@@ -312,40 +325,40 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
       bypassUsageLimits: billingCtx.bypassUsageLimits,
     });
 
-  const scheduleVisitPrepTitleExtraction = () => {
-    if (!saveVisitPrep || !extractTitleDetails) return;
+  const schedulePreVisitSummaryTitleExtraction = () => {
+    if (!savePreVisitSummary || !extractTitleDetails) return;
     setImmediate(() => {
-      maybeRunVisitPrepTitleDetailsExtraction({ userId, chatId, jobId, authorizationHeader }).catch((err) => {
-        console.error(`[novaVisitPrepTitleDetails] Unhandled error for job ${jobId}:`, err);
+      maybeRunPreVisitSummaryTitleDetailsExtraction({ userId, chatId, jobId, authorizationHeader }).catch((err) => {
+        console.error(`[novaPreVisitSummaryTitleDetails] Unhandled error for job ${jobId}:`, err);
       });
     });
   };
 
-  if (saveVisitPrep) {
-    const createResult = await createVisitPrep(supabase, userId, masterKey, {
+  if (savePreVisitSummary) {
+    const createResult = await createPreVisitSummary(supabase, userId, masterKey, {
       text: assistantText,
       chatId,
     });
 
     if (!createResult.success) {
-      console.error('[novaChatCompletionProcessor] createVisitPrep failed:', createResult.error);
+      console.error('[novaChatCompletionProcessor] createPreVisitSummary failed:', createResult.error);
       await recordNovaUsage();
       await updateJobRow(supabase, jobId, userId, 'failed', {
-        error_code: 'VISIT_PREP_PERSIST_FAILED',
-        error_message: createResult.error || 'Failed to persist visit prep',
+        error_code: 'PRE_VISIT_SUMMARY_PERSIST_FAILED',
+        error_message: createResult.error || 'Failed to persist Pre-Visit Summary',
         usage: usagePayload,
         completed_at: new Date().toISOString(),
       });
       if (partialEnabled) {
         await deleteNovaCompletionPartial(redis, jobId);
       }
-      scheduleVisitPrepTitleExtraction();
+      schedulePreVisitSummaryTitleExtraction();
       return;
     }
 
     await recordNovaUsage();
     await updateJobRow(supabase, jobId, userId, 'complete', {
-      visit_prep_id: createResult.visitPrep.id,
+      pre_visit_summary_id: createResult.preVisitSummary.id,
       usage: usagePayload,
       error_code: null,
       error_message: null,
@@ -356,7 +369,7 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
       await deleteNovaCompletionPartial(redis, jobId);
     }
 
-    scheduleVisitPrepTitleExtraction();
+    schedulePreVisitSummaryTitleExtraction();
     return;
   }
 

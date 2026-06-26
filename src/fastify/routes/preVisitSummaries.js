@@ -1,99 +1,99 @@
 /**
- * Visit preps CRUD — encrypted visit preparation documents.
+ * Pre-Visit Summaries CRUD — encrypted pre-visit summary documents.
  */
 import {
-  createVisitPrepHandler,
-  listVisitPreps,
-  getVisitPrep,
-  updateVisitPrep,
-  deleteVisitPrep,
-} from '../controllers/visitPrepsController.js';
+  createPreVisitSummaryHandler,
+  listPreVisitSummaries,
+  getPreVisitSummary,
+  updatePreVisitSummary,
+  deletePreVisitSummary,
+} from '../controllers/preVisitSummariesController.js';
 import {
-  visitPrepCreateRequestSchema,
-  visitPrepPatchRequestSchema,
-  visitPrepListQuerySchema,
-  visitPrepIdParamsSchema,
-} from '../schemas/visitPrepRequests.js';
+  preVisitSummaryCreateRequestSchema,
+  preVisitSummaryPatchRequestSchema,
+  preVisitSummaryListQuerySchema,
+  preVisitSummaryIdParamsSchema,
+} from '../schemas/preVisitSummaryRequests.js';
 
-export async function registerVisitPrepsRoutes(fastify) {
+export async function registerPreVisitSummariesRoutes(fastify) {
   const preAuth = { preHandler: [fastify.authenticate] };
 
-  fastify.get('/visit-preps', preAuth, async (request, reply) => {
+  fastify.get('/pre-visit-summaries', preAuth, async (request, reply) => {
     try {
-      const parseResult = visitPrepListQuerySchema.safeParse(request.query);
+      const parseResult = preVisitSummaryListQuerySchema.safeParse(request.query);
       if (!parseResult.success) {
         return reply.status(400).send({ error: parseResult.error });
       }
       request.query = parseResult.data;
-      return listVisitPreps(request, reply);
+      return listPreVisitSummaries(request, reply);
     } catch (error) {
-      console.error('GET /visit-preps:', error);
+      console.error('GET /pre-visit-summaries:', error);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 
-  fastify.post('/visit-preps', preAuth, async (request, reply) => {
+  fastify.post('/pre-visit-summaries', preAuth, async (request, reply) => {
     try {
-      const parseResult = visitPrepCreateRequestSchema.safeParse(request.body);
+      const parseResult = preVisitSummaryCreateRequestSchema.safeParse(request.body);
       if (!parseResult.success) {
         return reply.status(400).send({ error: parseResult.error });
       }
       request.body = parseResult.data;
-      return createVisitPrepHandler(request, reply);
+      return createPreVisitSummaryHandler(request, reply);
     } catch (error) {
-      console.error('POST /visit-preps:', error);
+      console.error('POST /pre-visit-summaries:', error);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 
-  fastify.get('/visit-preps/:id', preAuth, async (request, reply) => {
+  fastify.get('/pre-visit-summaries/:id', preAuth, async (request, reply) => {
     try {
-      const paramsResult = visitPrepIdParamsSchema.safeParse(request.params);
+      const paramsResult = preVisitSummaryIdParamsSchema.safeParse(request.params);
       if (!paramsResult.success) {
         return reply.status(400).send({ error: paramsResult.error });
       }
       request.params = paramsResult.data;
-      return getVisitPrep(request, reply);
+      return getPreVisitSummary(request, reply);
     } catch (error) {
-      console.error('GET /visit-preps/:id:', error);
+      console.error('GET /pre-visit-summaries/:id:', error);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 
-  fastify.patch('/visit-preps/:id', preAuth, async (request, reply) => {
+  fastify.patch('/pre-visit-summaries/:id', preAuth, async (request, reply) => {
     try {
-      const paramsResult = visitPrepIdParamsSchema.safeParse(request.params);
+      const paramsResult = preVisitSummaryIdParamsSchema.safeParse(request.params);
       if (!paramsResult.success) {
         return reply.status(400).send({ error: paramsResult.error });
       }
       request.params = paramsResult.data;
 
-      const bodyResult = visitPrepPatchRequestSchema.safeParse(request.body);
+      const bodyResult = preVisitSummaryPatchRequestSchema.safeParse(request.body);
       if (!bodyResult.success) {
         return reply.status(400).send({ error: bodyResult.error });
       }
       request.body = bodyResult.data;
 
-      return updateVisitPrep(request, reply);
+      return updatePreVisitSummary(request, reply);
     } catch (error) {
-      console.error('PATCH /visit-preps/:id:', error);
+      console.error('PATCH /pre-visit-summaries/:id:', error);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 
-  fastify.delete('/visit-preps/:id', preAuth, async (request, reply) => {
+  fastify.delete('/pre-visit-summaries/:id', preAuth, async (request, reply) => {
     try {
-      const paramsResult = visitPrepIdParamsSchema.safeParse(request.params);
+      const paramsResult = preVisitSummaryIdParamsSchema.safeParse(request.params);
       if (!paramsResult.success) {
         return reply.status(400).send({ error: paramsResult.error });
       }
       request.params = paramsResult.data;
-      return deleteVisitPrep(request, reply);
+      return deletePreVisitSummary(request, reply);
     } catch (error) {
-      console.error('DELETE /visit-preps/:id:', error);
+      console.error('DELETE /pre-visit-summaries/:id:', error);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });
 }
 
-export default registerVisitPrepsRoutes;
+export default registerPreVisitSummariesRoutes;

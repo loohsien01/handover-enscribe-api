@@ -1,15 +1,15 @@
--- Enable RLS for visit_preps (user-owned PHI; no encounter linkage)
-ALTER TABLE public.visit_preps ENABLE ROW LEVEL SECURITY;
+-- Enable RLS for pre_visit_summaries (user-owned PHI; no encounter linkage)
+ALTER TABLE public.pre_visit_summaries ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Users can view their own visit preps"
-  ON public.visit_preps
+CREATE POLICY "Users can view their own pre-visit summaries"
+  ON public.pre_visit_summaries
   AS PERMISSIVE
   FOR SELECT
   TO authenticated
   USING (user_id = (SELECT auth.uid()));
 
-CREATE POLICY "Users can insert their own visit preps"
-  ON public.visit_preps
+CREATE POLICY "Users can insert their own pre-visit summaries"
+  ON public.pre_visit_summaries
   AS PERMISSIVE
   FOR INSERT
   TO authenticated
@@ -18,8 +18,8 @@ CREATE POLICY "Users can insert their own visit preps"
     user_id IS NOT NULL
   );
 
-CREATE POLICY "Users can update their own visit preps"
-  ON public.visit_preps
+CREATE POLICY "Users can update their own pre-visit summaries"
+  ON public.pre_visit_summaries
   AS PERMISSIVE
   FOR UPDATE
   TO authenticated
@@ -29,15 +29,15 @@ CREATE POLICY "Users can update their own visit preps"
     user_id IS NOT NULL
   );
 
-CREATE POLICY "Users can delete their own visit preps"
-  ON public.visit_preps
+CREATE POLICY "Users can delete their own pre-visit summaries"
+  ON public.pre_visit_summaries
   AS PERMISSIVE
   FOR DELETE
   TO authenticated
   USING (user_id = (SELECT auth.uid()));
 
 -- Service role bypass for ops scripts
-CREATE POLICY "service_role_all_visit_preps"
-  ON public.visit_preps
+CREATE POLICY "service_role_all_pre_visit_summaries"
+  ON public.pre_visit_summaries
   FOR ALL
   USING (true);

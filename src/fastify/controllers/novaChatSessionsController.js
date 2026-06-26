@@ -21,14 +21,14 @@ import * as userSecurityConfigController from './userSecurityConfigController.js
 import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
 import { novaChatCompletionProcessor } from '../processors/novaChatCompletionProcessor.js';
 import { enrichNovaCompletionPollWithPartial } from '../../utils/novaCompletionPartial.js';
-import { enrichNovaCompletionPollWithVisitPrepTitleDetails } from '../../utils/novaVisitPrepTitleDetailsCache.js';
+import { enrichNovaCompletionPollWithPreVisitSummaryTitleDetails } from '../../utils/novaPreVisitSummaryTitleDetailsCache.js';
 import { NOVA_CHAT_DEFAULT_TITLE, normalizeNovaChatTitle } from '../../utils/novaChatTitle.js';
 import {
   USAGE_METRICS,
   UsageLimitExceededError,
   assertUsageAllowedForUser,
 } from '../../utils/billingUsage.js';
-import { loadVisitPrepForPoll } from './visitPrepsController.js';
+import { loadPreVisitSummaryForPoll } from './preVisitSummariesController.js';
 
 async function redisOr503(reply) {
   const redis = await getRedisClient();
@@ -306,7 +306,7 @@ export async function postNovaChatTokenUsage(request, reply) {
  */
 async function enrichNovaCompletionPollPayload(redis, job, payload) {
   let out = await enrichNovaCompletionPollWithPartial(redis, job, payload);
-  out = await enrichNovaCompletionPollWithVisitPrepTitleDetails(redis, job, out);
+  out = await enrichNovaCompletionPollWithPreVisitSummaryTitleDetails(redis, job, out);
   return out;
 }
 
@@ -319,7 +319,7 @@ async function enrichNovaCompletionPollPayload(redis, job, payload) {
  * @param {string} userId
  * @param {string} chatId
  * @param {Buffer} masterKey
- * @param {{ id: string, status: string, usage?: object | null, visit_prep_id?: string | null, error_code?: string | null, error_message?: string | null }} job
+ * @param {{ id: string, status: string, usage?: object | null, pre_visit_summary_id?: string | null, error_code?: string | null, error_message?: string | null }} job
  */
 async function buildNovaCompletionPollPayload(request, redis, userId, chatId, masterKey, job) {
   if (job.status === 'pending' || job.status === 'running') {
@@ -330,7 +330,7 @@ async function buildNovaCompletionPollPayload(request, redis, userId, chatId, ma
     });
   }
   if (job.status === 'failed') {
-    if (job.error_code === 'VISIT_PREP_PERSIST_FAILED') {
+    if (job.error_code === 'PRE_VISIT_SUMMARY_PERSIST_FAILED') {
       const session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
       const last = session?.messages?.[session.messages.length - 1];
       const assistantContent = last?.role === 'assistant' ? last.content : '';
@@ -339,11 +339,11 @@ async function buildNovaCompletionPollPayload(request, redis, userId, chatId, ma
         status: 'failed',
         chat_id: chatId,
         code: job.error_code,
-        error: job.error_message || 'Failed to persist visit prep',
+        error: job.error_message || 'Failed to persist Pre-Visit Summary',
         assistant: { role: 'assistant', content: assistantContent },
         usage: job.usage ?? null,
         session: session ?? null,
-        visit_prep_id: null,
+        pre_visit_summary_id: null,
       });
     }
 
@@ -357,7 +357,7 @@ async function buildNovaCompletionPollPayload(request, redis, userId, chatId, ma
   }
   const session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
   if (!session) {
-    return enrichNovaCompletionPollWithVisitPrepTitleDetails(redis, job, {
+    return enrichNovaCompletionPollWithPreVisitSummaryTitleDetails(redis, job, {
       id: job.id,
       status: 'complete',
       chat_id: chatId,
@@ -381,26 +381,26 @@ async function buildNovaCompletionPollPayload(request, redis, userId, chatId, ma
     session,
   };
 
-  if (job.visit_prep_id) {
+  if (job.pre_visit_summary_id) {
     const supabase = getSupabaseClient(request.headers.authorization);
-    const visitPrep = await loadVisitPrepForPoll(supabase, userId, job.visit_prep_id, masterKey);
-    payload.visit_prep_id = job.visit_prep_id;
-    if (visitPrep) {
-      payload.visit_prep = visitPrep;
+    const preVisitSummary = await loadPreVisitSummaryForPoll(supabase, userId, job.pre_visit_summary_id, masterKey);
+    payload.pre_visit_summary_id = job.pre_visit_summary_id;
+    if (preVisitSummary) {
+      payload.pre_visit_summary = preVisitSummary;
     }
   }
 
-  return enrichNovaCompletionPollWithVisitPrepTitleDetails(redis, job, payload);
+  return enrichNovaCompletionPollWithPreVisitSummaryTitleDetails(redis, job, payload);
 }
 
 /**
  * POST /api/nova/chat-sessions/:chatId/completions
  * @param {import('fastify').FastifyRequest} request
  * @param {import('fastify').FastifyReply} reply
- * @param {{ saveVisitPrep?: boolean }} [completionOptions]
+ * @param {{ savePreVisitSummary?: boolean }} [completionOptions]
  */
 export async function postNovaChatCompletion(request, reply, completionOptions = {}) {
-  const { saveVisitPrep = false } = completionOptions;
+  const { savePreVisitSummary = false } = completionOptions;
   const redis = await redisOr503(reply);
   if (!redis) return;
 
@@ -431,7 +431,7 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
 
   const { data: doneJob } = await supabase
     .from(novaChatCompletionJobsTable)
-    .select('id, status, usage, visit_prep_id, error_code, error_message')
+    .select('id, status, usage, pre_visit_summary_id, error_code, error_message')
     .eq('chat_id', chatId)
     .eq('user_id', userId)
     .eq('client_message_id', body.client_message_id)
@@ -592,8 +592,8 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
   await novaSessionSave(redis, userId, session, ttl);
 
   const authHeader = request.headers.authorization;
-  const extractTitleDetails = saveVisitPrep && body.extract_title_details !== false;
-  const processorOptions = saveVisitPrep ? { saveVisitPrep: true, extractTitleDetails } : {};
+  const extractTitleDetails = savePreVisitSummary && body.extract_title_details !== false;
+  const processorOptions = savePreVisitSummary ? { savePreVisitSummary: true, extractTitleDetails } : {};
   setImmediate(() => {
     novaChatCompletionProcessor(newJob.id, userId, chatId, authHeader, processorOptions).catch((err) => {
       console.error(`[novaChatCompletionProcessor] Unhandled error for job ${newJob.id}:`, err);
@@ -608,10 +608,10 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
 }
 
 /**
- * POST /api/nova/chat-sessions/:chatId/completions-and-save-visit-prep
+ * POST /api/nova/chat-sessions/:chatId/completions-and-save-pre-visit-summary
  */
-export async function postNovaChatCompletionAndSaveVisitPrep(request, reply) {
-  return postNovaChatCompletion(request, reply, { saveVisitPrep: true });
+export async function postNovaChatCompletionAndSavePreVisitSummary(request, reply) {
+  return postNovaChatCompletion(request, reply, { savePreVisitSummary: true });
 }
 
 /**
@@ -627,7 +627,7 @@ export async function getNovaChatCompletionJob(request, reply) {
 
   const { data: job, error } = await supabase
     .from(novaChatCompletionJobsTable)
-    .select('id, chat_id, status, usage, visit_prep_id, error_code, error_message')
+    .select('id, chat_id, status, usage, pre_visit_summary_id, error_code, error_message')
     .eq('id', jobId)
     .eq('user_id', userId)
     .maybeSingle();
@@ -647,9 +647,9 @@ export async function getNovaChatCompletionJob(request, reply) {
 }
 
 /**
- * GET /api/nova/chat-sessions/:chatId/completion-jobs/:jobId/visit-prep
+ * GET /api/nova/chat-sessions/:chatId/completion-jobs/:jobId/pre-visit-summary
  */
-export async function getNovaChatCompletionJobVisitPrep(request, reply) {
+export async function getNovaChatCompletionJobPreVisitSummary(request, reply) {
   const redis = await redisOr503(reply);
   if (!redis) return;
 
@@ -659,7 +659,7 @@ export async function getNovaChatCompletionJobVisitPrep(request, reply) {
 
   const { data: job, error } = await supabase
     .from(novaChatCompletionJobsTable)
-    .select('id, chat_id, visit_prep_id')
+    .select('id, chat_id, pre_visit_summary_id')
     .eq('id', jobId)
     .eq('user_id', userId)
     .maybeSingle();
@@ -671,23 +671,23 @@ export async function getNovaChatCompletionJobVisitPrep(request, reply) {
     });
   }
 
-  if (!job.visit_prep_id) {
+  if (!job.pre_visit_summary_id) {
     return reply.status(404).send({
-      error: 'No visit prep saved for this job',
-      code: 'VISIT_PREP_NOT_FOUND',
+      error: 'No Pre-Visit Summary saved for this job',
+      code: 'PRE_VISIT_SUMMARY_NOT_FOUND',
     });
   }
 
   const masterKey = await userMasterKeyOr500(request, reply);
   if (!masterKey) return;
 
-  const visitPrep = await loadVisitPrepForPoll(supabase, userId, job.visit_prep_id, masterKey);
-  if (!visitPrep) {
+  const preVisitSummary = await loadPreVisitSummaryForPoll(supabase, userId, job.pre_visit_summary_id, masterKey);
+  if (!preVisitSummary) {
     return reply.status(404).send({
-      error: 'Visit prep not found',
-      code: 'VISIT_PREP_NOT_FOUND',
+      error: 'Pre-Visit Summary not found',
+      code: 'PRE_VISIT_SUMMARY_NOT_FOUND',
     });
   }
 
-  return reply.send(visitPrep);
+  return reply.send(preVisitSummary);
 }

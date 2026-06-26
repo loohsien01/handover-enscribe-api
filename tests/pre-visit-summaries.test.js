@@ -1,5 +1,5 @@
 /**
- * Visit preps API — CRUD + encryption round-trip + chat_id linkage
+ * Pre-Visit Summaries API — CRUD + encryption round-trip + chat_id linkage
  *
  * Env: API_BASE_URL, TEST_ACCOUNT_*, REDIS_URL (for Nova chat session create).
  */
@@ -16,10 +16,10 @@ import { getTestAccount, hasTestAccounts, getApiBaseUrl } from './testConfig.js'
 const MOCK_TOKEN = 'invalid.token.here';
 const UNKNOWN_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
 
-export async function runVisitPrepsTests() {
-  const runner = new TestRunner('Visit Preps API Tests');
+export async function runPreVisitSummariesTests() {
+  const runner = new TestRunner('Pre-Visit Summaries API Tests');
 
-  console.log('Starting Visit Preps API tests...');
+  console.log('Starting Pre-Visit Summaries API tests...');
   console.log(`Server: ${getApiBaseUrl()}\n`);
 
   const createdIds = [];
@@ -29,7 +29,7 @@ export async function runVisitPrepsTests() {
   await runner.test('1 — GET without auth', {
     testNumber: 1,
     method: 'GET',
-    endpoint: '/api/visit-preps',
+    endpoint: '/api/pre-visit-summaries',
     expectedStatus: 401,
     expectedFields: ['error'],
   });
@@ -37,7 +37,7 @@ export async function runVisitPrepsTests() {
   await runner.test('2 — GET with invalid token', {
     testNumber: 2,
     method: 'GET',
-    endpoint: '/api/visit-preps',
+    endpoint: '/api/pre-visit-summaries',
     headers: { Authorization: `Bearer ${MOCK_TOKEN}` },
     expectedStatus: 401,
     expectedFields: ['error'],
@@ -66,7 +66,7 @@ export async function runVisitPrepsTests() {
   if (!accessToken) {
     console.warn('\n⚠️  Skipping 3–14: no access token\n');
     runner.printResults();
-    runner.saveResults('visit-preps-tests.json');
+    runner.saveResults('pre-visit-summaries-tests.json');
     return runner.getSummary();
   }
 
@@ -76,12 +76,12 @@ export async function runVisitPrepsTests() {
   };
 
   const sampleText =
-    'Visit prep: review prior labs, discuss medication adherence, assess functional status.';
+    'Pre-Visit Summary: review prior labs, discuss medication adherence, assess functional status.';
 
   await runner.test('3 — POST missing chat_id', {
     testNumber: 3,
     method: 'POST',
-    endpoint: '/api/visit-preps',
+    endpoint: '/api/pre-visit-summaries',
     headers: authHeaders,
     body: { text: sampleText },
     expectedStatus: 400,
@@ -91,7 +91,7 @@ export async function runVisitPrepsTests() {
   await runner.test('4 — POST invalid chat_id format', {
     testNumber: 4,
     method: 'POST',
-    endpoint: '/api/visit-preps',
+    endpoint: '/api/pre-visit-summaries',
     headers: authHeaders,
     body: { chat_id: 'not-a-uuid', text: sampleText },
     expectedStatus: 400,
@@ -101,7 +101,7 @@ export async function runVisitPrepsTests() {
   await runner.test('5 — POST invalid body (extra field)', {
     testNumber: 5,
     method: 'POST',
-    endpoint: '/api/visit-preps',
+    endpoint: '/api/pre-visit-summaries',
     headers: authHeaders,
     body: { chat_id: UNKNOWN_ID, text: sampleText, extra: true },
     expectedStatus: 400,
@@ -111,14 +111,14 @@ export async function runVisitPrepsTests() {
   await runner.test('6 — POST unknown chat_id', {
     testNumber: 6,
     method: 'POST',
-    endpoint: '/api/visit-preps',
+    endpoint: '/api/pre-visit-summaries',
     headers: authHeaders,
     body: { chat_id: UNKNOWN_ID, text: sampleText },
     expectedStatus: 404,
     expectedFields: ['error', 'code'],
     customValidator: (data) => {
-      if (data?.code !== 'VISIT_PREP_CHAT_NOT_FOUND') {
-        return { passed: false, message: `expected VISIT_PREP_CHAT_NOT_FOUND, got ${data?.code}` };
+      if (data?.code !== 'PRE_VISIT_SUMMARY_CHAT_NOT_FOUND') {
+        return { passed: false, message: `expected PRE_VISIT_SUMMARY_CHAT_NOT_FOUND, got ${data?.code}` };
       }
       return { passed: true, message: '' };
     },
@@ -140,14 +140,14 @@ export async function runVisitPrepsTests() {
       `\n⚠️  Skipping 7–14: POST /nova/chat-sessions returned ${createChatRes.status}: ${JSON.stringify(errBody)}\n`
     );
     runner.printResults();
-    runner.saveResults('visit-preps-tests.json');
+    runner.saveResults('pre-visit-summaries-tests.json');
     return runner.getSummary();
   }
 
-  await runner.test('7 — POST create visit prep', {
+  await runner.test('7 — POST create pre-visit summary', {
     testNumber: 7,
     method: 'POST',
-    endpoint: '/api/visit-preps',
+    endpoint: '/api/pre-visit-summaries',
     headers: authHeaders,
     body: { chat_id: chatId, text: sampleText },
     expectedStatus: 201,
@@ -168,10 +168,10 @@ export async function runVisitPrepsTests() {
 
   const createdId = createdIds[0];
 
-  await runner.test('8 — GET single visit prep (encryption round-trip)', {
+  await runner.test('8 — GET single pre-visit summary (encryption round-trip)', {
     testNumber: 8,
     method: 'GET',
-    endpoint: `/api/visit-preps/${createdId}`,
+    endpoint: `/api/pre-visit-summaries/${createdId}`,
     headers: authHeaders,
     expectedStatus: 200,
     expectedFields: ['id', 'text', 'chat_id'],
@@ -189,7 +189,7 @@ export async function runVisitPrepsTests() {
   await runner.test('9 — GET list includes created row', {
     testNumber: 9,
     method: 'GET',
-    endpoint: '/api/visit-preps?limit=10',
+    endpoint: '/api/pre-visit-summaries?limit=10',
     headers: authHeaders,
     expectedStatus: 200,
     customValidator: (data) => {
@@ -207,12 +207,12 @@ export async function runVisitPrepsTests() {
     },
   });
 
-  const updatedText = 'Updated visit prep content with revised plan.';
+  const updatedText = 'Updated pre-visit summary content with revised plan.';
 
-  await runner.test('10 — PATCH visit prep', {
+  await runner.test('10 — PATCH pre-visit summary', {
     testNumber: 10,
     method: 'PATCH',
-    endpoint: `/api/visit-preps/${createdId}`,
+    endpoint: `/api/pre-visit-summaries/${createdId}`,
     headers: authHeaders,
     body: { text: updatedText },
     expectedStatus: 200,
@@ -228,10 +228,10 @@ export async function runVisitPrepsTests() {
     },
   });
 
-  await runner.test('11 — GET unknown visit prep', {
+  await runner.test('11 — GET unknown pre-visit summary', {
     testNumber: 11,
     method: 'GET',
-    endpoint: `/api/visit-preps/${UNKNOWN_ID}`,
+    endpoint: `/api/pre-visit-summaries/${UNKNOWN_ID}`,
     headers: authHeaders,
     expectedStatus: 404,
     expectedFields: ['error'],
@@ -240,16 +240,16 @@ export async function runVisitPrepsTests() {
   await runner.test('12 — GET invalid UUID', {
     testNumber: 12,
     method: 'GET',
-    endpoint: '/api/visit-preps/not-a-uuid',
+    endpoint: '/api/pre-visit-summaries/not-a-uuid',
     headers: authHeaders,
     expectedStatus: 400,
     expectedFields: ['error'],
   });
 
-  await runner.test('13 — DELETE visit prep', {
+  await runner.test('13 — DELETE pre-visit summary', {
     testNumber: 13,
     method: 'DELETE',
-    endpoint: `/api/visit-preps/${createdId}`,
+    endpoint: `/api/pre-visit-summaries/${createdId}`,
     headers: authHeaders,
     expectedStatus: 200,
     expectedFields: ['success', 'id'],
@@ -258,14 +258,14 @@ export async function runVisitPrepsTests() {
   await runner.test('14 — GET after delete returns 404', {
     testNumber: 14,
     method: 'GET',
-    endpoint: `/api/visit-preps/${createdId}`,
+    endpoint: `/api/pre-visit-summaries/${createdId}`,
     headers: authHeaders,
     expectedStatus: 404,
     expectedFields: ['error'],
   });
 
   runner.printResults();
-  const resultsFile = runner.saveResults('visit-preps-tests.json');
+  const resultsFile = runner.saveResults('pre-visit-summaries-tests.json');
   console.log(`✅ Test results saved to: ${resultsFile}\n`);
 
   return runner.getSummary();
@@ -273,7 +273,7 @@ export async function runVisitPrepsTests() {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
-    const summary = await runVisitPrepsTests();
+    const summary = await runPreVisitSummariesTests();
     process.exit(summary.failed > 0 ? 1 : 0);
   } catch (error) {
     console.error('Test execution failed:', error);

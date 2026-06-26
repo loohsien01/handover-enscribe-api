@@ -6,8 +6,8 @@
  *
  * Bedrock E2E (2× completions + AI title): `tests/nova-chat-sessions-completions.e2e.test.js`
  * (`npm run test:nova-chat-sessions-completions-e2e`).
- * Save visit prep E2E: `tests/nova-chat-sessions-save-visit-prep.e2e.test.js`
- * (`npm run test:nova-save-visit-prep-e2e`).
+ * Save pre-visit summary E2E: `tests/nova-chat-sessions-save-pre-visit-summary.e2e.test.js`
+ * (`npm run test:nova-save-pre-visit-summary-e2e`).
  *
  * Env: `API_BASE_URL`, `REDIS_URL`, `TEST_ACCOUNT_*`.
  */
@@ -175,39 +175,39 @@ export async function runNovaChatSessionsCompletionsTests() {
     },
   });
 
-  await runner.test('10 — save-visit-prep without auth', {
+  await runner.test('10 — save-pre-visit-summary without auth', {
     testNumber: 10,
     method: 'POST',
-    endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions-and-save-visit-prep`,
+    endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions-and-save-pre-visit-summary`,
     body: { model: 'sonnet', message: 'prep', client_message_id: randomUUID() },
     expectedStatus: 401,
     expectedFields: ['error'],
   });
 
-  await runner.test('11 — save-visit-prep invalid chatId', {
+  await runner.test('11 — save-pre-visit-summary invalid chatId', {
     testNumber: 11,
     method: 'POST',
-    endpoint: '/api/nova/chat-sessions/not-a-uuid/completions-and-save-visit-prep',
+    endpoint: '/api/nova/chat-sessions/not-a-uuid/completions-and-save-pre-visit-summary',
     headers: authHeaders,
     body: { model: 'sonnet', message: 'prep', client_message_id: randomUUID() },
     expectedStatus: 400,
     expectedFields: ['error'],
   });
 
-  await runner.test('12 — save-visit-prep missing client_message_id', {
+  await runner.test('12 — save-pre-visit-summary missing client_message_id', {
     testNumber: 12,
     method: 'POST',
-    endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions-and-save-visit-prep`,
+    endpoint: `/api/nova/chat-sessions/${PLACEHOLDER_CHAT_ID}/completions-and-save-pre-visit-summary`,
     headers: authHeaders,
     body: { model: 'sonnet', message: 'prep' },
     expectedStatus: 400,
     expectedFields: ['error'],
   });
 
-  await runner.test('13 — save-visit-prep unknown session', {
+  await runner.test('13 — save-pre-visit-summary unknown session', {
     testNumber: 13,
     method: 'POST',
-    endpoint: `/api/nova/chat-sessions/${UNKNOWN_CHAT_ID}/completions-and-save-visit-prep`,
+    endpoint: `/api/nova/chat-sessions/${UNKNOWN_CHAT_ID}/completions-and-save-pre-visit-summary`,
     headers: authHeaders,
     body: {
       model: 'sonnet',
@@ -224,10 +224,10 @@ export async function runNovaChatSessionsCompletionsTests() {
     },
   });
 
-  await runner.test('14 — save-visit-prep accepts extract_title_details', {
+  await runner.test('14 — save-pre-visit-summary accepts extract_title_details', {
     testNumber: 14,
     method: 'POST',
-    endpoint: `/api/nova/chat-sessions/${UNKNOWN_CHAT_ID}/completions-and-save-visit-prep`,
+    endpoint: `/api/nova/chat-sessions/${UNKNOWN_CHAT_ID}/completions-and-save-pre-visit-summary`,
     headers: authHeaders,
     body: {
       model: 'sonnet',

@@ -2,24 +2,24 @@ import { z } from 'zod';
 import { uuidRegex } from './regex.js';
 import { novaChatCompletionRequestSchema } from './novaChatRequests.js';
 
-export const visitPrepIdParamsSchema = z.object({
-  id: z.string().regex(uuidRegex, 'Invalid visit prep id'),
+export const preVisitSummaryIdParamsSchema = z.object({
+  id: z.string().regex(uuidRegex, 'Invalid pre-visit summary id'),
 });
 
-export const visitPrepCreateRequestSchema = z
+export const preVisitSummaryCreateRequestSchema = z
   .object({
     chat_id: z.string().regex(uuidRegex, 'Invalid chat_id'),
     text: z.string().default(''),
   })
   .strict();
 
-export const visitPrepPatchRequestSchema = z
+export const preVisitSummaryPatchRequestSchema = z
   .object({
     text: z.string(),
   })
   .strict();
 
-export const visitPrepListQuerySchema = z
+export const preVisitSummaryListQuerySchema = z
   .object({
     limit: z.coerce.number().int().positive().max(100).optional(),
     offset: z.coerce.number().int().nonnegative().optional(),
@@ -33,7 +33,7 @@ export const visitPrepListQuerySchema = z
     order: d.order ?? 'desc',
   }));
 
-/** POST …/completions-and-save-visit-prep — completions body + optional extract_title_details */
-export const novaChatCompletionAndSaveVisitPrepRequestSchema = novaChatCompletionRequestSchema.extend({
+/** POST …/completions-and-save-pre-visit-summary — completions body + optional extract_title_details */
+export const novaChatCompletionAndSavePreVisitSummaryRequestSchema = novaChatCompletionRequestSchema.extend({
   extract_title_details: z.boolean().optional(),
 });

@@ -16,7 +16,7 @@ import { runRecordingsTests } from './recordings.test.js';
 import { runTranscriptsTests } from './transcripts.test.js';
 import { runSoapNotesTests } from './soap-notes.test.js';
 import { runNotesTests } from './notes.test.js';
-import { runVisitPrepsTests } from './visit-preps.test.js';
+import { runPreVisitSummariesTests } from './pre-visit-summaries.test.js';
 import { runNoteTemplateSectionsTests } from './note-template-sections.test.js';
 import { runNoteTemplateTests } from './note-templates.test.js';
 import { runAwsTests } from './aws.test.js';
@@ -234,23 +234,23 @@ async function runAllTests() {
     results.push({ suite: 'Notes', status: 'failed', error: error.message });
   }
 
-  // Run Visit Preps Tests
+  // Run Pre-Visit Summaries Tests
   try {
     console.log('\n' + '-'.repeat(70));
-    console.log('TEST SUITE 5.55: VISIT PREPS API');
+    console.log('TEST SUITE 5.55: PRE-VISIT SUMMARIES API');
     console.log('-'.repeat(70) + '\n');
-    const visitPrepsResult = await runVisitPrepsTests();
+    const preVisitSummariesResult = await runPreVisitSummariesTests();
     results.push({
-      suite: 'Visit Preps',
+      suite: 'Pre-Visit Summaries',
       status: 'completed',
-      tests: visitPrepsResult?.total || 0,
-      passed: visitPrepsResult?.passed || 0,
-      failed: visitPrepsResult?.failed || 0,
-      passRate: visitPrepsResult?.passRate || '0%',
+      tests: preVisitSummariesResult?.total || 0,
+      passed: preVisitSummariesResult?.passed || 0,
+      failed: preVisitSummariesResult?.failed || 0,
+      passRate: preVisitSummariesResult?.passRate || '0%',
     });
   } catch (error) {
-    console.error('❌ Visit Preps tests failed:', error.message);
-    results.push({ suite: 'Visit Preps', status: 'failed', error: error.message });
+    console.error('❌ Pre-Visit Summaries tests failed:', error.message);
+    results.push({ suite: 'Pre-Visit Summaries', status: 'failed', error: error.message });
   }
 
   // Run Note Template Sections Tests

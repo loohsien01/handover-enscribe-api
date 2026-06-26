@@ -50,6 +50,33 @@ test('getNovaSummarizeDeltaRequestBody builds user blob from delta messages only
   assert.ok(String(body.messages[0].content).includes('A1'));
 });
 
+test('getNovaChatCompletionRequestBody adds pre-visit summary plain-text guidance when forPreVisitSummary', () => {
+  const body = getNovaChatCompletionRequestBody({
+    modelId: 'm',
+    summary: '',
+    priorMessages: [],
+    userMessage: 'Create pre-visit summary',
+    forPreVisitSummary: true,
+  });
+
+  const systemText = body.system.map((b) => b.text).join('\n');
+  assert.ok(systemText.includes('Pre-Visit Summary responses'));
+  assert.ok(systemText.includes('plain, compact text instead of markdown'));
+  assert.ok(systemText.includes('follow their instructions instead'));
+});
+
+test('getNovaChatCompletionRequestBody omits pre-visit summary guidance by default', () => {
+  const body = getNovaChatCompletionRequestBody({
+    modelId: 'm',
+    summary: '',
+    priorMessages: [],
+    userMessage: 'Hello',
+  });
+
+  const systemText = body.system.map((b) => b.text).join('\n');
+  assert.ok(!systemText.includes('Pre-Visit Summary responses'));
+});
+
 test('getNovaChatCompletionRequestBody hoists system-role history into system blocks', () => {
   const body = getNovaChatCompletionRequestBody({
     modelId: 'm',

@@ -204,6 +204,10 @@ const NOVA_CHAT_SYSTEM_PREAMBLE =
   'Provide accurate medical information and clear documentation help; you are not a substitute for professional judgment or in-person care. ' +
   'Respect privacy: treat user content as sensitive. Give a well-formed response, using professional language unless the user asks otherwise.';
 
+const NOVA_PRE_VISIT_SUMMARY_OUTPUT_FORMAT_SYSTEM =
+  'Pre-Visit Summary responses are shown directly to clinicians, so use human-readable formatting — plain, compact text instead of markdown styling, markdown headers, bold, tables, horizontal rules, or excess blank lines between sections. ' +
+  'If the user\'s message explicitly requests markdown or another formatted style, follow their instructions instead.';
+
 /**
  * @param {Array<{ role: string, content: string }>} messages
  * @returns {{ extraSystem: string[], dialog: Array<{ role: 'user' | 'assistant', content: string }> }}
@@ -236,6 +240,7 @@ function novaBedrockMaxPriorMessages() {
  * @param {string} opts.summary - Rolling session summary (plaintext)
  * @param {Array<{ role: string, content: string }>} opts.priorMessages - Dialog since `summary_covered_message_count` (`novaPriorDialogMessagesForBedrock`); older turns should appear only in `summary`.
  * @param {string} opts.userMessage - New user message for this turn
+ * @param {boolean} [opts.forPreVisitSummary] - Inject plain-text output guidance for pre-visit summary documents
  * @param {number} [opts.max_tokens]
  * @returns {object} Claude Bedrock request body
  */
@@ -244,6 +249,7 @@ export function getNovaChatCompletionRequestBody({
   summary,
   priorMessages,
   userMessage,
+  forPreVisitSummary = false,
   max_tokens = 8192,
 }) {
   const { extraSystem, dialog } = splitNovaSystemAndDialog(priorMessages);
@@ -258,6 +264,14 @@ export function getNovaChatCompletionRequestBody({
       cache_control: { type: 'ephemeral' },
     },
   ];
+
+  if (forPreVisitSummary) {
+    system.push({
+      type: 'text',
+      text: NOVA_PRE_VISIT_SUMMARY_OUTPUT_FORMAT_SYSTEM,
+      cache_control: { type: 'ephemeral' },
+    });
+  }
 
   const sum = summary != null ? String(summary) : '';
   if (sum.trim()) {
@@ -366,15 +380,15 @@ export function getNovaChatTitleRequestBody({
   };
 }
 
-const NOVA_VISIT_PREP_TITLE_DETAILS_SYSTEM =
-  'You extract visit prep sidebar metadata from a clinical assistant thread. ' +
+const NOVA_PRE_VISIT_SUMMARY_TITLE_DETAILS_SYSTEM =
+  'You extract pre-visit summary sidebar metadata from a clinical assistant thread. ' +
   'Read the first user message (pasted charts and instructions) and optional first assistant reply. ' +
   'Return JSON only matching the schema. ' +
   'Use patient_display_name "Unknown Patient" when no patient name is clearly identifiable. ' +
-  'Use visit_kind "F/U" for follow-up or return visit prep; "NP" for new patient visit prep.';
+  'Use visit_kind "F/U" for follow-up or return pre-visit summary; "NP" for new patient pre-visit summary.';
 
 /**
- * Bedrock request for visit prep title-field extraction (Haiku + JSON schema).
+ * Bedrock request for pre-visit summary title-field extraction (Haiku + JSON schema).
  *
  * @param {object} opts
  * @param {string} opts.modelId
@@ -383,7 +397,7 @@ const NOVA_VISIT_PREP_TITLE_DETAILS_SYSTEM =
  * @param {object} opts.outputSchema
  * @param {number} [opts.max_tokens]
  */
-export function getNovaVisitPrepTitleDetailsRequestBody({
+export function getNovaPreVisitSummaryTitleDetailsRequestBody({
   modelId,
   userMessage,
   assistantMessage,
@@ -391,7 +405,7 @@ export function getNovaVisitPrepTitleDetailsRequestBody({
   max_tokens = 256,
 }) {
   let content =
-    `Visit prep user message:\n${userMessage}\n\n`;
+    `Pre-Visit Summary user message:\n${userMessage}\n\n`;
   if (assistantMessage != null && String(assistantMessage).trim()) {
     content += `First assistant reply (optional context):\n${assistantMessage}\n\n`;
   }
@@ -402,7 +416,7 @@ export function getNovaVisitPrepTitleDetailsRequestBody({
     system: [
       {
         type: 'text',
-        text: NOVA_VISIT_PREP_TITLE_DETAILS_SYSTEM,
+        text: NOVA_PRE_VISIT_SUMMARY_TITLE_DETAILS_SYSTEM,
         cache_control: { type: 'ephemeral' },
       },
     ],

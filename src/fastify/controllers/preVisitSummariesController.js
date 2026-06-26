@@ -1,13 +1,13 @@
 /**
- * Visit preps — encrypted visit preparation documents (user master key).
- * `createVisitPrep` is the single write path for new rows (POST handler + Nova save processor).
+ * Pre-Visit Summaries — encrypted pre-visit summary documents (user master key).
+ * `createPreVisitSummary` is the single write path for new rows (POST handler + Nova save processor).
  */
 import { getSupabaseClient } from '../../utils/supabase.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import { chatSessionsTable } from '../../utils/novaChatPersistence.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 
-const visitPrepsTable = 'visit_preps';
+const preVisitSummariesTable = 'pre_visit_summaries';
 
 /**
  * @param {string} id
@@ -28,14 +28,14 @@ function stripEncryptionFields(row) {
  * @param {object} row
  * @param {Buffer} masterKey
  */
-function formatVisitPrepRow(row, masterKey, textOverride) {
+function formatPreVisitSummaryRow(row, masterKey, textOverride) {
   const decryptResult = encryptionUtils.decryptNoteText(row, masterKey);
   if (!decryptResult.success) {
     return { success: false, error: decryptResult.error };
   }
   const formatted = stripEncryptionFields(row);
   formatted.text = textOverride !== undefined ? textOverride : decryptResult.text ?? '';
-  return { success: true, visitPrep: formatted };
+  return { success: true, preVisitSummary: formatted };
 }
 
 /**
@@ -52,11 +52,11 @@ async function verifyOwnedChatSession(supabase, userId, chatId) {
     .maybeSingle();
 
   if (error) {
-    console.error('[createVisitPrep] chat session lookup failed:', error);
+    console.error('[createPreVisitSummary] chat session lookup failed:', error);
     return {
       success: false,
       error: error.message || 'Failed to verify chat session',
-      code: 'VISIT_PREP_CHAT_LOOKUP_FAILED',
+      code: 'PRE_VISIT_SUMMARY_CHAT_LOOKUP_FAILED',
     };
   }
 
@@ -64,7 +64,7 @@ async function verifyOwnedChatSession(supabase, userId, chatId) {
     return {
       success: false,
       error: 'Chat session not found',
-      code: 'VISIT_PREP_CHAT_NOT_FOUND',
+      code: 'PRE_VISIT_SUMMARY_CHAT_NOT_FOUND',
     };
   }
 
@@ -77,14 +77,14 @@ async function verifyOwnedChatSession(supabase, userId, chatId) {
  * @param {Buffer} masterKey
  * @param {{ text?: string, chatId: string }} input
  */
-export async function createVisitPrep(supabase, userId, masterKey, input) {
+export async function createPreVisitSummary(supabase, userId, masterKey, input) {
   const { text = '', chatId } = input;
 
   if (!chatId || !isValidUuid(chatId)) {
     return {
       success: false,
       error: 'chat_id is required',
-      code: 'VISIT_PREP_CHAT_ID_REQUIRED',
+      code: 'PRE_VISIT_SUMMARY_CHAT_ID_REQUIRED',
     };
   }
 
@@ -101,8 +101,8 @@ export async function createVisitPrep(supabase, userId, masterKey, input) {
     if (!encryptResult.success) {
       return {
         success: false,
-        error: encryptResult.error || 'Failed to encrypt visit prep text',
-        code: 'VISIT_PREP_ENCRYPT_FAILED',
+        error: encryptResult.error || 'Failed to encrypt pre-visit summary text',
+        code: 'PRE_VISIT_SUMMARY_ENCRYPT_FAILED',
       };
     }
     encryptedText = encryptResult.value;
@@ -110,7 +110,7 @@ export async function createVisitPrep(supabase, userId, masterKey, input) {
   }
 
   const { data: row, error } = await supabase
-    .from(visitPrepsTable)
+    .from(preVisitSummariesTable)
     .insert({
       user_id: userId,
       chat_id: chatId,
@@ -121,30 +121,30 @@ export async function createVisitPrep(supabase, userId, masterKey, input) {
     .single();
 
   if (error) {
-    console.error('[createVisitPrep] insert failed:', error);
+    console.error('[createPreVisitSummary] insert failed:', error);
     return {
       success: false,
-      error: error.message || 'Failed to create visit prep',
-      code: 'VISIT_PREP_INSERT_FAILED',
+      error: error.message || 'Failed to create Pre-Visit Summary',
+      code: 'PRE_VISIT_SUMMARY_INSERT_FAILED',
     };
   }
 
-  const formatted = formatVisitPrepRow(row, masterKey, text);
+  const formatted = formatPreVisitSummaryRow(row, masterKey, text);
   if (!formatted.success) {
     return {
       success: false,
-      error: formatted.error || 'Failed to decrypt visit prep after insert',
-      code: 'VISIT_PREP_DECRYPT_FAILED',
+      error: formatted.error || 'Failed to decrypt Pre-Visit Summary after insert',
+      code: 'PRE_VISIT_SUMMARY_DECRYPT_FAILED',
     };
   }
 
-  return { success: true, visitPrep: formatted.visitPrep };
+  return { success: true, preVisitSummary: formatted.preVisitSummary };
 }
 
 /**
- * POST /api/visit-preps
+ * POST /api/pre-visit-summaries
  */
-export async function createVisitPrepHandler(request, reply) {
+export async function createPreVisitSummaryHandler(request, reply) {
   const supabase = getSupabaseClient(request.headers.authorization);
   const user = request.user;
   if (!user) {
@@ -158,25 +158,25 @@ export async function createVisitPrepHandler(request, reply) {
     return reply.status(500).send({ error: keyResult.error });
   }
 
-  const result = await createVisitPrep(supabase, user.id, keyResult.masterKey, { text, chatId });
+  const result = await createPreVisitSummary(supabase, user.id, keyResult.masterKey, { text, chatId });
 
   if (!result.success) {
-    if (result.code === 'VISIT_PREP_CHAT_NOT_FOUND') {
+    if (result.code === 'PRE_VISIT_SUMMARY_CHAT_NOT_FOUND') {
       return reply.status(404).send({ error: result.error, code: result.code });
     }
-    if (result.code === 'VISIT_PREP_CHAT_ID_REQUIRED') {
+    if (result.code === 'PRE_VISIT_SUMMARY_CHAT_ID_REQUIRED') {
       return reply.status(400).send({ error: result.error, code: result.code });
     }
     return reply.status(500).send({ error: result.error, code: result.code });
   }
 
-  return reply.status(201).send(result.visitPrep);
+  return reply.status(201).send(result.preVisitSummary);
 }
 
 /**
- * GET /api/visit-preps
+ * GET /api/pre-visit-summaries
  */
-export async function listVisitPreps(request, reply) {
+export async function listPreVisitSummaries(request, reply) {
   const supabase = getSupabaseClient(request.headers.authorization);
   const user = request.user;
   if (!user) {
@@ -191,33 +191,33 @@ export async function listVisitPreps(request, reply) {
   }
 
   const { data, error } = await supabase
-    .from(visitPrepsTable)
+    .from(preVisitSummariesTable)
     .select('*')
     .eq('user_id', user.id)
     .order(sortBy, { ascending: order === 'asc' })
     .range(offset, offset + limit - 1);
 
   if (error) {
-    console.error('[listVisitPreps] fetch failed:', error);
+    console.error('[listPreVisitSummaries] fetch failed:', error);
     return reply.status(500).send({ error: error.message });
   }
 
-  const visitPreps = [];
+  const preVisitSummaries = [];
   for (const row of data) {
-    const formatted = formatVisitPrepRow(row, keyResult.masterKey);
+    const formatted = formatPreVisitSummaryRow(row, keyResult.masterKey);
     if (!formatted.success) {
       return reply.status(400).send({ error: formatted.error });
     }
-    visitPreps.push(formatted.visitPrep);
+    preVisitSummaries.push(formatted.preVisitSummary);
   }
 
-  return reply.status(200).send(visitPreps);
+  return reply.status(200).send(preVisitSummaries);
 }
 
 /**
- * GET /api/visit-preps/:id
+ * GET /api/pre-visit-summaries/:id
  */
-export async function getVisitPrep(request, reply) {
+export async function getPreVisitSummary(request, reply) {
   const supabase = getSupabaseClient(request.headers.authorization);
   const user = request.user;
   if (!user) {
@@ -226,7 +226,7 @@ export async function getVisitPrep(request, reply) {
 
   const { id } = request.params;
   if (!isValidUuid(id)) {
-    return reply.status(400).send({ error: 'Invalid visit prep ID format' });
+    return reply.status(400).send({ error: 'Invalid Pre-Visit Summary ID format' });
   }
 
   const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, user.id);
@@ -235,28 +235,28 @@ export async function getVisitPrep(request, reply) {
   }
 
   const { data: row, error } = await supabase
-    .from(visitPrepsTable)
+    .from(preVisitSummariesTable)
     .select('*')
     .eq('id', id)
     .eq('user_id', user.id)
     .maybeSingle();
 
   if (error || !row) {
-    return reply.status(404).send({ error: 'Visit prep not found' });
+    return reply.status(404).send({ error: 'Pre-Visit Summary not found' });
   }
 
-  const formatted = formatVisitPrepRow(row, keyResult.masterKey);
+  const formatted = formatPreVisitSummaryRow(row, keyResult.masterKey);
   if (!formatted.success) {
     return reply.status(400).send({ error: formatted.error });
   }
 
-  return reply.status(200).send(formatted.visitPrep);
+  return reply.status(200).send(formatted.preVisitSummary);
 }
 
 /**
- * PATCH /api/visit-preps/:id
+ * PATCH /api/pre-visit-summaries/:id
  */
-export async function updateVisitPrep(request, reply) {
+export async function updatePreVisitSummary(request, reply) {
   const supabase = getSupabaseClient(request.headers.authorization);
   const user = request.user;
   if (!user) {
@@ -265,7 +265,7 @@ export async function updateVisitPrep(request, reply) {
 
   const { id } = request.params;
   if (!isValidUuid(id)) {
-    return reply.status(400).send({ error: 'Invalid visit prep ID format' });
+    return reply.status(400).send({ error: 'Invalid Pre-Visit Summary ID format' });
   }
 
   const { text } = request.body;
@@ -276,14 +276,14 @@ export async function updateVisitPrep(request, reply) {
   }
 
   const { data: existing, error: fetchError } = await supabase
-    .from(visitPrepsTable)
+    .from(preVisitSummariesTable)
     .select('*')
     .eq('id', id)
     .eq('user_id', user.id)
     .maybeSingle();
 
   if (fetchError || !existing) {
-    return reply.status(404).send({ error: 'Visit prep not found' });
+    return reply.status(404).send({ error: 'Pre-Visit Summary not found' });
   }
 
   const encryptResult = encryptionUtils.encryptNoteText({ text }, keyResult.masterKey);
@@ -292,7 +292,7 @@ export async function updateVisitPrep(request, reply) {
   }
 
   const { data: updated, error: updateError } = await supabase
-    .from(visitPrepsTable)
+    .from(preVisitSummariesTable)
     .update({
       encrypted_text: encryptResult.value,
       text_iv: encryptResult.iv,
@@ -302,22 +302,22 @@ export async function updateVisitPrep(request, reply) {
     .single();
 
   if (updateError) {
-    console.error('[updateVisitPrep] update failed:', updateError);
+    console.error('[updatePreVisitSummary] update failed:', updateError);
     return reply.status(500).send({ error: updateError.message });
   }
 
-  const formatted = formatVisitPrepRow(updated, keyResult.masterKey, text);
+  const formatted = formatPreVisitSummaryRow(updated, keyResult.masterKey, text);
   if (!formatted.success) {
     return reply.status(400).send({ error: formatted.error });
   }
 
-  return reply.status(200).send(formatted.visitPrep);
+  return reply.status(200).send(formatted.preVisitSummary);
 }
 
 /**
- * DELETE /api/visit-preps/:id
+ * DELETE /api/pre-visit-summaries/:id
  */
-export async function deleteVisitPrep(request, reply) {
+export async function deletePreVisitSummary(request, reply) {
   const supabase = getSupabaseClient(request.headers.authorization);
   const user = request.user;
   if (!user) {
@@ -326,11 +326,11 @@ export async function deleteVisitPrep(request, reply) {
 
   const { id } = request.params;
   if (!isValidUuid(id)) {
-    return reply.status(400).send({ error: 'Invalid visit prep ID format' });
+    return reply.status(400).send({ error: 'Invalid Pre-Visit Summary ID format' });
   }
 
   const { data, error } = await supabase
-    .from(visitPrepsTable)
+    .from(preVisitSummariesTable)
     .delete()
     .eq('id', id)
     .eq('user_id', user.id)
@@ -339,9 +339,9 @@ export async function deleteVisitPrep(request, reply) {
 
   if (error) {
     if (error.code === 'PGRST116') {
-      return reply.status(404).send({ error: 'Visit prep not found' });
+      return reply.status(404).send({ error: 'Pre-Visit Summary not found' });
     }
-    console.error('[deleteVisitPrep] delete failed:', error);
+    console.error('[deletePreVisitSummary] delete failed:', error);
     return reply.status(500).send({ error: error.message });
   }
 
@@ -349,17 +349,17 @@ export async function deleteVisitPrep(request, reply) {
 }
 
 /**
- * Load visit prep for Nova completion poll (decrypted).
+ * Load pre-visit summary for Nova completion poll (decrypted).
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
- * @param {string} visitPrepId
+ * @param {string} preVisitSummaryId
  * @param {Buffer} masterKey
  */
-export async function loadVisitPrepForPoll(supabase, userId, visitPrepId, masterKey) {
+export async function loadPreVisitSummaryForPoll(supabase, userId, preVisitSummaryId, masterKey) {
   const { data: row, error } = await supabase
-    .from(visitPrepsTable)
+    .from(preVisitSummariesTable)
     .select('*')
-    .eq('id', visitPrepId)
+    .eq('id', preVisitSummaryId)
     .eq('user_id', userId)
     .maybeSingle();
 
@@ -367,10 +367,10 @@ export async function loadVisitPrepForPoll(supabase, userId, visitPrepId, master
     return null;
   }
 
-  const formatted = formatVisitPrepRow(row, masterKey);
+  const formatted = formatPreVisitSummaryRow(row, masterKey);
   if (!formatted.success) {
     return null;
   }
 
-  return formatted.visitPrep;
+  return formatted.preVisitSummary;
 }

@@ -1,22 +1,22 @@
 /**
- * Nova visit prep save — Bedrock E2E for POST …/completions-and-save-visit-prep.
+ * Nova pre-visit summary save — Bedrock E2E for POST …/completions-and-save-pre-visit-summary.
  *
  * **Not** in `npm test` / `runAll.js` — suffix `.e2e.test.js` marks opt-in suites.
  *
- * Full flow: create session → save-visit-prep (one FE-assembled plain-text message) →
- * poll until complete → assert visit_prep_id, embedded visit_prep, visit_prep_title_details
- * (async Haiku extraction), GET /api/visit-preps/:id, and GET …/visit-prep.
+ * Full flow: create session → save-pre-visit-summary (one FE-assembled plain-text message) →
+ * poll until complete → assert pre_visit_summary_id, embedded pre_visit_summary, pre_visit_summary_title_details
+ * (async Haiku extraction), GET /api/pre-visit-summaries/:id, and GET …/pre-visit-summary.
  *
  * Prerequisites:
  * - Fastify running (`npm run dev:fastify`)
  * - `REDIS_URL`, `TEST_ACCOUNT_EMAIL`, `TEST_ACCOUNT_PASSWORD` in `.env.local`
- * - visit_preps (with chat_id) + nova_chat_completion_jobs.visit_prep_id migrations applied
+ * - pre_visit_summaries (with chat_id) + nova_chat_completion_jobs.pre_visit_summary_id migrations applied
  * - Bedrock credentials / IAM on the API host
  *
- * Env: `NOVA_VISIT_PREP_E2E_MODEL` (default sonnet), `NOVA_E2E_COMPLETION_TIMEOUT_MS` (default 120000),
+ * Env: `NOVA_PRE_VISIT_SUMMARY_E2E_MODEL` (default sonnet), `NOVA_E2E_COMPLETION_TIMEOUT_MS` (default 120000),
  *   `NOVA_E2E_TITLE_POLL_TIMEOUT_MS` (default 30000).
  *
- * Run: `npm run test:nova-save-visit-prep-e2e`
+ * Run: `npm run test:nova-save-pre-visit-summary-e2e`
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -36,7 +36,7 @@ import {
   checkRedisReachableForTests,
 } from './testConfig.js';
 
-const E2E_MODEL = (process.env.NOVA_VISIT_PREP_E2E_MODEL || 'sonnet').toLowerCase();
+const E2E_MODEL = (process.env.NOVA_PRE_VISIT_SUMMARY_E2E_MODEL || 'sonnet').toLowerCase();
 const COMPLETION_TIMEOUT_MS = (() => {
   const n = Number.parseInt(process.env.NOVA_E2E_COMPLETION_TIMEOUT_MS || '120000', 10);
   return Number.isFinite(n) && n >= 10_000 ? n : 120_000;
@@ -53,7 +53,7 @@ const E2E_PATIENT_NAME = 'Test Doe';
 /**
  * FE-assembled turn-1 user message: instructions + pasted prior chart text in one string.
  */
-const VISIT_PREP_USER_MESSAGE = `Create a concise visit prep document for today's follow-up for patient ${E2E_PATIENT_NAME}.
+const PRE_VISIT_SUMMARY_USER_MESSAGE = `Create a concise pre-visit summary document for today's follow-up for patient ${E2E_PATIENT_NAME}.
 
 Use short bullet points under: Key issues, Meds, Follow-up questions.
 Tone: clinical, scannable. Do not invent data beyond the charts below.
@@ -71,7 +71,7 @@ Plan: Continue current meds. Encourage low-sodium diet and walking 30 min/day.`;
 
 /** @param {string} label */
 function logStep(label) {
-  console.log(`[nova-save-visit-prep.e2e] ${label}`);
+  console.log(`[nova-save-pre-visit-summary.e2e] ${label}`);
 }
 
 /** @returns {Promise<string | false>} */
@@ -92,7 +92,7 @@ async function e2eSkipReason() {
     return `Redis required: ${redisCheck.message}`;
   }
   if (!['haiku', 'sonnet', 'opus'].includes(E2E_MODEL)) {
-    return `NOVA_VISIT_PREP_E2E_MODEL must be haiku, sonnet, or opus (got: ${E2E_MODEL})`;
+    return `NOVA_PRE_VISIT_SUMMARY_E2E_MODEL must be haiku, sonnet, or opus (got: ${E2E_MODEL})`;
   }
   return false;
 }
@@ -123,7 +123,7 @@ async function pollCompletionJobUntilTerminal(base, authHeaders, chatId, jobId, 
 }
 
 /**
- * After terminal job poll, re-poll until visit_prep_title_details appears (fire-and-forget Haiku).
+ * After terminal job poll, re-poll until pre_visit_summary_title_details appears (fire-and-forget Haiku).
  *
  * @param {string} base
  * @param {Record<string, string>} authHeaders
@@ -131,7 +131,7 @@ async function pollCompletionJobUntilTerminal(base, authHeaders, chatId, jobId, 
  * @param {string} jobId
  * @param {number} timeoutMs
  */
-async function pollCompletionJobForVisitPrepTitleDetails(base, authHeaders, chatId, jobId, timeoutMs) {
+async function pollCompletionJobForPreVisitSummaryTitleDetails(base, authHeaders, chatId, jobId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const res = await makeRequest(
@@ -140,7 +140,7 @@ async function pollCompletionJobForVisitPrepTitleDetails(base, authHeaders, chat
       { headers: authHeaders, expectedStatus: 200 }
     );
     assert.equal(res.passed, true, JSON.stringify(res.body));
-    const details = res.body?.visit_prep_title_details;
+    const details = res.body?.pre_visit_summary_title_details;
     if (
       details != null &&
       typeof details.patient_display_name === 'string' &&
@@ -151,20 +151,20 @@ async function pollCompletionJobForVisitPrepTitleDetails(base, authHeaders, chat
     }
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
-  throw new Error('poll timeout waiting for visit_prep_title_details on completion job');
+  throw new Error('poll timeout waiting for pre_visit_summary_title_details on completion job');
 }
 
 /**
  * @param {unknown} details
  */
-function assertVisitPrepTitleDetails(details) {
+function assertPreVisitSummaryTitleDetails(details) {
   assert.ok(details != null && typeof details === 'object');
   assert.equal(typeof details.patient_display_name, 'string');
   assert.equal(details.patient_display_name, E2E_PATIENT_NAME);
   assert.ok(details.visit_kind === 'F/U' || details.visit_kind === 'NP');
 }
 
-test('1: completions-and-save-visit-prep → complete + visit_prep persisted', async (t) => {
+test('1: completions-and-save-pre-visit-summary → complete + pre_visit_summary persisted', async (t) => {
   const skip = await e2eSkipReason();
   if (skip) {
     t.skip(skip);
@@ -201,13 +201,13 @@ test('1: completions-and-save-visit-prep → complete + visit_prep persisted', a
   const chatId = createRes.body?.chatId;
   assert.ok(typeof chatId === 'string');
 
-  const userMessage = VISIT_PREP_USER_MESSAGE;
+  const userMessage = PRE_VISIT_SUMMARY_USER_MESSAGE;
 
-  logStep(`POST /completions-and-save-visit-prep (model=${E2E_MODEL})…`);
+  logStep(`POST /completions-and-save-pre-visit-summary (model=${E2E_MODEL})…`);
   const clientMessageId = randomUUID();
   const enqueue = await makeRequest(
     'POST',
-    `${base}/api/nova/chat-sessions/${chatId}/completions-and-save-visit-prep`,
+    `${base}/api/nova/chat-sessions/${chatId}/completions-and-save-pre-visit-summary`,
     {
       headers: authHeaders,
       body: {
@@ -249,63 +249,63 @@ test('1: completions-and-save-visit-prep → complete + visit_prep persisted', a
   assert.equal(typeof usage.input_tokens, 'number');
   assert.equal(typeof usage.output_tokens, 'number');
 
-  const visitPrepId = final?.visit_prep_id;
-  assert.ok(typeof visitPrepId === 'string' && visitPrepId.length > 0, 'missing visit_prep_id');
+  const preVisitSummaryId = final?.pre_visit_summary_id;
+  assert.ok(typeof preVisitSummaryId === 'string' && preVisitSummaryId.length > 0, 'missing pre_visit_summary_id');
 
-  const embedded = final?.visit_prep;
-  assert.ok(embedded != null, 'missing embedded visit_prep');
-  assert.equal(embedded.id, visitPrepId);
+  const embedded = final?.pre_visit_summary;
+  assert.ok(embedded != null, 'missing embedded pre_visit_summary');
+  assert.equal(embedded.id, preVisitSummaryId);
   assert.equal(embedded.chat_id, chatId);
   assert.equal(embedded.text, assistantText);
 
   assert.equal(
     final?.session?.title,
     NOVA_DEFAULT_TITLE,
-    'save route does not write sidebar title; FE PATCHes after visit_prep_title_details'
+    'save route does not write sidebar title; FE PATCHes after pre_visit_summary_title_details'
   );
 
-  logStep(`poll visit_prep_title_details (up to ${TITLE_POLL_TIMEOUT_MS}ms)…`);
-  const { titleDetails } = await pollCompletionJobForVisitPrepTitleDetails(
+  logStep(`poll pre_visit_summary_title_details (up to ${TITLE_POLL_TIMEOUT_MS}ms)…`);
+  const { titleDetails } = await pollCompletionJobForPreVisitSummaryTitleDetails(
     base,
     authHeaders,
     chatId,
     jobId,
     TITLE_POLL_TIMEOUT_MS
   );
-  assertVisitPrepTitleDetails(titleDetails);
+  assertPreVisitSummaryTitleDetails(titleDetails);
   logStep(
-    `visit_prep_title_details: ${titleDetails.patient_display_name}, ${titleDetails.visit_kind}`
+    `pre_visit_summary_title_details: ${titleDetails.patient_display_name}, ${titleDetails.visit_kind}`
   );
 
-  logStep('GET /api/visit-preps/:id…');
-  const getPrep = await makeRequest('GET', `${base}/api/visit-preps/${visitPrepId}`, {
+  logStep('GET /api/pre-visit-summaries/:id…');
+  const getPrep = await makeRequest('GET', `${base}/api/pre-visit-summaries/${preVisitSummaryId}`, {
     headers: authHeaders,
     expectedStatus: 200,
   });
   assert.equal(getPrep.passed, true);
-  assert.equal(getPrep.body?.id, visitPrepId);
+  assert.equal(getPrep.body?.id, preVisitSummaryId);
   assert.equal(getPrep.body?.chat_id, chatId);
   assert.equal(getPrep.body?.text, assistantText);
 
-  logStep('GET …/completion-jobs/:jobId/visit-prep…');
+  logStep('GET …/completion-jobs/:jobId/pre-visit-summary…');
   const getJobPrep = await makeRequest(
     'GET',
-    `${base}/api/nova/chat-sessions/${chatId}/completion-jobs/${jobId}/visit-prep`,
+    `${base}/api/nova/chat-sessions/${chatId}/completion-jobs/${jobId}/pre-visit-summary`,
     { headers: authHeaders, expectedStatus: 200 }
   );
   assert.equal(getJobPrep.passed, true);
-  assert.equal(getJobPrep.body?.id, visitPrepId);
+  assert.equal(getJobPrep.body?.id, preVisitSummaryId);
   assert.equal(getJobPrep.body?.chat_id, chatId);
   assert.equal(getJobPrep.body?.text, assistantText);
 
-  logStep('cleanup: DELETE /api/visit-preps/:id…');
-  const del = await makeRequest('DELETE', `${base}/api/visit-preps/${visitPrepId}`, {
+  logStep('cleanup: DELETE /api/pre-visit-summaries/:id…');
+  const del = await makeRequest('DELETE', `${base}/api/pre-visit-summaries/${preVisitSummaryId}`, {
     headers: authHeaders,
     expectedStatus: 200,
   });
   assert.equal(del.passed, true);
 
   logStep(
-    `OK — visit_prep_id=${visitPrepId}, title_details=${titleDetails.patient_display_name}, ${titleDetails.visit_kind}, assistant chars=${assistantText.length}`
+    `OK — pre_visit_summary_id=${preVisitSummaryId}, title_details=${titleDetails.patient_display_name}, ${titleDetails.visit_kind}, assistant chars=${assistantText.length}`
   );
 });

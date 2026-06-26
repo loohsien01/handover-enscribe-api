@@ -1,16 +1,16 @@
 /**
- * Fire-and-forget visit prep title-field extraction (Haiku + JSON schema).
- * @see docs/VISIT_PREP_ARCHITECTURE.md — Session title
+ * Fire-and-forget pre-visit summary title-field extraction (Haiku + JSON schema).
+ * @see docs/PRE_VISIT_SUMMARY_ARCHITECTURE.md — Session title
  */
 import { getSupabaseClient } from './supabase.js';
 import { getRedisClient } from './redisClient.js';
 import { claudeInvokeModel } from './bedrockClient.js';
-import { getNovaVisitPrepTitleDetailsRequestBody } from './claudeRequestBody.js';
+import { getNovaPreVisitSummaryTitleDetailsRequestBody } from './claudeRequestBody.js';
 import {
-  VISIT_PREP_TITLE_DETAILS_JSON_SCHEMA,
-  novaVisitPrepTitleDetailsModelId,
-  postProcessVisitPrepTitleDetails,
-} from './novaVisitPrepTitleDetails.js';
+  PRE_VISIT_SUMMARY_TITLE_DETAILS_JSON_SCHEMA,
+  novaPreVisitSummaryTitleDetailsModelId,
+  postProcessPreVisitSummaryTitleDetails,
+} from './novaPreVisitSummaryTitleDetails.js';
 import {
   pickFirstTurnForNovaChatTitle,
   truncateNovaChatTitlePromptText,
@@ -23,11 +23,11 @@ import {
   normalizeNovaSessionShape,
   novaSessionGet,
 } from './novaRedisSession.js';
-import { writeVisitPrepTitleDetails } from './novaVisitPrepTitleDetailsCache.js';
+import { writePreVisitSummaryTitleDetails } from './novaPreVisitSummaryTitleDetailsCache.js';
 import * as userSecurityConfigController from '../fastify/controllers/userSecurityConfigController.js';
 
 /**
- * True when this chat has exactly one successful Nova turn (complete or visit-prep save failure).
+ * True when this chat has exactly one successful Nova turn (complete or pre-visit-summary save failure).
  *
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
@@ -43,7 +43,7 @@ async function isFirstSuccessfulNovaTurnForChat(supabase, userId, chatId) {
     .eq('status', 'complete');
 
   if (completeErr) {
-    console.error('[novaVisitPrepTitleDetails] count complete jobs:', completeErr);
+    console.error('[novaPreVisitSummaryTitleDetails] count complete jobs:', completeErr);
     return false;
   }
 
@@ -53,10 +53,10 @@ async function isFirstSuccessfulNovaTurnForChat(supabase, userId, chatId) {
     .eq('chat_id', chatId)
     .eq('user_id', userId)
     .eq('status', 'failed')
-    .eq('error_code', 'VISIT_PREP_PERSIST_FAILED');
+    .eq('error_code', 'PRE_VISIT_SUMMARY_PERSIST_FAILED');
 
   if (vpFailErr) {
-    console.error('[novaVisitPrepTitleDetails] count visit prep failed jobs:', vpFailErr);
+    console.error('[novaPreVisitSummaryTitleDetails] count pre-visit summary failed jobs:', vpFailErr);
     return false;
   }
 
@@ -69,21 +69,21 @@ async function isFirstSuccessfulNovaTurnForChat(supabase, userId, chatId) {
  * @param {(reqBody: object) => Promise<{ text?: string }>} [invokeModel]
  * @returns {Promise<{ patient_display_name: string, visit_kind: 'F/U' | 'NP' } | null>}
  */
-export async function extractVisitPrepTitleDetailsWithModel(
+export async function extractPreVisitSummaryTitleDetailsWithModel(
   userMessage,
   assistantMessage,
   invokeModel = claudeInvokeModel
 ) {
-  const modelId = novaVisitPrepTitleDetailsModelId();
-  const reqBody = getNovaVisitPrepTitleDetailsRequestBody({
+  const modelId = novaPreVisitSummaryTitleDetailsModelId();
+  const reqBody = getNovaPreVisitSummaryTitleDetailsRequestBody({
     modelId,
     userMessage: truncateNovaChatTitlePromptText(userMessage),
     assistantMessage:
       assistantMessage != null ? truncateNovaChatTitlePromptText(assistantMessage) : undefined,
-    outputSchema: VISIT_PREP_TITLE_DETAILS_JSON_SCHEMA,
+    outputSchema: PRE_VISIT_SUMMARY_TITLE_DETAILS_JSON_SCHEMA,
   });
   const inv = await invokeModel(reqBody);
-  return postProcessVisitPrepTitleDetails(inv.text ?? '');
+  return postProcessPreVisitSummaryTitleDetails(inv.text ?? '');
 }
 
 /**
@@ -92,7 +92,7 @@ export async function extractVisitPrepTitleDetailsWithModel(
  *
  * @param {{ userId: string, chatId: string, jobId: string, authorizationHeader: string }} args
  */
-export async function maybeRunVisitPrepTitleDetailsExtraction(args) {
+export async function maybeRunPreVisitSummaryTitleDetailsExtraction(args) {
   const { userId, chatId, jobId, authorizationHeader } = args;
   const supabase = getSupabaseClient(authorizationHeader);
 
@@ -103,14 +103,14 @@ export async function maybeRunVisitPrepTitleDetailsExtraction(args) {
 
   const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, userId);
   if (!keyResult.success) {
-    console.error('[novaVisitPrepTitleDetails] master key:', keyResult.error);
+    console.error('[novaPreVisitSummaryTitleDetails] master key:', keyResult.error);
     return;
   }
   const masterKey = keyResult.masterKey;
 
   const redis = await getRedisClient();
   if (!redis) {
-    console.error('[novaVisitPrepTitleDetails] Redis unavailable');
+    console.error('[novaPreVisitSummaryTitleDetails] Redis unavailable');
     return;
   }
 
@@ -121,7 +121,7 @@ export async function maybeRunVisitPrepTitleDetailsExtraction(args) {
     session = loaded?.session ?? null;
   }
   if (!session) {
-    console.error('[novaVisitPrepTitleDetails] session not found for job', jobId);
+    console.error('[novaPreVisitSummaryTitleDetails] session not found for job', jobId);
     return;
   }
   normalizeNovaSessionShape(session);
@@ -133,9 +133,9 @@ export async function maybeRunVisitPrepTitleDetailsExtraction(args) {
 
   let details;
   try {
-    details = await extractVisitPrepTitleDetailsWithModel(userMessage, assistantMessage);
+    details = await extractPreVisitSummaryTitleDetailsWithModel(userMessage, assistantMessage);
   } catch (err) {
-    console.error('[novaVisitPrepTitleDetails] Bedrock invoke failed:', err);
+    console.error('[novaPreVisitSummaryTitleDetails] Bedrock invoke failed:', err);
     return;
   }
   if (!details) {
@@ -143,8 +143,8 @@ export async function maybeRunVisitPrepTitleDetailsExtraction(args) {
   }
 
   try {
-    await writeVisitPrepTitleDetails(redis, jobId, details);
+    await writePreVisitSummaryTitleDetails(redis, jobId, details);
   } catch (err) {
-    console.error('[novaVisitPrepTitleDetails] Redis write failed:', err);
+    console.error('[novaPreVisitSummaryTitleDetails] Redis write failed:', err);
   }
 }

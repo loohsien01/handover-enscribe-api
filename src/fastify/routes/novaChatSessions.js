@@ -9,7 +9,7 @@ import {
   novaChatTokenUsageRequestSchema,
   novaChatCompletionRequestSchema,
 } from '../schemas/novaChatRequests.js';
-import { novaChatCompletionAndSaveVisitPrepRequestSchema } from '../schemas/visitPrepRequests.js';
+import { novaChatCompletionAndSavePreVisitSummaryRequestSchema } from '../schemas/preVisitSummaryRequests.js';
 import {
   createNovaChatSession,
   listNovaChatSessions,
@@ -17,9 +17,9 @@ import {
   patchNovaChatSession,
   postNovaChatTokenUsage,
   postNovaChatCompletion,
-  postNovaChatCompletionAndSaveVisitPrep,
+  postNovaChatCompletionAndSavePreVisitSummary,
   getNovaChatCompletionJob,
-  getNovaChatCompletionJobVisitPrep,
+  getNovaChatCompletionJobPreVisitSummary,
 } from '../controllers/novaChatSessionsController.js';
 
 /**
@@ -31,9 +31,9 @@ import {
  * - PATCH  /api/nova/chat-sessions/:chatId
  * - POST   /api/nova/chat-sessions/:chatId/token-usage
  * - POST   /api/nova/chat-sessions/:chatId/completions (202 + job id; user message persisted; poll GET …/completion-jobs/:jobId)
- * - POST   /api/nova/chat-sessions/:chatId/completions-and-save-visit-prep (same + persist visit prep before complete)
+ * - POST   /api/nova/chat-sessions/:chatId/completions-and-save-pre-visit-summary (same + persist pre-visit summary before complete)
  * - GET    /api/nova/chat-sessions/:chatId/completion-jobs/:jobId (poll job: pending | running | complete | failed)
- * - GET    /api/nova/chat-sessions/:chatId/completion-jobs/:jobId/visit-prep (saved visit prep when visit_prep_id set)
+ * - GET    /api/nova/chat-sessions/:chatId/completion-jobs/:jobId/pre-visit-summary (saved pre-visit summary when pre_visit_summary_id set)
  */
 export default fp(async function novaChatSessionsRoutes(fastify) {
   const preAuth = { preHandler: [fastify.authenticate] };
@@ -101,16 +101,16 @@ export default fp(async function novaChatSessionsRoutes(fastify) {
     }
   });
 
-  fastify.get('/nova/chat-sessions/:chatId/completion-jobs/:jobId/visit-prep', preAuth, async (request, reply) => {
+  fastify.get('/nova/chat-sessions/:chatId/completion-jobs/:jobId/pre-visit-summary', preAuth, async (request, reply) => {
     try {
       const paramsResult = novaChatCompletionJobParamsSchema.safeParse(request.params);
       if (!paramsResult.success) {
         return reply.status(400).send({ error: serializeZodError(paramsResult.error) });
       }
       request.params = paramsResult.data;
-      return getNovaChatCompletionJobVisitPrep(request, reply);
+      return getNovaChatCompletionJobPreVisitSummary(request, reply);
     } catch (err) {
-      fastify.log.error('GET /nova/chat-sessions/:chatId/completion-jobs/:jobId/visit-prep:', err);
+      fastify.log.error('GET /nova/chat-sessions/:chatId/completion-jobs/:jobId/pre-visit-summary:', err);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });
@@ -129,7 +129,7 @@ export default fp(async function novaChatSessionsRoutes(fastify) {
     }
   });
 
-  fastify.post('/nova/chat-sessions/:chatId/completions-and-save-visit-prep', preAuth, async (request, reply) => {
+  fastify.post('/nova/chat-sessions/:chatId/completions-and-save-pre-visit-summary', preAuth, async (request, reply) => {
     try {
       const paramsResult = novaChatSessionIdParamsSchema.safeParse(request.params);
       if (!paramsResult.success) {
@@ -137,15 +137,15 @@ export default fp(async function novaChatSessionsRoutes(fastify) {
       }
       request.params = paramsResult.data;
 
-      const bodyResult = novaChatCompletionAndSaveVisitPrepRequestSchema.safeParse(request.body);
+      const bodyResult = novaChatCompletionAndSavePreVisitSummaryRequestSchema.safeParse(request.body);
       if (!bodyResult.success) {
         return reply.status(400).send({ error: serializeZodError(bodyResult.error) });
       }
       request.body = bodyResult.data;
 
-      return postNovaChatCompletionAndSaveVisitPrep(request, reply);
+      return postNovaChatCompletionAndSavePreVisitSummary(request, reply);
     } catch (err) {
-      fastify.log.error('POST /nova/chat-sessions/:chatId/completions-and-save-visit-prep:', err);
+      fastify.log.error('POST /nova/chat-sessions/:chatId/completions-and-save-pre-visit-summary:', err);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });
