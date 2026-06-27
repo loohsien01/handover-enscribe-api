@@ -151,7 +151,7 @@ Ops or internal scripts with `SUPABASE_SERVICE_ROLE_KEY` and `RSA_PRIVATE_KEY`:
 2. `getSystemMasterKey()` → unwrap system AES key.
 3. `decryptNoteText({ encrypted_text, text_iv }, systemKey)` for snapshot and feedback columns.
 
-Pattern aligns with `sql/scripts/encrypt-note-template-section-details.js` and `export-and-decrypt-by-user.js` (service role + unwrap).
+Pattern aligns with `sql/scripts/encrypt-system-template-content.js` and `export-and-decrypt-by-user.js` (service role + unwrap).
 
 ---
 

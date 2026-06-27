@@ -17,6 +17,7 @@ import { runTranscriptsTests } from './transcripts.test.js';
 import { runSoapNotesTests } from './soap-notes.test.js';
 import { runNotesTests } from './notes.test.js';
 import { runPreVisitSummariesTests } from './pre-visit-summaries.test.js';
+import { runPreVisitSummaryTemplatesTests } from './pre-visit-summary-templates.test.js';
 import { runNoteTemplateSectionsTests } from './note-template-sections.test.js';
 import { runNoteTemplateTests } from './note-templates.test.js';
 import { runAwsTests } from './aws.test.js';
@@ -251,6 +252,25 @@ async function runAllTests() {
   } catch (error) {
     console.error('❌ Pre-Visit Summaries tests failed:', error.message);
     results.push({ suite: 'Pre-Visit Summaries', status: 'failed', error: error.message });
+  }
+
+  // Run Pre-Visit Summary Templates Tests
+  try {
+    console.log('\n' + '-'.repeat(70));
+    console.log('TEST SUITE 5.56: PRE-VISIT SUMMARY TEMPLATES API');
+    console.log('-'.repeat(70) + '\n');
+    const preVisitSummaryTemplatesResult = await runPreVisitSummaryTemplatesTests();
+    results.push({
+      suite: 'Pre-Visit Summary Templates',
+      status: 'completed',
+      tests: preVisitSummaryTemplatesResult?.total || 0,
+      passed: preVisitSummaryTemplatesResult?.passed || 0,
+      failed: preVisitSummaryTemplatesResult?.failed || 0,
+      passRate: preVisitSummaryTemplatesResult?.passRate || '0%',
+    });
+  } catch (error) {
+    console.error('❌ Pre-Visit Summary Templates tests failed:', error.message);
+    results.push({ suite: 'Pre-Visit Summary Templates', status: 'failed', error: error.message });
   }
 
   // Run Note Template Sections Tests

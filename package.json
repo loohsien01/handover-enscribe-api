@@ -40,6 +40,7 @@
     "test:note-templates-complete": "node tests/note-templates-complete.test.js",
     "test:note-template-section-orders": "node tests/note-template-section-orders.test.js",
     "test:pre-visit-summaries": "node tests/pre-visit-summaries.test.js",
+    "test:pre-visit-summary-templates": "node tests/pre-visit-summary-templates.test.js",
     "test:cleanup": "node tests/cleanup.test.js",
     "migrate:apply-psql": "node sql/scripts/apply-psql-migration.mjs"
   },

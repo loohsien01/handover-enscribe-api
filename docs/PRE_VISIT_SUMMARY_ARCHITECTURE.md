@@ -33,6 +33,11 @@ All paths require `Authorization: Bearer <access_token>` unless noted.
 | `GET` | `/api/pre-visit-summaries/:id` |
 | `PATCH` | `/api/pre-visit-summaries/:id` |
 | `DELETE` | `/api/pre-visit-summaries/:id` |
+| `GET` | `/api/pre-visit-summary-templates` |
+| `POST` | `/api/pre-visit-summary-templates` |
+| `GET` | `/api/pre-visit-summary-templates/:id` |
+| `PATCH` | `/api/pre-visit-summary-templates/:id` |
+| `DELETE` | `/api/pre-visit-summary-templates/:id` |
 | `POST` | `/api/nova/chat-sessions/:chatId/completions-and-save-pre-visit-summary` |
 | `GET` | `/api/nova/chat-sessions/:chatId/completion-jobs/:jobId` |
 | `GET` | `/api/nova/chat-sessions/:chatId/completion-jobs/:jobId/pre-visit-summary` |
@@ -53,7 +58,7 @@ CRUD **404** responses for unknown `:id` use `{ "error": "Pre-Visit Summary not 
 
 **DB upgrade *(BE ops only; FE not affected)*:** apply `sql/migrations/20260627_rename_visit_preps_to_pre_visit_summaries.sql` on databases that already ran the old `visit_preps` migrations. Fresh installs use the renamed migration files directly.
 
-**Phase 2 (docs only):** default instruction templates will live in `pre_visit_summary_templates` (not implemented in v1).
+**Phase 2:** default instruction templates live in `pre_visit_summary_templates` (CRUD shipped; system seed script optional / later).
 
 ---
 
@@ -66,7 +71,7 @@ CRUD **404** responses for unknown `:id` use `{ "error": "Pre-Visit Summary not 
 | **API — Nova save** | `POST …/completions-and-save-pre-visit-summary` + completion poll | ✅ Shipped |
 | **API — Nova title** | `extract_title_details` + `pre_visit_summary_title_details` poll field (ephemeral) | ✅ Shipped |
 | **Tests** | CRUD + save-pre-visit-summary validation + unit tests; Bedrock E2E opt-in | ✅ Shipped |
-| **Templates** | `pre_visit_summary_templates` table + CRUD | 🔲 Phase 2 |
+| **Templates** | `pre_visit_summary_templates` table + CRUD | ✅ Shipped *(requires migration on each environment)* |
 | **List `chat_title` join** | Join `chat_sessions.title` on list rows | 🔲 Not in v1 |
 
 ---
@@ -84,7 +89,7 @@ CRUD **404** responses for unknown `:id` use `{ "error": "Pre-Visit Summary not 
 - No server-side assembly of the Nova user message (FE builds the message from fetched notes + instructions).
 - No JSON schema on the **pre-visit summary document** (main Sonnet assistant output) — clinicians control format via natural-language instructions in the user message. (Separate Haiku JSON extraction for **session title fields** is documented under [Session title](#session-title).)
 - No `patient_encounter_id` or encounter linkage on `pre_visit_summaries`.
-- No `pre_visit_summary_templates` table (phase 2).
+- No server-side “apply template” endpoint — FE loads template `text` via CRUD and prepends into Nova `message`.
 - No `source_note_ids` on `pre_visit_summaries` — input charts live only in the Nova user `message`.
 - No second job table or poll URL — reuse `nova_chat_completion_jobs` and **`GET …/completion-jobs/:jobId`**.
 
@@ -204,7 +209,7 @@ That block nudges human-readable plain text (avoid markdown styling by default; 
 
 The FE user message typically includes:
 
-1. Clinician instructions (tone, sections, bullet vs table, etc.) — editable per run; phase 2 may load defaults from **`pre_visit_summary_templates`**.
+1. Clinician instructions (tone, sections, bullet vs table, etc.) — editable per run; may load defaults from **`pre_visit_summary_templates`** (`GET …/pre-visit-summary-templates/:id`).
 2. Delimiters and metadata for each past chart (date, optional labels) plus decrypted note body text — all plain text in **`message`**; the API does not store note ids on `pre_visit_summaries`.
 
 The model returns **free-form text** (markdown, bullets, tables, etc.) per those instructions. That string is stored as **`pre_visit_summaries.text`** (API field **`text`** on responses) without server-side structural parsing.
@@ -580,14 +585,105 @@ Controller verifies ownership on `:id` routes (defense in depth).
 
 ## Phase 2 — `pre_visit_summary_templates`
 
-| Column | Notes |
-|--------|--------|
-| `id` | bigint or uuid |
-| `name` | Display name |
-| `user_id` | null = system template |
-| `encrypted_instructions` + `instructions_iv` | Default instruction block for FE to prepend |
+Default **instruction blocks** for the Pre-Visit Summary page. FE loads template **`text`**, lets the clinician edit it, then prepends it into the Nova user **`message`** (along with pasted charts). **No** dedicated “apply template” API — CRUD only. Nova save contract unchanged.
 
-CRUD + “use template” on pre-visit summary page. Does not change Nova save contract — FE still sends one **`message`** string.
+### Table: `public.pre_visit_summary_templates`
+
+| Column | Type | Notes |
+|--------|------|--------|
+| `id` | `uuid` | PK, `gen_random_uuid()` |
+| `user_id` | `uuid` | **`NULL` = system template** (read-only for users). User-owned rows reference `auth.users(id)` **`ON DELETE CASCADE`**. |
+| `name` | `text` | Display name. **`NOT NULL`**. Unique per owner scope (case-insensitive, trimmed). |
+| `encrypted_text` | `text` | Ciphertext of template body. Nullable when empty. |
+| `text_iv` | `text` | IV for text encryption. Nullable when empty. |
+| `is_default` | `boolean` | **`NOT NULL DEFAULT false`**. At most **one `true` per owner scope** (`user_id`, including `NULL` for system). |
+| `created_at` | `timestamptz` | `DEFAULT now()` |
+| `updated_at` | `timestamptz` | `DEFAULT now()`; trigger on UPDATE |
+
+**Encryption:**
+
+| Row type | Key |
+|----------|-----|
+| `user_id IS NULL` (system) | System master key |
+| `user_id = <uuid>` (user) | User master key |
+
+**Indexes:** `(user_id, created_at DESC)`; partial unique on `(user_id) WHERE is_default`; unique on `(COALESCE(user_id, zero-uuid), lower(trim(name)))`.
+
+**Migration:** `sql/migrations/20260628_pre_visit_summary_templates.sql` + `sql/policies/pre_visit_summary_templates_RLS.sql`.
+
+**System seeds:** optional ops script (not required for CRUD); insert via service role with system master key encryption.
+
+### API — `/api/pre-visit-summary-templates`
+
+**Auth:** `Authorization: Bearer <access_token>`
+
+**List visibility:** authenticated users see **own templates + system templates** (`user_id IS NULL`), same ownership model as `noteTemplates`.
+
+#### `GET /api/pre-visit-summary-templates`
+
+Paginated list. Query params (defaults in parentheses):
+
+| Param | Default | Allowed |
+|-------|---------|---------|
+| `limit` | `50` | 1–100 |
+| `offset` | `0` | ≥ 0 |
+| `sortBy` | `created_at` | `created_at`, `updated_at`, `name`, `id` |
+| `order` | `desc` | `asc`, `desc` |
+| `decrypt_text` | `false` | `true` / `false` (also accepts `1` / `0`) |
+
+When **`decrypt_text=false`** (default), items omit **`text`** (metadata only: `id`, `name`, `user_id`, `is_default`, timestamps). When **`decrypt_text=true`**, each item includes decrypted **`text`** (system rows use system key; user rows use user key).
+
+#### `GET /api/pre-visit-summary-templates/:id`
+
+Single row with decrypted **`text`**. **404** `{ "error": "Pre-Visit Summary Template not found" }` for unknown id or row not visible via RLS.
+
+#### `POST /api/pre-visit-summary-templates`
+
+Create a user-owned template from scratch.
+
+**Request:**
+
+```json
+{
+  "name": "Concise F/U",
+  "text": "Use concise clinical language…\n\nSections: …",
+  "is_default": false
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|--------|
+| `name` | `string` | Yes | Trimmed; max 200 chars; unique per user (case-insensitive) |
+| `text` | `string` | No | Defaults to `""`; max 50_000 chars |
+| `is_default` | `boolean` | No | Default `false`. When `true`, clears other defaults for this user before insert |
+
+**Response 201:** created object with decrypted **`text`**.
+
+#### `PATCH /api/pre-visit-summary-templates/:id`
+
+Update **own** row only (not system). At least one of `name`, `text`, `is_default` required.
+
+When **`is_default: true`**, clears other defaults for the same user before update.
+
+**Response 200:** updated object with decrypted **`text`**.
+
+#### `DELETE /api/pre-visit-summary-templates/:id`
+
+Hard delete own row. **200** `{ "success": true, "id": "<uuid>" }`.
+
+**Errors:** **401**, **404** (plain `{ "error": "…" }`), **400** (validation), **409** duplicate name (same shape as note templates), **500** encrypt/DB failures.
+
+### RLS
+
+Mirror `noteTemplates`: SELECT own + system; INSERT/UPDATE/DELETE own only; service role full access for ops/seeds.
+
+### FE integration *(separate repo — docs only)*
+
+1. `GET /api/pre-visit-summary-templates` → template picker (paginated; pass `decrypt_text=true` only when inline preview needs body text).
+2. User selects template → `GET …/:id` → populate editable instructions field with **`text`**.
+3. User edits, selects charts, builds Nova **`message`**, then existing turn-1 save flow unchanged.
+
+**`is_default`:** API stores one default per user (and one among system templates when seeded). FE may pre-select the default on page load.
 
 ---
 
@@ -613,6 +709,7 @@ For backend tracking; FE can ignore this section.
 - [x] `chat_id` on `pre_visit_summaries` (`20260625_pre_visit_summaries_chat_id.sql`)
 - [x] `chat_id` FK `ON DELETE SET NULL` (`20260626_pre_visit_summaries_chat_id_fkey.sql`)
 - [x] Upgrade rename from `visit_preps` (`20260627_rename_visit_preps_to_pre_visit_summaries.sql`)
+- [x] `pre_visit_summary_templates` table + RLS (`20260628_pre_visit_summary_templates.sql`, `pre_visit_summary_templates_RLS.sql`) *(apply on each environment)*
 
 ### Controller & processor
 
@@ -620,6 +717,7 @@ For backend tracking; FE can ignore this section.
 - [x] `savePreVisitSummary` processor path + `pre_visit_summary_id` on job
 - [x] `PRE_VISIT_SUMMARY_PERSIST_FAILED` poll enrichment
 - [x] **`maybeRunPreVisitSummaryTitleDetailsExtraction`** + Redis poll cache
+- [x] **`preVisitSummaryTemplatesController`** + CRUD routes
 
 ### Routes & tests
 
@@ -628,6 +726,7 @@ For backend tracking; FE can ignore this section.
 - [x] Unit tests: `novaPreVisitSummaryTitleDetails`, `novaBedrockChat`
 - [x] Integration: `tests/pre-visit-summaries.test.js`, save-route validation in `nova-chat-sessions-completions.test.js`
 - [x] E2E (opt-in): `tests/nova-chat-sessions-save-pre-visit-summary.e2e.test.js`
+- [x] Templates CRUD: `tests/pre-visit-summary-templates.test.js`
 
 ---
 
@@ -640,6 +739,7 @@ For backend tracking; FE can ignore this section.
 | Nova routes / poll | `src/fastify/routes/novaChatSessions.js`, `src/fastify/controllers/novaChatSessionsController.js` |
 | Generic session title (non-blocking) | `src/utils/novaChatTitleService.js` |
 | Pre-Visit Summary title details | `src/utils/novaPreVisitSummaryTitleDetailsService.js`, `src/utils/novaPreVisitSummaryTitleDetails.js`, `src/utils/novaPreVisitSummaryTitleDetailsCache.js` |
+| Pre-Visit Summary templates CRUD | `src/fastify/controllers/preVisitSummaryTemplatesController.js`, `src/fastify/routes/preVisitSummaryTemplates.js`, `src/fastify/schemas/preVisitSummaryTemplateRequests.js` |
 | Notes encrypt/decrypt | `src/fastify/controllers/notesController.js`, `src/utils/encryptionUtils.js` |
 | Completion request limits | `src/fastify/schemas/novaChatRequests.js` |
 | User master key | `src/fastify/controllers/userSecurityConfigController.js` → `getOrCreateUserMasterKey()` |

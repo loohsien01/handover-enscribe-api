@@ -22,6 +22,7 @@ import { registerTranscriptsRoutes } from './routes/transcripts.js';
 import { registerSoapNotesRoutes } from './routes/soapNotes.js';
 import { registerNotesRoutes } from './routes/notes.js';
 import { registerPreVisitSummariesRoutes } from './routes/preVisitSummaries.js';
+import { registerPreVisitSummaryTemplatesRoutes } from './routes/preVisitSummaryTemplates.js';
 import { registerMaskPhiRoutes } from './routes/maskPhi.js';
 import { registerTranscribeRoutes } from './routes/transcribe.js';
 import { registerPromptLlmJobsRoutes } from './routes/promptLlmJobs.js';
@@ -174,6 +175,7 @@ async function createFastifyApp(options = {}) {
     await registerSoapNotesRoutes(apiScope);
     await registerNotesRoutes(apiScope);
     await registerPreVisitSummariesRoutes(apiScope);
+    await registerPreVisitSummaryTemplatesRoutes(apiScope);
     await registerNoteTemplateSectionsRoutes(apiScope);
     await registerNoteTemplatesRoutes(apiScope);
     await registerNoteTemplatesCompleteRoutes(apiScope);
