@@ -54,6 +54,7 @@ jobs:
           AWS_ACTIONS_ACCESS_KEY_ID: ${{ secrets.AWS_ACTIONS_ACCESS_KEY_ID }}
           AWS_ACTIONS_SECRET_ACCESS_KEY: ${{ secrets.AWS_ACTIONS_SECRET_ACCESS_KEY }}
           AWS_ARCHIVE_S3_BUCKET: ${{ secrets.AWS_ARCHIVE_S3_BUCKET }}
+          AWS_RECORDINGS_S3_BUCKET: ${{ secrets.AWS_RECORDINGS_S3_BUCKET }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
           AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
@@ -104,6 +105,7 @@ jobs:
             "AWS_ACTIONS_ACCESS_KEY_ID"
             "AWS_ACTIONS_SECRET_ACCESS_KEY"
             "AWS_ARCHIVE_S3_BUCKET"
+            "AWS_RECORDINGS_S3_BUCKET"
             "AWS_REGION"
             "AZURE_OPENAI_API_VERSION"
             "AZURE_OPENAI_DEPLOYMENT"
@@ -218,6 +220,7 @@ jobs:
           echo "Setting up environment variables..."
           cat > .env.local << 'ENVEOF'
           AWS_ARCHIVE_S3_BUCKET=${{ secrets.AWS_ARCHIVE_S3_BUCKET }}
+          AWS_RECORDINGS_S3_BUCKET=${{ secrets.AWS_RECORDINGS_S3_BUCKET }}
           AWS_REGION=${{ secrets.AWS_REGION }}
           AZURE_OPENAI_API_VERSION=${{ secrets.AZURE_OPENAI_API_VERSION }}
           AZURE_OPENAI_DEPLOYMENT=${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
