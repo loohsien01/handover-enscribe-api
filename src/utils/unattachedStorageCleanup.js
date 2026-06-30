@@ -6,13 +6,17 @@
 import { timingSafeEqual } from 'node:crypto';
 import { loadCleanupExcludedUserIdSet } from './cleanupExcludedUserIds.js';
 import { querySupabasePostgres } from './supabasePostgresPool.js';
+import {
+  AUDIO_BUCKET,
+  listRecordingRootUserPrefixes,
+  listUserRecordingObjects,
+  deleteRecordingObject,
+} from './recordingsStorage.js';
 
-export const AUDIO_BUCKET = 'audio-files';
+export { AUDIO_BUCKET };
 const JOB_NAME = 'unattached_storage';
 const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_DELETES = 500;
-const PAGE_SIZE = 100;
-const PARALLEL_LIST_BATCHES = 5;
 /** Cap paths / error keys stored in archive.job_runs.result (full lists remain in HTTP response). */
 const RESULT_PREVIEW = 50;
 
@@ -142,22 +146,17 @@ export async function runUnattachedStorageCleanup(supabase, opts = {}) {
 
       for (let i = 0; i < take.length; i += REMOVE_CHUNK) {
         const chunk = take.slice(i, i + REMOVE_CHUNK).map((c) => c.path);
-        const { error: batchError } = await supabase.storage.from(AUDIO_BUCKET).remove(chunk);
 
-        if (batchError) {
-          for (const path of chunk) {
-            const { error: oneErr } = await supabase.storage.from(AUDIO_BUCKET).remove([path]);
-            if (oneErr) {
-              failed.push(path);
-              errors[path] = oneErr.message || 'Storage error';
-            } else {
-              deleted.push(path);
-              remaining--;
-            }
+        for (const objectPath of chunk) {
+          try {
+            await deleteRecordingObject(supabase, objectPath);
+            deleted.push(objectPath);
+            remaining--;
+          } catch (oneErr) {
+            failed.push(objectPath);
+            errors[objectPath] =
+              oneErr instanceof Error ? oneErr.message : 'Storage error';
           }
-        } else {
-          deleted.push(...chunk);
-          remaining -= chunk.length;
         }
       }
     }
@@ -223,32 +222,15 @@ export async function runUnattachedStorageCleanup(supabase, opts = {}) {
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  */
 export async function listRootUserPrefixes(supabase) {
-  const dirs = new Set();
-  let offset = 0;
-  const rootPage = 1000;
+  return listRecordingRootUserPrefixes(supabase);
+}
 
-  while (true) {
-    const { data, error } = await supabase.storage.from(AUDIO_BUCKET).list('', {
-      limit: rootPage,
-      offset,
-    });
-
-    if (error) {
-      throw new Error(`storage list root failed: ${error.message}`);
-    }
-    if (!data?.length) break;
-
-    for (const item of data) {
-      if (USER_DIR_UUID.test(item.name)) {
-        dirs.add(item.name);
-      }
-    }
-
-    if (data.length < rootPage) break;
-    offset += rootPage;
-  }
-
-  return [...dirs];
+/**
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase
+ * @param {string} userId
+ */
+export async function listAllFilesInUserFolder(supabase, userId) {
+  return listUserRecordingObjects(supabase, userId);
 }
 
 /**
@@ -285,56 +267,6 @@ export async function listDistinctRecordingUserIds(supabase) {
   }
 
   return [...ids];
-}
-
-/**
- * @param {import('@supabase/supabase-js').SupabaseClient} supabase
- * @param {string} userId
- */
-export async function listAllFilesInUserFolder(supabase, userId) {
-  const allStorageFiles = [];
-  let currentOffset = 0;
-  let hasMoreFiles = true;
-
-  while (hasMoreFiles) {
-    const batchPromises = [];
-    for (let i = 0; i < PARALLEL_LIST_BATCHES; i++) {
-      const off = currentOffset + i * PAGE_SIZE;
-      batchPromises.push(
-        supabase.storage.from(AUDIO_BUCKET).list(userId, {
-          limit: PAGE_SIZE,
-          offset: off,
-        })
-      );
-    }
-
-    const results = await Promise.all(batchPromises);
-
-    let foundAnyData = false;
-    for (const { data: storageData, error: storageError } of results) {
-      if (storageError) {
-        throw new Error(`storage list ${userId}: ${storageError.message}`);
-      }
-      if (!storageData || storageData.length === 0) {
-        hasMoreFiles = false;
-        break;
-      }
-      foundAnyData = true;
-      allStorageFiles.push(...storageData);
-      if (storageData.length < PAGE_SIZE) {
-        hasMoreFiles = false;
-        break;
-      }
-    }
-
-    if (!foundAnyData) {
-      hasMoreFiles = false;
-    }
-
-    currentOffset += PARALLEL_LIST_BATCHES * PAGE_SIZE;
-  }
-
-  return allStorageFiles;
 }
 
 export function safeEqualUtf8(a, b) {

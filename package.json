@@ -42,12 +42,15 @@
     "test:pre-visit-summaries": "node tests/pre-visit-summaries.test.js",
     "test:pre-visit-summary-templates": "node tests/pre-visit-summary-templates.test.js",
     "test:cleanup": "node tests/cleanup.test.js",
-    "migrate:apply-psql": "node sql/scripts/apply-psql-migration.mjs"
+    "migrate:apply-psql": "node sql/scripts/apply-psql-migration.mjs",
+    "smoke:recordings-s3": "node sql/scripts/smoke-recordings-s3.mjs",
+    "migrate:audio-files-to-recordings-s3": "node sql/scripts/migrate-audio-files-to-recordings-s3.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1009.0",
     "@aws-sdk/client-comprehendmedical": "^3.876.0",
     "@aws-sdk/client-s3": "^3.1030.0",
+    "@aws-sdk/s3-request-presigner": "^3.1076.0",
     "@fastify/cookie": "^9.4.0",
     "@fastify/cors": "^9.0.1",
     "@fastify/multipart": "^8.3.1",

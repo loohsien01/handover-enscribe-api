@@ -5,6 +5,10 @@
  */
 import { getSupabaseClient } from '../../utils/supabase.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
+import {
+  normalizeRecordingStorageKey,
+  createRecordingDownloadUrl,
+} from '../../utils/recordingsStorage.js';
 import { getPatientEncounterWithDecryptedKey } from '../../utils/patientEncounterUtils.js';
 import {
   encryptTranscriptPlaintextWithMasterKey,
@@ -445,34 +449,19 @@ export async function getCompletePatientEncounter(request, reply) {
       
       if (needNewSignedUrl) {
         console.log('Step 1.5: Generating signed URL for recording file');
-        
-        // Normalize path: strip optional bucket prefix and any leading slash
-        let normalizedPath = recording.recording_file_path;
-        if (normalizedPath.startsWith('audio-files/')) {
-          normalizedPath = normalizedPath.replace(/^audio-files\//, '');
-        }
-        if (normalizedPath.startsWith('/')) normalizedPath = normalizedPath.slice(1);
-        
+
+        const normalizedPath = normalizeRecordingStorageKey(recording.recording_file_path);
         console.log('Creating signed URL for recording file:', normalizedPath);
         const expirySeconds = 60 * 60; // 1 hour
-        
-        const { data: signedUrlData, error: signedError } = await supabase.storage
-          .from('audio-files')
-          .createSignedUrl(normalizedPath, expirySeconds);
-        
-        if (signedError) {
-          // Missing object, wrong path, or storage outage — still return the bundle without a signed URL.
-          console.warn('Signed URL error (continuing without signed URL):', signedError?.message || signedError);
-          recording.recording_file_signed_url = null;
-          recording.recording_file_signed_url_expiry = null;
-        } else {
+
+        try {
+          const signedUrl = await createRecordingDownloadUrl(supabase, normalizedPath, expirySeconds);
           const now = new Date();
           const expiresAt = new Date(now.getTime() + expirySeconds * 1000).toISOString();
-          
-          recording.recording_file_signed_url = signedUrlData.signedUrl;
+
+          recording.recording_file_signed_url = signedUrl;
           recording.recording_file_signed_url_expiry = expiresAt;
-          
-          // Best-effort cache in DB; response still succeeds if this update fails.
+
           const { error: updateError } = await supabase
             .from('recordings')
             .update({
@@ -486,6 +475,13 @@ export async function getCompletePatientEncounter(request, reply) {
           if (updateError) {
             console.warn('Error updating recording signed URL (continuing):', updateError?.message || updateError);
           }
+        } catch (signedError) {
+          console.warn(
+            'Signed URL error (continuing without signed URL):',
+            signedError instanceof Error ? signedError.message : signedError
+          );
+          recording.recording_file_signed_url = null;
+          recording.recording_file_signed_url_expiry = null;
         }
       }
     }
@@ -664,38 +660,34 @@ export async function getPatientEncounterBundleByNoteId(supabase, user, noteId) 
       !recording.recording_file_signed_url || new Date(recording.recording_file_signed_url_expiry) < new Date();
 
     if (needNewSignedUrl) {
-      let normalizedPath = recording.recording_file_path;
-      if (normalizedPath.startsWith('audio-files/')) {
-        normalizedPath = normalizedPath.replace(/^audio-files\//, '');
-      }
-      if (normalizedPath.startsWith('/')) normalizedPath = normalizedPath.slice(1);
-
+      const normalizedPath = normalizeRecordingStorageKey(recording.recording_file_path);
       const expirySeconds = 60 * 60;
-      const { data: signedUrlData, error: signedError } = await supabase.storage
-        .from('audio-files')
-        .createSignedUrl(normalizedPath, expirySeconds);
 
-      if (signedError) {
-        const err = new Error('Failed to create signed URL: ' + signedError.message);
-        err.statusCode = 500;
-        throw err;
-      }
+      try {
+        const signedUrl = await createRecordingDownloadUrl(supabase, normalizedPath, expirySeconds);
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() + expirySeconds * 1000).toISOString();
+        recording.recording_file_signed_url = signedUrl;
+        recording.recording_file_signed_url_expiry = expiresAt;
 
-      const now = new Date();
-      const expiresAt = new Date(now.getTime() + expirySeconds * 1000).toISOString();
-      recording.recording_file_signed_url = signedUrlData.signedUrl;
-      recording.recording_file_signed_url_expiry = expiresAt;
+        const { error: updateError } = await supabase
+          .from(recordingTable)
+          .update({
+            recording_file_signed_url: recording.recording_file_signed_url,
+            recording_file_signed_url_expiry: recording.recording_file_signed_url_expiry,
+          })
+          .eq('id', recording.id);
 
-      const { error: updateError } = await supabase
-        .from(recordingTable)
-        .update({
-          recording_file_signed_url: recording.recording_file_signed_url,
-          recording_file_signed_url_expiry: recording.recording_file_signed_url_expiry,
-        })
-        .eq('id', recording.id);
-
-      if (updateError) {
-        const err = new Error(updateError.message);
+        if (updateError) {
+          const err = new Error(updateError.message);
+          err.statusCode = 500;
+          throw err;
+        }
+      } catch (signedError) {
+        const err = new Error(
+          'Failed to create signed URL: ' +
+            (signedError instanceof Error ? signedError.message : String(signedError))
+        );
         err.statusCode = 500;
         throw err;
       }

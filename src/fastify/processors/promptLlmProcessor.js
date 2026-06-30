@@ -22,6 +22,10 @@ import { claudeAPIReq } from '../../utils/bedrockClient.js';
 import { getSystemMasterKey, getOrCreateUserMasterKey } from '../controllers/userSecurityConfigController.js';
 import { decryptNoteTemplateSectionDetails } from '../../utils/encryptionUtils.js';
 import { getCompleteTemplate } from '../controllers/noteTemplatesCompleteController.js';
+import {
+  normalizeRecordingStorageKey,
+  createRecordingDownloadUrl,
+} from '../../utils/recordingsStorage.js';
 
 /**
  * Helper: Extract the first structurally complete JSON object from a string.
@@ -283,19 +287,21 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
       await updateJobStatus(jobId, 'transcribing');
       console.log(`[promptLlmProcessor] ${jobId}: Started transcription`);
 
-      const { data: signedUrlData, error: signedError } = await supabase.storage
-        .from('audio-files')
-        .createSignedUrl(recording_file_path, 60 * 60);
-
-      if (signedError) {
-        throw new Error(`Failed to create signed URL: ${signedError.message}`);
+      const normalizedPath = normalizeRecordingStorageKey(recording_file_path);
+      let signedUrl;
+      try {
+        signedUrl = await createRecordingDownloadUrl(supabase, normalizedPath, 60 * 60);
+      } catch (signedError) {
+        throw new Error(
+          `Failed to create signed URL: ${signedError instanceof Error ? signedError.message : String(signedError)}`
+        );
       }
 
       let transcriptResult;
       try {
         const [transcriptRes, templateRes] = await Promise.all([
           transcribe_expand_mask({
-            recording_file_signed_url: signedUrlData.signedUrl,
+            recording_file_signed_url: signedUrl,
             req: internalRequest,
           }),
           templatePromise,

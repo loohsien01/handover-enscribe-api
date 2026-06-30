@@ -5,6 +5,15 @@
 import { randomUUID } from 'node:crypto';
 import { getSupabaseClient } from '../../utils/supabase.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
+import {
+  normalizeRecordingStorageKey,
+  createRecordingUploadUrl,
+  createRecordingDownloadUrl,
+  recordingObjectExists,
+  deleteRecordingObject,
+  listUserRecordingObjects,
+  recordingContentTypeForExtension,
+} from '../../utils/recordingsStorage.js';
 
 const recordingTableName = 'recordings';
 const patientEncounterTableName = 'patientEncounters';
@@ -78,56 +87,16 @@ export async function getRecordingsAttachments(request, reply) {
     console.log(`[getRecordingsAttachments] Fetched ${recordingsData?.length || 0} recordings from DB`);
 
     const allStorageFiles = [];
-    const pageSize = 100;
-    const parallelBatches = 5; // Fetch 5 batches concurrently
-    let currentOffset = 0;
-    let hasMoreFiles = true;
 
     console.time(labelFetchStorage);
     try {
-      while (hasMoreFiles) {
-        const batchPromises = [];
-        for (let i = 0; i < parallelBatches; i++) {
-          const offset = currentOffset + (i * pageSize);
-          batchPromises.push(
-            supabase.storage
-              .from('audio-files')
-              .list(userId, {
-                limit: pageSize,
-                offset: offset
-              })
-          );
-        }
-
-        const results = await Promise.all(batchPromises);
-
-        let foundAnyData = false;
-        for (const { data: storageData, error: storageError } of results) {
-          if (storageError) {
-            console.error('Error fetching storage files:', storageError);
-            return reply.status(500).send({ error: storageError.message });
-          }
-
-          if (!storageData || storageData.length === 0) {
-            hasMoreFiles = false;
-            break;
-          }
-
-          foundAnyData = true;
-          allStorageFiles.push(...storageData);
-
-          if (storageData.length < pageSize) {
-            hasMoreFiles = false;
-            break;
-          }
-        }
-
-        if (!foundAnyData) {
-          hasMoreFiles = false;
-        }
-
-        currentOffset += parallelBatches * pageSize;
-      }
+      const listed = await listUserRecordingObjects(supabase, userId);
+      allStorageFiles.push(...listed);
+    } catch (storageError) {
+      console.error('Error fetching storage files:', storageError);
+      return reply.status(500).send({
+        error: storageError instanceof Error ? storageError.message : 'Storage list failed',
+      });
     } finally {
       console.timeEnd(labelFetchStorage);
     }
@@ -403,20 +372,13 @@ export async function getRecordings(request, reply) {
                                new Date(recording.recording_file_signed_url_expiry) < new Date();
 
       if (recording.recording_file_path && needNewSignedUrl) {
-        // Normalize path: strip optional bucket prefix and any leading slash
-        let normalizedPath = recording.recording_file_path;
-        if (normalizedPath.startsWith('audio-files/')) {
-          normalizedPath = normalizedPath.replace(/^audio-files\//, '');
-        }
-        if (normalizedPath.startsWith('/')) normalizedPath = normalizedPath.slice(1);
-
+        const normalizedPath = normalizeRecordingStorageKey(recording.recording_file_path);
         const expirySeconds = 60 * 60; // 1 hour expiry
 
-        const { data: signedUrlData, error: signedError } = await supabase.storage
-          .from('audio-files')
-          .createSignedUrl(normalizedPath, expirySeconds);
-
-        if (signedError) {
+        let signedUrl;
+        try {
+          signedUrl = await createRecordingDownloadUrl(supabase, normalizedPath, expirySeconds);
+        } catch (signedError) {
           console.error('[getRecordings] Signed URL error:', signedError);
           return reply.status(500).send({ error: 'Failed to create signed URL' });
         }
@@ -428,7 +390,7 @@ export async function getRecordings(request, reply) {
         const { data: updateData, error: updateError } = await supabase
           .from(recordingTableName)
           .update({
-            recording_file_signed_url: signedUrlData.signedUrl,
+            recording_file_signed_url: signedUrl,
             recording_file_signed_url_expiry: expiresAt
           })
           .eq('id', recording.id)
@@ -500,19 +462,11 @@ export async function deleteRecording(request, reply) {
 
     // Delete the file from storage if it exists
     if (recording.recording_file_path) {
-      let storagePath = recording.recording_file_path;
-      
-      // Normalize legacy paths
-      if (storagePath.startsWith('audio-files/')) {
-        storagePath = storagePath.replace(/^audio-files\//, '');
-      }
-      if (storagePath.startsWith('/')) storagePath = storagePath.slice(1);
+      const storagePath = normalizeRecordingStorageKey(recording.recording_file_path);
 
-      const { error: fileDeleteError } = await supabase.storage
-        .from('audio-files')
-        .remove([storagePath]);
-
-      if (fileDeleteError) {
+      try {
+        await deleteRecordingObject(supabase, storagePath);
+      } catch (fileDeleteError) {
         console.error('[deleteRecording] Error deleting file:', fileDeleteError);
         // Don't fail if file deletion fails - the recording can still be deleted from DB
       }
@@ -656,24 +610,22 @@ export async function createSignedUrl(request, reply) {
 
     const expirySeconds = 60 * 60; // 1 hour
 
-    // Generate signed URL using Supabase SDK
     console.log(`[createSignedUrl] Generating signed URL for path: ${path}`);
-    const { data: signedUrlData, error: urlError } = await supabase.storage
-      .from('audio-files')
-      .createSignedUrl(path, expirySeconds);
-
-    if (urlError || !signedUrlData) {
+    let signedUrl;
+    try {
+      signedUrl = await createRecordingDownloadUrl(supabase, path, expirySeconds);
+    } catch (urlError) {
       console.error('[createSignedUrl] Error creating signed URL:', urlError);
       return reply.status(500).send({ error: 'Failed to generate signed URL' });
     }
 
     console.log('[createSignedUrl] Successfully generated signed URL:', {
       path: path,
-      url: signedUrlData.signedUrl?.substring(0, 100) + '...',
+      url: signedUrl?.substring(0, 100) + '...',
     });
 
     return reply.status(200).send({
-      signedUrl: signedUrlData.signedUrl,
+      signedUrl,
       expiresIn: expirySeconds,
     });
 
@@ -740,22 +692,21 @@ export async function uploadRecordingUrl(request, reply) {
     const maxAttempts = 10;
 
     for (collisionAttempt = 0; collisionAttempt < maxAttempts; collisionAttempt++) {
-      // Check if file exists in Supabase storage
-      const { data: existingFiles, error: listError } = await supabase.storage
-        .from('audio-files')
-        .list(userFolder, { search: finalFilename });
-
-      if (listError) {
-        console.error(`[uploadRecordingUrl] List error on attempt ${collisionAttempt + 1}:`, listError);
-        return reply.status(500).send({ error: 'Storage check failed' });
-      }
-
-      // If no matching files, we can use this filename
-      if (!existingFiles || existingFiles.length === 0) {
-        if (collisionAttempt > 0) {
-          console.log(`[uploadRecordingUrl] Found available filename after ${collisionAttempt} collision(s):`, finalFilename);
+      const candidatePath = `${userFolder}/${finalFilename}`;
+      try {
+        const exists = await recordingObjectExists(supabase, candidatePath);
+        if (!exists) {
+          if (collisionAttempt > 0) {
+            console.log(
+              `[uploadRecordingUrl] Found available filename after ${collisionAttempt} collision(s):`,
+              finalFilename
+            );
+          }
+          break;
         }
-        break;
+      } catch (listError) {
+        console.error(`[uploadRecordingUrl] Exists check error on attempt ${collisionAttempt + 1}:`, listError);
+        return reply.status(500).send({ error: 'Storage check failed' });
       }
 
       // File exists, try with new random suffix
@@ -779,27 +730,19 @@ export async function uploadRecordingUrl(request, reply) {
     }
 
     const finalPath = `${userFolder}/${finalFilename}`;
+    const contentType = recordingContentTypeForExtension(extension);
 
-    // Generate proper signed upload URL using Supabase JS client
-    // This creates a URL with embedded signature that's valid for 2 hours
-    console.log(`[uploadRecordingUrl] Calling createSignedUploadUrl with path: ${finalPath}`);
-    const { data: uploadUrlData, error: urlError } = await supabase.storage
-      .from('audio-files')
-      .createSignedUploadUrl(finalPath);
-
-    console.log(`[uploadRecordingUrl] createSignedUploadUrl response:`, {
-      hasData: !!uploadUrlData,
-      hasError: !!urlError,
-      error: urlError?.message || null,
-      data: uploadUrlData ? { signedUrl: uploadUrlData.signedUrl?.substring(0, 100) + '...' } : null,
-    });
-
-    if (urlError || !uploadUrlData) {
+    console.log(`[uploadRecordingUrl] Creating signed upload URL for path: ${finalPath}`);
+    let signedUrl;
+    try {
+      signedUrl = await createRecordingUploadUrl(supabase, finalPath, {
+        contentType,
+        expiresIn: 3600,
+      });
+    } catch (urlError) {
       console.error('[uploadRecordingUrl] Error creating signed upload URL:', urlError);
       return reply.status(500).send({ error: 'Failed to generate upload URL' });
     }
-
-    const signedUrl = uploadUrlData.signedUrl;
 
     console.log('[uploadRecordingUrl] Successfully generated signed upload URL:', {
       path: finalPath,
@@ -897,21 +840,15 @@ export async function deleteRecordingsStorage(request, reply) {
 
         // Attempt to delete from storage
         console.log(`[deleteRecordingsStorage] Deleting: ${prefix}`);
-        const { error: deleteError } = await supabase.storage
-          .from('audio-files')
-          .remove([prefix]);
-
-        if (deleteError) {
-          // Treat as failure only for permission/auth errors
-          const errorMsg = deleteError.message || 'Storage error';
+        try {
+          await deleteRecordingObject(supabase, prefix);
+          result.deleted.push(prefix);
+          console.log(`[deleteRecordingsStorage] Successfully processed: ${prefix}`);
+        } catch (deleteError) {
+          const errorMsg = deleteError instanceof Error ? deleteError.message : 'Storage error';
           result.failed.push(prefix);
           result.errors[prefix] = errorMsg;
           console.error(`[deleteRecordingsStorage] Storage error for ${prefix}:`, deleteError);
-        } else {
-          // Idempotent semantics: .remove() succeeds whether file exists or not
-          // Both actual deletions and non-existent files go to deleted
-          result.deleted.push(prefix);
-          console.log(`[deleteRecordingsStorage] Successfully processed: ${prefix}`);
         }
       } catch (prefixError) {
         const errorMsg = prefixError.message || 'Unexpected error';

@@ -38,8 +38,23 @@ const CLOUD_RUN_URL =
   'https://emscribe-transcriber-641824253036.us-central1.run.app/transcribe';
 
 /**
- * Validate a signed URL by issuing a HEAD request
- * 
+ * S3 presigned GetObject URLs are signed for GET only — HEAD returns 403.
+ * Supabase object/sign URLs accept HEAD.
+ *
+ * @private
+ * @param {string} url
+ * @returns {boolean}
+ */
+function isS3PresignedGetObjectUrl(url) {
+  return (
+    /\.s3(\.[a-z0-9-]+)?\.amazonaws\.com\//i.test(url) &&
+    /[?&]X-Amz-Signature=/i.test(url)
+  );
+}
+
+/**
+ * Validate a signed URL without downloading the full object.
+ *
  * @private
  * @param {string} url - Signed URL to validate
  * @param {number} [timeoutMs=10000] - Timeout in milliseconds
@@ -49,9 +64,16 @@ async function checkSignedUrlValid(url, timeoutMs = 10000) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    const resp = await fetch(url, { method: 'HEAD', signal: controller.signal });
+
+    // S3 GetObject presign rejects HEAD; probe with a 1-byte ranged GET instead.
+    const useRangedGet = isS3PresignedGetObjectUrl(url);
+    const resp = await fetch(url, {
+      method: useRangedGet ? 'GET' : 'HEAD',
+      ...(useRangedGet ? { headers: { Range: 'bytes=0-0' } } : {}),
+      signal: controller.signal,
+    });
     clearTimeout(timeout);
-    return resp.ok;
+    return resp.ok || resp.status === 206;
   } catch (err) {
     return false;
   }

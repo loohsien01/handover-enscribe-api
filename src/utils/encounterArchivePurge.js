@@ -12,6 +12,12 @@
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { querySupabasePostgres } from './supabasePostgresPool.js';
 import { getArchiveS3Client } from './archiveS3Client.js';
+import {
+  normalizeRecordingStorageKey,
+  downloadRecordingObject,
+  deleteRecordingObject,
+  isMissingRecordingObjectError,
+} from './recordingsStorage.js';
 
 export const ENCOUNTER_ARCHIVE_JOB_NAME = 'encounter_archive';
 
@@ -271,11 +277,8 @@ function recordingFileExtension(recordingFilePath) {
  * @param {string | null | undefined} path
  */
 export function normalizeAudioStoragePath(path) {
-  if (!path || typeof path !== 'string') return null;
-  let p = path.trim();
-  if (p.startsWith('audio-files/')) p = p.replace(/^audio-files\//, '');
-  if (p.startsWith('/')) p = p.slice(1);
-  return p || null;
+  const normalized = normalizeRecordingStorageKey(path);
+  return normalized || null;
 }
 
 /**
@@ -758,29 +761,31 @@ async function processOneQueueRow(supabase, s3, archiveBucket, row, rowOpts = {}
     let recordingMissingDetail = /** @type {string | null} */ (null);
 
     if (normPath) {
-      let blob = null;
+      let buf = null;
       let dlErr = null;
       for (let ti = 0; ti < STORAGE_DOWNLOAD_MAX_TRIES; ti++) {
-        const res = await supabase.storage.from('audio-files').download(normPath);
-        blob = res.data;
-        dlErr = res.error;
-        if (!dlErr && blob) break;
-        if (ti < STORAGE_DOWNLOAD_MAX_TRIES - 1) {
-          await new Promise((r) => setTimeout(r, STORAGE_DOWNLOAD_RETRY_BASE_MS * 2 ** ti));
+        try {
+          buf = await downloadRecordingObject(supabase, normPath);
+          dlErr = null;
+          break;
+        } catch (err) {
+          dlErr = err;
+          if (ti < STORAGE_DOWNLOAD_MAX_TRIES - 1) {
+            await new Promise((r) => setTimeout(r, STORAGE_DOWNLOAD_RETRY_BASE_MS * 2 ** ti));
+          }
         }
       }
-      if (dlErr || !blob) {
+      if (dlErr || !buf) {
         const msg = dlErr
           ? storageDownloadErrorMessage(dlErr, normPath)
           : 'audio download failed (no blob returned)';
-        if (isMissingRecordingStorageError(dlErr, msg)) {
+        if (isMissingRecordingStorageError(dlErr, msg) || isMissingRecordingObjectError(dlErr, msg)) {
           skipAudioDueToMissing = true;
           recordingMissingDetail = `Recording missing in Storage; continuing without S3 audio. ${msg}`;
         } else {
           return failRow(msg);
         }
       } else {
-        const buf = Buffer.from(await blob.arrayBuffer());
         const audioKey = encounterRecordingObjectKey(userId, queueId, recordingFilePath);
         await s3.send(
           new PutObjectCommand({
@@ -819,8 +824,9 @@ async function processOneQueueRow(supabase, s3, archiveBucket, row, rowOpts = {}
     );
 
     if (normPath && !skipAudioDueToMissing) {
-      const { error: rmErr } = await supabase.storage.from('audio-files').remove([normPath]);
-      if (rmErr) {
+      try {
+        await deleteRecordingObject(supabase, normPath);
+      } catch (rmErr) {
         return failRow(
           `storage remove audio: ${supabaseClientErrorMessage(rmErr, 'remove failed')}`
         );
