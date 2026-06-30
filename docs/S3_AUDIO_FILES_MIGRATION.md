@@ -292,7 +292,7 @@ RECORDINGS_STORAGE_BACKEND=s3         # S3 only (reads + writes)
 RECORDINGS_STORAGE_BACKEND=dual-read  # reads: try S3, fallback Supabase; writes: follow s3 rules
 ```
 
-Helpers: `getRecordingsStorageBackend()`, `useS3ForWrites()`, `useS3ForReads()`.
+Helpers: `getRecordingsStorageBackend()`, `shouldUseS3ForWrites()`, `shouldUseS3ForReads()`.
 
 **`src/utils/recordingsS3Client.js`** — mirror [archiveS3Client.js](../src/utils/archiveS3Client.js):
 
@@ -393,14 +393,14 @@ Phase D — Jobs
 
 ### 6.6 — Testing (before cutover)
 
-| Test | Command / action |
-|------|------------------|
-| Existing suite | `npm run test:recordings` — must pass with default `supabase` |
-| S3 upload E2E | `RECORDINGS_STORAGE_BACKEND=s3` → signed upload URL → PUT → create recording row |
-| Dual-read | object only in Supabase → download URL still works |
-| Encounter playback | GET encounter with recording → signed URL plays |
-| Transcription | prompt-llm job gets valid audio URL |
-| Manual | upload → create encounter → play/download → delete |
+| Test | Command / action | Status |
+|------|------------------|--------|
+| Existing suite | `npm run test:recordings` — must pass with default `supabase` | Done |
+| S3 upload E2E | `RECORDINGS_STORAGE_BACKEND=s3` → signed upload URL → PUT → create recording row | Done (FE) |
+| Dual-read | object only in Supabase → download URL still works | Done (FE) |
+| Encounter playback | GET encounter with recording → signed URL plays | Done (FE, `s3` + `dual-read`) |
+| Transcription | prompt-llm job gets valid audio URL | Done (FE, `s3`) |
+| Manual | upload → create encounter → play/download → delete | Done (FE, `s3` + `dual-read`) |
 
 ---
 
@@ -456,7 +456,7 @@ You can extend `sql/scripts/inventory-audio-files-storage.mjs` or archive toolin
 
 - [x] Bucket created (`enscribe-recordings-prod`)
 - [x] Block public access: all on
-- [ ] Encryption enabled (SSE-S3 or KMS) — verify in console
+- [x] Encryption enabled (SSE-S3 or KMS) — verified in console
 - [x] CORS configured for FE origins
 - [x] IAM on EC2 instance role (`enscribe-api-ec2-instance-role`) + dev IAM user
 - [x] `AWS_RECORDINGS_S3_BUCKET` in GitHub secrets + EC2 env (via [deploy.yml](../.github/workflows/deploy.yml))
@@ -466,8 +466,9 @@ You can extend `sql/scripts/inventory-audio-files-storage.mjs` or archive toolin
 
 - [x] Presigned PUT/GET implemented (facade + controllers)
 - [x] `RECORDINGS_STORAGE_BACKEND` flag (default `supabase`)
-- [ ] `npm run test:recordings`
-- [ ] Manual: upload → create encounter → play/download → delete (with `s3` in staging)
+- [x] `npm run test:recordings`
+- [x] Manual (staging/local + FE): `s3` — upload → encounter → play → transcribe → delete
+- [x] Manual (staging/local + FE): `dual-read` — Supabase-only file still plays
 
 **Part 7 (ready, run at cutover)**
 

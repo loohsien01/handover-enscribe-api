@@ -4,10 +4,10 @@
  */
 
 import {
-  useS3ForWrites,
-  useS3ForReads,
-  useSupabaseForReads,
-  useSupabaseForWrites,
+  shouldUseS3ForWrites,
+  shouldUseS3ForReads,
+  shouldUseSupabaseForReads,
+  shouldUseSupabaseForWrites,
   getRecordingsStorageBackend,
 } from './recordingsStorageBackend.js';
 import {
@@ -41,13 +41,13 @@ export async function recordingObjectExists(supabase, key) {
   const normalized = normalizeRecordingStorageKey(key);
   if (!normalized) return false;
 
-  if (useS3ForReads()) {
+  if (shouldUseS3ForReads()) {
     const onS3 = await s3ObjectExists(normalized);
     if (onS3) return true;
     if (getRecordingsStorageBackend() === 's3') return false;
   }
 
-  if (useSupabaseForReads()) {
+  if (shouldUseSupabaseForReads()) {
     const parts = normalized.split('/');
     if (parts.length !== 2) return false;
     const [folder, filename] = parts;
@@ -70,7 +70,7 @@ export async function recordingObjectExists(supabase, key) {
 export async function createRecordingUploadUrl(supabase, key, opts = {}) {
   const normalized = normalizeRecordingStorageKey(key);
 
-  if (useS3ForWrites()) {
+  if (shouldUseS3ForWrites()) {
     return createPresignedUploadUrl(normalized, opts);
   }
 
@@ -90,7 +90,7 @@ export async function createRecordingUploadUrl(supabase, key, opts = {}) {
 export async function createRecordingDownloadUrl(supabase, key, expiresIn = 3600) {
   const normalized = normalizeRecordingStorageKey(key);
 
-  if (useS3ForReads()) {
+  if (shouldUseS3ForReads()) {
     const onS3 = await s3ObjectExists(normalized);
     if (onS3) {
       return createPresignedDownloadUrl(normalized, expiresIn);
@@ -100,7 +100,7 @@ export async function createRecordingDownloadUrl(supabase, key, expiresIn = 3600
     }
   }
 
-  if (useSupabaseForReads()) {
+  if (shouldUseSupabaseForReads()) {
     const { data, error } = await supabase.storage
       .from(AUDIO_BUCKET)
       .createSignedUrl(normalized, expiresIn);
@@ -121,7 +121,7 @@ export async function createRecordingDownloadUrl(supabase, key, expiresIn = 3600
 export async function downloadRecordingObject(supabase, key) {
   const normalized = normalizeRecordingStorageKey(key);
 
-  if (useS3ForReads()) {
+  if (shouldUseS3ForReads()) {
     try {
       if (await s3ObjectExists(normalized)) {
         return downloadS3Object(normalized);
@@ -133,7 +133,7 @@ export async function downloadRecordingObject(supabase, key) {
     }
   }
 
-  if (useSupabaseForReads()) {
+  if (shouldUseSupabaseForReads()) {
     const { data, error } = await supabase.storage.from(AUDIO_BUCKET).download(normalized);
     if (error) throw error;
     if (!data) throw new Error('audio download failed (no blob returned)');
@@ -180,7 +180,7 @@ export async function deleteRecordingObject(supabase, key) {
   const backend = getRecordingsStorageBackend();
   const errors = [];
 
-  if (useS3ForWrites() || backend === 'dual-read') {
+  if (shouldUseS3ForWrites() || backend === 'dual-read') {
     try {
       await deleteS3Object(normalized);
     } catch (err) {
@@ -188,7 +188,7 @@ export async function deleteRecordingObject(supabase, key) {
     }
   }
 
-  if (useSupabaseForWrites() || backend === 'dual-read') {
+  if (shouldUseSupabaseForWrites() || backend === 'dual-read') {
     const { error } = await supabase.storage.from(AUDIO_BUCKET).remove([normalized]);
     if (error) errors.push(error);
   }

@@ -12,24 +12,24 @@ export function getRecordingsStorageBackend() {
 }
 
 /** @returns {boolean} */
-export function useS3ForWrites() {
+export function shouldUseS3ForWrites() {
   const b = getRecordingsStorageBackend();
   return b === 's3' || b === 'dual-read';
 }
 
 /** @returns {boolean} */
-export function useS3ForReads() {
+export function shouldUseS3ForReads() {
   const b = getRecordingsStorageBackend();
   return b === 's3' || b === 'dual-read';
 }
 
 /** @returns {boolean} */
-export function useSupabaseForReads() {
+export function shouldUseSupabaseForReads() {
   const b = getRecordingsStorageBackend();
   return b === 'supabase' || b === 'dual-read';
 }
 
 /** @returns {boolean} */
-export function useSupabaseForWrites() {
+export function shouldUseSupabaseForWrites() {
   return getRecordingsStorageBackend() === 'supabase';
 }
