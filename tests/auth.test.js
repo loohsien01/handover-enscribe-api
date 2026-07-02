@@ -244,7 +244,7 @@ async function runAuthTests() {
         body: {
           action: 'sign-up',
           email: `info@sjpedgi.doctor`,
-          password: '123123123',
+          password: '@2Sengaring',
           userProfile: { username: 'info', specialty: 'Internal Medicine' },
         },
         expectedStatus: 201,

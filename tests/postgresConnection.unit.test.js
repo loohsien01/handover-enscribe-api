@@ -90,6 +90,35 @@ test('resolveSslAndConnectionString: explicit false disables verify even on RDS'
   }
 });
 
+test('resolveSslAndConnectionString: local RDS tunnel uses strict TLS with bundled CA', () => {
+  resetRdsCaBundleCacheForTests(null);
+  const tunnelUrl =
+    'postgresql://enscribe_app:secret@127.0.0.1:15432/enscribe?sslmode=require';
+  const prevNodeEnv = process.env.NODE_ENV;
+  const prevLocal = process.env.DATABASE_URL_LOCAL;
+  const prevDatabase = process.env.DATABASE_URL;
+  process.env.NODE_ENV = 'development';
+  process.env.DATABASE_URL_LOCAL = tunnelUrl;
+  process.env.DATABASE_URL =
+    'postgresql://enscribe_app:secret@enscribe-prod.c8fay082y82d.us-east-1.rds.amazonaws.com:5432/enscribe?sslmode=require';
+
+  try {
+    const { ssl, connectionString } = resolveSslAndConnectionString(tunnelUrl);
+    assert.equal(ssl?.rejectUnauthorized, true);
+    assert.ok(typeof ssl?.ca === 'string' && ssl.ca.includes('BEGIN CERTIFICATE'));
+    assert.equal(ssl?.servername, 'enscribe-prod.c8fay082y82d.us-east-1.rds.amazonaws.com');
+    assert.equal(connectionString.includes('sslmode='), false);
+  } finally {
+    if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevNodeEnv;
+    if (prevLocal === undefined) delete process.env.DATABASE_URL_LOCAL;
+    else process.env.DATABASE_URL_LOCAL = prevLocal;
+    if (prevDatabase === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = prevDatabase;
+    resetRdsCaBundleCacheForTests(null);
+  }
+});
+
 test('isRdsPostgresTarget reflects resolved env URL host', () => {
   const prevDirect = process.env.SUPABASE_DB_DIRECT_URL;
   const prevDatabase = process.env.DATABASE_URL;

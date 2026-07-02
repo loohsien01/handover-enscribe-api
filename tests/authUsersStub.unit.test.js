@@ -52,6 +52,27 @@ test('ensureAuthUsersStubAfterSignup inserts stub on RDS target', async () => {
   assert.deepEqual(calls[0][1], [userId, email]);
 });
 
+test('ensureAuthUsersStubAfterSignup inserts stub with cognito_sub on RDS target', async () => {
+  const userId = '44444444-4444-4444-8444-444444444444';
+  const email = 'cognito@example.com';
+  const cognitoSub = 'cognito-sub-abc';
+  /** @type {unknown[][]} */
+  const calls = [];
+
+  const result = await ensureAuthUsersStubAfterSignup(userId, email, cognitoSub, {
+    isRdsTarget: () => true,
+    query: async (sql, params) => {
+      calls.push([sql, params]);
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped, false);
+  assert.equal(calls.length, 1);
+  assert.match(String(calls[0][0]), /cognito_sub/i);
+  assert.deepEqual(calls[0][1], [userId, email, cognitoSub]);
+});
+
 test('ensureAuthUsersStubAfterSignup returns error without throwing when insert fails', async () => {
   const result = await ensureAuthUsersStubAfterSignup('33333333-3333-4333-8333-333333333333', 'x@y.com', {
     isRdsTarget: () => true,

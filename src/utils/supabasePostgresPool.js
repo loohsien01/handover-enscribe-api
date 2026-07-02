@@ -70,8 +70,9 @@ export function getSupabasePostgresPool() {
     const rawConnectionString = getSupabasePostgresUrl();
     if (!rawConnectionString) {
       throw new Error(
-        'Postgres connection URL required. Set SUPABASE_DB_DIRECT_URL, DATABASE_URL, ' +
-          'SUPABASE_DB_URL, or SUPABASE_DB_HOST + SUPABASE_DB_PASSWORD (see src/utils/supabasePostgresUrl.js).'
+        'Postgres connection URL required. Set DATABASE_URL_LOCAL (local tunnel), DATABASE_URL, ' +
+          'SUPABASE_DB_DIRECT_URL, SUPABASE_DB_URL, or SUPABASE_DB_HOST + SUPABASE_DB_PASSWORD ' +
+          '(see src/utils/supabasePostgresUrl.js).'
       );
     }
     const { ssl, connectionString } = resolveSslAndConnectionString(rawConnectionString);

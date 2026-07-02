@@ -8,6 +8,7 @@ import {
   authCheckValidityRequestSchema,
   authResendRequestSchema,
   authForgotPasswordRequestSchema,
+  authConfirmForgotPasswordRequestSchema,
 } from '../schemas/requests.js';
 
 /**
@@ -324,13 +325,32 @@ async function authRoutes(fastify, opts) {
           }
 
           return reply.status(200).send({
-            message: 'If an account exists for that email, a password reset link has been sent.',
+            message:
+              'If an account exists for that email, password reset instructions have been sent.',
+          });
+        }
+
+        case 'confirm-forgot-password': {
+          validation = authConfirmForgotPasswordRequestSchema.safeParse(request.body);
+          if (!validation.success) {
+            return reply.status(400).send({ error: serializeZodError(validation.error) });
+          }
+
+          const { email: resetEmail, code, newPassword } = validation.data;
+          const result = await authController.confirmForgotPassword(resetEmail, code, newPassword);
+
+          if (!result.success) {
+            return reply.status(400).send({ error: result.error });
+          }
+
+          return reply.status(200).send({
+            message: 'Password has been reset successfully',
           });
         }
 
         default: {
           return reply.status(400).send({
-            error: `Unknown action: ${action}. Must be one of: sign-up, sign-in, sign-out, check-validity, resend, forgot-password`,
+            error: `Unknown action: ${action}. Must be one of: sign-up, sign-in, sign-out, check-validity, resend, forgot-password, confirm-forgot-password`,
           });
         }
       }
@@ -368,7 +388,12 @@ async function authRoutes(fastify, opts) {
           return reply.status(401).send({ error: 'Token exchange failed' });
         }
 
-        const userId = authController.extractUserIdFromAccessToken(exchangeResult.accessToken);
+        const userId =
+          (await authController.resolveAppUserIdFromAccessToken(exchangeResult.accessToken)) ||
+          authController.extractUserIdFromAccessToken(exchangeResult.accessToken);
+        if (!userId) {
+          return reply.status(401).send({ error: 'Token exchange failed' });
+        }
         const storeResult = await authController.storeAndWrapNewRefreshToken(exchangeResult.refreshToken, userId);
         
         if (!storeResult.success) {
@@ -405,8 +430,11 @@ async function authRoutes(fastify, opts) {
         return reply.status(401).send({ error: result.error });
       }
 
-      // Extract user ID from access token for new wrapper JWT
-      const userId = authController.extractUserIdFromAccessToken(result.accessToken);
+      // Use app user id from refresh flow (wrapper sub for web; Cognito access token sub is cognito_sub)
+      const userId = result.userId || authController.extractUserIdFromAccessToken(result.accessToken);
+      if (!userId) {
+        return reply.status(401).send({ error: result.error || 'invalid_refresh' });
+      }
       const newWrapper = authController.createRefreshWrapper(userId, result.newTokenId);
 
       // Set new refresh token cookie

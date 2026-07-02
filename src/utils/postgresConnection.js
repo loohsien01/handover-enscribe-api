@@ -42,6 +42,35 @@ export function isRdsPostgresHost(host) {
 }
 
 /**
+ * @param {string} host
+ */
+export function isLocalPostgresTunnelHost(host) {
+  if (!host) return false;
+  const h = host.toLowerCase();
+  return h === '127.0.0.1' || h === 'localhost';
+}
+
+/**
+ * True when `DATABASE_URL` points at RDS (canonical prod URI, not the tunnel override).
+ */
+export function isCanonicalDatabaseUrlRds() {
+  const canonical = process.env.DATABASE_URL?.trim();
+  if (!canonical) return false;
+  return isRdsPostgresHost(extractPgHost(canonical));
+}
+
+/**
+ * Dev laptop: `DATABASE_URL_LOCAL` → `127.0.0.1:15432` while `npm run db:tunnel` forwards to RDS.
+ * @param {string} [resolvedHost]
+ */
+export function isLocalRdsTunnelTarget(resolvedHost) {
+  if (process.env.NODE_ENV === 'production') return false;
+  if (!process.env.DATABASE_URL_LOCAL?.trim()) return false;
+  if (!isCanonicalDatabaseUrlRds()) return false;
+  return isLocalPostgresTunnelHost(resolvedHost ?? '');
+}
+
+/**
  * Host from the resolved Postgres URL env chain (`getSupabasePostgresUrl`).
  * @returns {string | null}
  */
@@ -54,7 +83,9 @@ export function getResolvedPostgresHost() {
 
 /** True when the active Postgres URL targets Amazon RDS (not Supabase). */
 export function isRdsPostgresTarget() {
-  return isRdsPostgresHost(getResolvedPostgresHost() ?? '');
+  const host = getResolvedPostgresHost() ?? '';
+  if (isRdsPostgresHost(host)) return true;
+  return isLocalRdsTunnelTarget(host);
 }
 
 /**
@@ -100,13 +131,25 @@ export function resetRdsCaBundleCacheForTests(caPath = null) {
 }
 
 /**
+ * RDS hostname from canonical `DATABASE_URL` (for TLS SNI through SSH tunnel).
+ * @returns {string | null}
+ */
+function getCanonicalRdsHostname() {
+  const canonical = process.env.DATABASE_URL?.trim();
+  if (!canonical) return null;
+  const host = extractPgHost(canonical);
+  return isRdsPostgresHost(host) ? host : null;
+}
+
+/**
  * TLS policy for Node `pg`:
  * - RDS (`*.rds.amazonaws.com`): strict verify + bundled RDS CA (override with `SUPABASE_DB_SSL_REJECT_UNAUTHORIZED=false`).
+ * - Local SSH tunnel (`DATABASE_URL_LOCAL` → localhost): same CA + **servername** = RDS host (cert altname).
  * - Supabase: relaxed verify by default (pooler cert chain).
  * - Explicit env overrides apply where documented below.
  *
  * @param {string} connectionString
- * @returns {{ ssl: { rejectUnauthorized: boolean; ca?: string } | undefined; connectionString: string }}
+ * @returns {{ ssl: { rejectUnauthorized: boolean; ca?: string; servername?: string } | undefined; connectionString: string }}
  */
 export function resolveSslAndConnectionString(connectionString) {
   const raw = process.env.SUPABASE_DB_SSL_REJECT_UNAUTHORIZED;
@@ -116,11 +159,20 @@ export function resolveSslAndConnectionString(connectionString) {
     return { ssl: { rejectUnauthorized: false }, connectionString: stripSslQueryParams(connectionString) };
   }
 
-  if (isRdsPostgresHost(host)) {
-    // Strip `sslmode` from the URI so Node `pg` uses our bundled RDS CA instead of
-    // treating sslmode=require as verify-full against the system trust store (pg v8+).
+  if (isRdsPostgresHost(host) || isLocalRdsTunnelTarget(host)) {
+    /** @type {{ rejectUnauthorized: boolean; ca: string; servername?: string }} */
+    const ssl = {
+      rejectUnauthorized: true,
+      ca: loadRdsCaBundle(),
+    };
+    if (isLocalRdsTunnelTarget(host)) {
+      const rdsHostname = getCanonicalRdsHostname();
+      if (rdsHostname) {
+        ssl.servername = rdsHostname;
+      }
+    }
     return {
-      ssl: { rejectUnauthorized: true, ca: loadRdsCaBundle() },
+      ssl,
       connectionString: stripSslQueryParams(connectionString),
     };
   }

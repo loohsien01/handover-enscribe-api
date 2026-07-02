@@ -111,6 +111,7 @@ RDS is not reachable from your laptop directly. Use an **SSH tunnel** through th
 | Variable | Purpose |
 |----------|---------|
 | `DATABASE_URL` | RDS URI (`*.rds.amazonaws.com`) — password must be **URL-encoded** here (`!` → `%21`, etc.) |
+| `DATABASE_URL_LOCAL` | **Mac dev only** — same user/password/db as `DATABASE_URL` but host `127.0.0.1:15432` (SSH tunnel). API + `npm run test:auth` use this while tunnel is running. **Not used on EC2 prod.** Comment out or remove legacy `SUPABASE_DB_DIRECT_URL` so it does not override `DATABASE_URL`. |
 | `EC2_DEPLOY_HOST` | `ec2-user@<EC2_PUBLIC_IP>` — check AWS console; updates when instance gets a new public IP |
 | `EC2_DEPLOY_SSH_PRIVATE_KEY` | Multiline PEM (same as deploy) — script reads full block from `.env.local` |
 | `DB_TUNNEL_MODE=ssh` | Optional; recommended (SSM needs extra IAM) |
@@ -130,7 +131,21 @@ RDS is not reachable from your laptop directly. Use an **SSH tunnel** through th
 npm run db:tunnel          # or: DB_TUNNEL_MODE=ssh npm run db:tunnel
 ```
 
-Wait for **`✓ Tunnel ready on 127.0.0.1:15432`**, then connect in TablePlus. Keep the tunnel terminal open. Your saved TablePlus profile does not need to change.
+Wait for **`✓ Tunnel ready on 127.0.0.1:15432`**, then connect in TablePlus (or DBeaver). Keep the tunnel terminal open.
+
+**Fastify / auth tests on your Mac:** set `DATABASE_URL_LOCAL` in `.env.local` (copy `DATABASE_URL`, change host to `127.0.0.1` and port to `15432`). Restart `npm run dev:fastify` after changing env. Example:
+
+```bash
+# Canonical (tunnel script, EC2, GitHub secrets)
+DATABASE_URL=postgresql://USER:ENCODED_PASS@enscribe-prod….rds.amazonaws.com:5432/enscribe?sslmode=require
+
+# Laptop only — same USER/PASS/db; tunnel must be running (`localhost` or `127.0.0.1` both OK)
+DATABASE_URL_LOCAL=postgresql://USER:ENCODED_PASS@127.0.0.1:15432/enscribe?sslmode=require
+```
+
+Node `pg` sets TLS **servername** to the RDS hostname from `DATABASE_URL` automatically (required when the URI host is `localhost` / `127.0.0.1`).
+
+Your saved TablePlus/DBeaver profile does not need to change.
 
 #### New WiFi or network (most common issue)
 

@@ -4,6 +4,7 @@ import {
 } from '../../services/personalOrganization.js';
 import { pgQueryOne, pgErrorMessage } from '../../utils/pgQueryHelpers.js';
 import { querySupabasePostgres } from '../../utils/supabasePostgresPool.js';
+import { isCognitoAuth } from '../../utils/authProvider.js';
 
 const userProfileTable = '"userProfiles"';
 
@@ -14,6 +15,23 @@ const userProfileTable = '"userProfiles"';
  */
 async function ensureAuthUserExists(userId) {
   try {
+    if (isCognitoAuth()) {
+      const row = await pgQueryOne(
+        'SELECT 1 AS ok FROM auth.users WHERE id = $1::uuid LIMIT 1',
+        [userId]
+      );
+      if (!row) {
+        return {
+          ok: false,
+          replyPayload: {
+            error: 'Account not found or no longer available',
+            code: 'AUTH_USER_NOT_FOUND',
+          },
+        };
+      }
+      return { ok: true };
+    }
+
     const admin = supabaseAdmin();
     const { data, error } = await admin.auth.admin.getUserById(userId);
     if (error || !data?.user) {

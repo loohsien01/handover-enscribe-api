@@ -3,7 +3,7 @@
  * Read-only RDS / Postgres inspection — run on EC2 Instance Connect (VPC can reach RDS).
  * For TablePlus on your Mac, use `npm run db:tunnel` instead.
  *
- * Uses DATABASE_URL (or SUPABASE_DB_DIRECT_URL) from .env.local — same resolution as
+ * Uses DATABASE_URL_LOCAL (dev), DATABASE_URL, or SUPABASE_DB_DIRECT_URL from .env.local — same resolution as
  * `apply-psql-migration.mjs` and the API pool.
  *
  * Usage (from repo root, e.g. /opt/enscribe-api on EC2):
@@ -63,7 +63,7 @@ Presets:
 Custom SQL file (read-only transaction):
   npm run db:inspect -- sql/scripts/rds-inspect/table-counts.sql
 
-Env: DATABASE_URL or SUPABASE_DB_DIRECT_URL in .env.local (see supabasePostgresUrl.js).
+Env: DATABASE_URL_LOCAL (local tunnel), DATABASE_URL, or SUPABASE_DB_DIRECT_URL in .env.local (see supabasePostgresUrl.js).
 Run on EC2 Instance Connect when RDS is VPC-private.`);
 }
 
@@ -151,7 +151,7 @@ async function main() {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(message);
-    console.error('\nSet DATABASE_URL (RDS) or SUPABASE_DB_DIRECT_URL in .env.local.');
+    console.error('\nSet DATABASE_URL_LOCAL (tunnel), DATABASE_URL (RDS), or SUPABASE_DB_DIRECT_URL in .env.local.');
     process.exit(1);
   }
 

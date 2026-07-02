@@ -649,6 +649,20 @@ export const authForgotPasswordRequestSchema = z.object({
   redirectTo: z.string().url('redirectTo must be a valid URL').optional(),
 });
 
+/**
+ * POST request for auth confirm-forgot-password action (Cognito code flow)
+ * Endpoint: POST /api/auth
+ * Action: confirm-forgot-password
+ */
+export const authConfirmForgotPasswordRequestSchema = z.object({
+  action: z.literal('confirm-forgot-password'),
+  email: z.string().email('Invalid email format').min(1, 'Email is required'),
+  code: z.string().min(1, 'Verification code is required'),
+  newPassword: z
+    .string()
+    .min(8, 'Password must be at least 8 characters'),
+});
+
 // ============================================================================
 // Notes Schemas
 // ============================================================================

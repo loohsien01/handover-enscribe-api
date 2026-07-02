@@ -4,7 +4,7 @@ Walkthrough for moving **authentication** off Supabase onto **Amazon Cognito Use
 
 Assumes **API-mediated auth** — clients call `POST /api/auth` and `POST /api/auth/refresh` on Fastify (EC2), not Cognito Hosted UI. **Email + password only.** Session layer (encrypted `refreshTokens`, wrapper cookie, inactivity caps) stays on the API. **HIPAA:** Cognito, SES, EC2, and RDS in AWS BAA-covered account/region (`us-east-1`).
 
-**Status (2026-07-02):** **In progress.** **Phase A + B done** (dev IAM verified via `npm run smoke:cognito-dev`). **Phase C (code) is next.** RDS cutover **tentative**. Prod auth cutover only after Phase C tests green + SES production access.
+**Status (2026-07-02):** **Phase C done (local).** **Phase A + B + C complete** on **dev pool** — `npm run smoke:cognito-dev` green; **`npm run test:auth` 28/28** with `AUTH_PROVIDER=cognito`, RDS tunnel (`DATABASE_URL_LOCAL`), and linked `auth.users.cognito_sub`. **Phase D (user import) is next.** Prod auth cutover (Phase F) only after RDS confidence window + SES production access + FE reset flow.
 
 **Prerequisites:**
 
@@ -27,9 +27,9 @@ Assumes **API-mediated auth** — clients call `POST /api/auth` and `POST /api/a
 | **2** | SES (verify domain, exit sandbox) | AWS infra | **Done (prod access pending)** — `enscribe.online` verified; custom MAIL FROM `mail.enscribe.online` (MX/TXT on Namecheap); DMARC `_dmarc`; prod pool email: SES `us-east-1`, FROM `Enscribe Health LLC <noreply@enscribe.online>`, REPLY-TO `info@enscribe.online`. Confirm SES **production access** before cutover. |
 | **3** | IAM on EC2 role (+ dev IAM user) | AWS infra | **Done (dev verified)** — Cognito policy on IAM user `enscribe-api-prod-ec2-role` (dev + prod pool ARNs); laptop verified `npm run smoke:cognito-dev`. Confirm same prod-pool policy on EC2 instance role before cutover. |
 | **4** | `auth.users.cognito_sub` column + index | SQL migration | **Done** — column + partial unique index on RDS |
-| **5** | JWT verify (`aws-jwt-verify`) | Code PR | Planned |
-| **6** | `authController` → Cognito SDK | Code PR | Planned |
-| **7** | Admin helpers (`AdminGetUser`, signup stub) | Code PR | Planned |
+| **5** | JWT verify (`aws-jwt-verify`) | Code PR | **Done** — `cognitoJwt.js`, `authenticateAccessToken.js`, `AUTH_PROVIDER` |
+| **6** | `authController` → Cognito SDK | Code PR | **Done** — sign-in/up/out, refresh, forgot/confirm password, resend |
+| **7** | Admin helpers (`AdminGetUser`, signup stub) | Code PR | **Done** — `resolveAppUserFromCognito`, `authUsersStub` + `cognito_sub`, RDS `ensureAuthUserExists` |
 | **8** | User bulk import + password reset comms | Ops | Planned |
 | **9** | Frontend: Cognito forgot-password **code** flow | `enscribe-web` | Planned |
 | **10** | Cutover (flip env, invalidate Supabase sessions) | Ops | Planned |
@@ -55,8 +55,9 @@ Phase G — Cleanup (Part 11)             Remove SUPABASE_* auth secrets + supab
 |-------|--------|-------|
 | **A — Infra (Parts 1–3)** | **Done** | Dev IAM: `npm run smoke:cognito-dev` green. Before cutover: SES prod access + EC2 role prod pool policy. |
 | **B — Schema (Part 4)** | **Done** | `auth.users.cognito_sub` on RDS |
-| **C — Code (Parts 5–7)** | **Next** | JWT verify, `authController`, admin helpers |
-| **D–G** | Planned | User import, FE reset, cutover, decommission |
+| **C — Code (Parts 5–7)** | **Done (local)** | Dev pool + `npm run test:auth` **28/28** (2026-07-02). See Phase C log. |
+| **D — User import (Part 8)** | **Next** | Bulk `AdminCreateUser`; map `cognito_sub` on prod pool |
+| **E–G** | Planned | FE reset, cutover, decommission |
 
 ### Phase A completion log (2026-07-02)
 
@@ -78,6 +79,24 @@ Phase G — Cleanup (Part 11)             Remove SUPABASE_* auth secrets + supab
 - **MAIL FROM subdomain** — exactly **one** MX on `mail.enscribe.online`, region **`us-east-1`** only (`feedback-smtp.us-east-1.amazonses.com`).
 - **IAM user ≠ EC2 role** — attach Cognito policy to IAM **user** for laptop (`AWS_ACTIONS_*`) and EC2 **instance role** for prod.
 - **`auth.users.cognito_sub`** — only for API JWT resolution; not needed for `smoke:cognito-dev`.
+
+### Phase C completion log (2026-07-02)
+
+| Item | Detail |
+|------|--------|
+| Code | `AUTH_PROVIDER=cognito`; Cognito SDK in `authController`; JWKS verify; `confirm-forgot-password` action |
+| Local Postgres | `DATABASE_URL_LOCAL` → `127.0.0.1:15432` (tunnel); TLS `servername` = RDS host from `DATABASE_URL` |
+| Auth tests | **`npm run test:auth` — 28 executed, 28 passed, 0 failed** (~10s; real dev account + refresh/cookie suite) |
+| Prerequisites | `npm run db:tunnel` + `npm run dev:fastify`; `TEST_ACCOUNT_*` linked in RDS (`cognito_sub` or email fallback) |
+| Not in scope yet | Prod pool user import (Phase D); FE code reset (Phase E); EC2 `AUTH_PROVIDER` flip (Phase F) |
+
+**Local auth test command:**
+
+```bash
+npm run db:tunnel          # terminal 1
+npm run dev:fastify        # terminal 2 (restart after env changes)
+npm run test:auth          # 28/28 expected with AUTH_PROVIDER=cognito
+```
 
 ---
 
@@ -538,7 +557,7 @@ Optional: Cognito custom attribute `legacy_supabase_id` = `auth.users.id` for su
 ### Pre-cutover checklist
 
 - [ ] RDS stable ≥ 1–2 weeks (or agreed risk acceptance)
-- [ ] Dev Cognito pool: full `npm run test:auth` green (requires Phase C)
+- [x] Dev Cognito pool: full `npm run test:auth` green (**28/28**, Phase C — 2026-07-02)
 - [x] Prod Cognito pool + SES domain/Mail FROM/Cognito email config
 - [ ] SES **production access** (out of sandbox)
 - [ ] IAM policy on EC2 instance role (dev user verified — `npm run smoke:cognito-dev`)
@@ -580,13 +599,13 @@ After **2–4 weeks** stable on Cognito:
 
 ## Code PR strategy
 
-| PR | Scope | Tests |
-|----|-------|-------|
-| **Auth 0** | `cognitoJwt.js`, resolver, `AUTH_PROVIDER`, `authentication.js` | Unit tests |
-| **Auth 1** | `authController` sign-in/sign-up/sign-out | `npm run test:auth` |
-| **Auth 2** | Refresh + forgot/confirm password | Integration tests |
-| **Auth 3** | `userProfileController`, `authUsersStub` | Profile + signup tests |
-| **Auth 4** | Remove Supabase auth paths; deploy secrets | Full CI |
+| PR | Scope | Tests | Status |
+|----|-------|-------|--------|
+| **Auth 0** | `cognitoJwt.js`, resolver, `AUTH_PROVIDER`, `authentication.js` | Unit tests | **Done** |
+| **Auth 1** | `authController` sign-in/sign-up/sign-out | `npm run test:auth` | **Done** |
+| **Auth 2** | Refresh + forgot/confirm password | Integration tests | **Done** (in auth suite) |
+| **Auth 3** | `userProfileController`, `authUsersStub` | Profile + signup tests | **Done** (test 7 + RDS path) |
+| **Auth 4** | Remove Supabase auth paths; deploy secrets | Full CI | **Next** (after cutover confidence) |
 
 ---
 
@@ -607,6 +626,9 @@ AWS_REGION=us-east-1
 
 TEST_ACCOUNT_EMAIL=...
 TEST_ACCOUNT_PASSWORD=...
+
+# Local Mac — RDS via SSH tunnel (see README); ignored on EC2 prod
+DATABASE_URL_LOCAL=postgresql://USER:PASS@127.0.0.1:15432/enscribe?sslmode=require
 
 # Unchanged session layer
 REFRESH_TOKEN_SIGNING_KEY_HEX=...
@@ -640,7 +662,15 @@ SUPABASE_SERVICE_ROLE_KEY=...
 npm run smoke:cognito-dev
 ```
 
-**After Phase C:**
+**Phase C (local — verified 2026-07-02):**
+
+```bash
+npm run db:tunnel          # required on Mac (RDS is VPC-private)
+npm run dev:fastify
+npm run test:auth          # 28/28 with AUTH_PROVIDER=cognito + DATABASE_URL_LOCAL
+```
+
+Broader regression (optional before cutover):
 
 ```bash
 npm run test:auth

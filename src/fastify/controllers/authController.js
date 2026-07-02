@@ -4,6 +4,17 @@ import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import { upsertUserProfileForUser } from './userProfileController.js';
 import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
 import { ensureAuthUsersStubAfterSignup } from '../../utils/authUsersStub.js';
+import { isCognitoAuth } from '../../utils/authProvider.js';
+import { authenticateAccessToken } from '../../utils/authenticateAccessToken.js';
+import {
+  cognitoConfirmForgotPassword,
+  cognitoForgotPassword,
+  cognitoRefreshTokens,
+  cognitoResendConfirmationCode,
+  cognitoSignIn,
+  cognitoSignUp,
+  resolveAppUserIdFromAccessToken,
+} from '../../utils/cognitoAuthService.js';
 import {
   findRefreshTokenById,
   insertRefreshTokenRow,
@@ -84,6 +95,107 @@ export function createRefreshWrapper(userId, tid) {
  */
 export async function signUp(email, password, opts = {}) {
   try {
+    if (isCognitoAuth()) {
+      const appUserId = crypto.randomUUID();
+      const result = await cognitoSignUp(email, password, appUserId);
+
+      if (!result.success) {
+        return { success: false, error: result.error };
+      }
+
+      const user = result.user;
+      const cognitoSub = result.cognitoSub;
+
+      if (user?.id && user?.email && cognitoSub && !result.alreadyExists) {
+        const stubResult = await ensureAuthUsersStubAfterSignup(user.id, user.email, cognitoSub);
+        if (!stubResult.ok) {
+          console.error('[signUp] auth.users stub insert failed (signup continues):', stubResult.error);
+        }
+      }
+
+      let session = result.session;
+      let resolvedUser = user;
+
+      if (!session && result.userConfirmed && !result.alreadyExists) {
+        const signInResult = await cognitoSignIn(email, password);
+        if (signInResult.success) {
+          session = signInResult.session;
+          resolvedUser = signInResult.user;
+        } else {
+          console.error('[signUp] Post-signup sign-in failed:', signInResult.error);
+        }
+      }
+
+      const signupProfileExtras = {};
+      if (opts.userProfile && resolvedUser?.id) {
+        const prof = await upsertUserProfileForUser(resolvedUser.id, opts.userProfile);
+        if (prof.ok) {
+          signupProfileExtras.userProfile = prof.data;
+          if (prof.created) {
+            try {
+              await ensurePersonalOrganization(resolvedUser.id, {
+                name: opts.userProfile.username,
+              });
+            } catch (orgErr) {
+              console.error('[signUp] ensurePersonalOrganization:', orgErr);
+            }
+          }
+        } else {
+          console.error('[signUp] Optional profile save failed:', prof.payload);
+          signupProfileExtras.profileError = prof.payload;
+        }
+      }
+
+      if (session) {
+        let tid = null;
+        try {
+          const refreshToken = session.refresh_token;
+          if (refreshToken) {
+            tid = crypto.randomUUID();
+            const hashed = encryptionUtils.hashToken(refreshToken);
+            const enc = encryptionUtils.encryptRefreshToken(refreshToken);
+            const now = new Date().toISOString();
+
+            try {
+              await insertRefreshTokenRow({
+                id: tid,
+                user_id: resolvedUser.id,
+                token_hash: hashed,
+                token_enc: enc,
+                issued_at: now,
+                last_activity_at: now,
+                expires_at: new Date(Date.now() + REFRESH_MAX_AGE_SECONDS * 1000).toISOString(),
+                revoked: false,
+              });
+            } catch (insertErr) {
+              console.error('[signUp] Failed to store refresh token:', insertErr);
+            }
+          }
+        } catch (err) {
+          console.error('[signUp] Error storing refresh token:', err);
+        }
+
+        return {
+          success: true,
+          error: null,
+          session,
+          user: resolvedUser,
+          message: 'signed up and logged in',
+          tid,
+          ...signupProfileExtras,
+        };
+      }
+
+      return {
+        success: true,
+        error: null,
+        session: null,
+        user: resolvedUser,
+        message: 'Email confirmation required',
+        ...signupProfileExtras,
+      };
+    }
+
     // Route validates email format and password requirements - trust the data
     const supabase = getSupabaseClient();
     const { data, error } = await supabase.auth.signUp({ email, password });
@@ -188,6 +300,59 @@ export async function signUp(email, password, opts = {}) {
  */
 export async function signIn(email, password) {
   try {
+    if (isCognitoAuth()) {
+      const result = await cognitoSignIn(email, password);
+      if (!result.success) {
+        console.log('[signIn] Sign-in failed:', result.error);
+        return { success: false, error: result.error };
+      }
+
+      const { session, user } = result;
+      console.log('[signIn] Sign-in successful for user:', user.id);
+
+      try {
+        const refreshToken = session?.refresh_token;
+        if (refreshToken) {
+          const tid = crypto.randomUUID();
+          const hashed = encryptionUtils.hashToken(refreshToken);
+          const enc = encryptionUtils.encryptRefreshToken(refreshToken);
+          const now = new Date().toISOString();
+
+          try {
+            await insertRefreshTokenRow({
+              id: tid,
+              user_id: user.id,
+              token_hash: hashed,
+              token_enc: enc,
+              issued_at: now,
+              last_activity_at: now,
+              expires_at: new Date(Date.now() + REFRESH_MAX_AGE_SECONDS * 1000).toISOString(),
+              revoked: false,
+            });
+            return {
+              success: true,
+              error: null,
+              session,
+              user,
+              tid,
+            };
+          } catch (insertErr) {
+            console.error('[signIn] Failed to store refresh token:', insertErr);
+          }
+        }
+      } catch (err) {
+        console.error('[signIn] Error storing refresh token:', err);
+      }
+
+      return {
+        success: true,
+        error: null,
+        session,
+        user,
+        tid: null,
+      };
+    }
+
     // Route validates email format and password requirements - trust the data
     const supabase = getSupabaseClient();
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
@@ -313,12 +478,14 @@ export async function signOut(userId, refreshTokenFromCookie = null) {
       }
     }
 
-    // Sign out from Supabase
-    const supabase = getSupabaseClient();
-    const { error } = await supabase.auth.signOut();
+    // Sign out from identity provider (Supabase only; Cognito uses vault revoke)
+    if (!isCognitoAuth()) {
+      const supabase = getSupabaseClient();
+      const { error } = await supabase.auth.signOut();
 
-    if (error) {
-      return { success: false, error: error.message };
+      if (error) {
+        return { success: false, error: error.message };
+      }
     }
 
     return { success: true, error: null };
@@ -339,6 +506,16 @@ export async function resendConfirmationEmail(email, emailRedirectTo = null) {
 
     if (!email.includes('@')) {
       return { success: false, error: `Invalid email format: ${email}` };
+    }
+
+    if (isCognitoAuth()) {
+      const result = await cognitoResendConfirmationCode(email);
+      if (!result.success) {
+        console.log('[resendConfirmationEmail] Error:', result.error);
+        return { success: false, error: result.error };
+      }
+      console.log('[resendConfirmationEmail] Email sent to:', email);
+      return { success: true, error: null };
     }
 
     const supabase = getSupabaseClient();
@@ -373,6 +550,15 @@ export async function forgotPassword(email, opts = {}) {
     if (!email) return { success: false, error: 'Email is required' };
     if (!email.includes('@')) return { success: false, error: `Invalid email format: ${email}` };
 
+    if (isCognitoAuth()) {
+      const result = await cognitoForgotPassword(email);
+      if (!result.success) {
+        console.error('[forgotPassword] Cognito error:', result.error);
+        return { success: false, error: result.error };
+      }
+      return { success: true, error: null };
+    }
+
     const explicit = typeof opts?.redirectTo === 'string' ? opts.redirectTo.trim() : '';
     const redirectTo = explicit || defaultPasswordResetRedirectTo();
 
@@ -396,8 +582,29 @@ export async function forgotPassword(email, opts = {}) {
 }
 
 /**
+ * Confirm forgot-password with verification code (Cognito).
+ * @param {string} email
+ * @param {string} code
+ * @param {string} newPassword
+ */
+export async function confirmForgotPassword(email, code, newPassword) {
+  try {
+    if (!isCognitoAuth()) {
+      return { success: false, error: 'confirm-forgot-password requires AUTH_PROVIDER=cognito' };
+    }
+    if (!email || !code || !newPassword) {
+      return { success: false, error: 'Email, code, and new password are required' };
+    }
+    return cognitoConfirmForgotPassword(email, code, newPassword);
+  } catch (err) {
+    console.error('[confirmForgotPassword] Error:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
  * Refresh a refresh token
- * Validates refresh token from cookie, checks inactivity, exchanges with Supabase
+ * Validates refresh token from cookie, checks inactivity, exchanges with identity provider
  * Updates token in DB and returns new access token
  * @param {string} wrapper - The wrapper JWT from cookie
  * @param {object} logger - Pino logger instance
@@ -608,8 +815,35 @@ export async function refreshRefreshToken(wrapper, logger = null) {
       userId,
     });
 
-    // Exchange with Supabase
+    // Exchange with identity provider
     try {
+      let accessToken;
+      let newRefreshToken;
+
+      if (isCognitoAuth()) {
+        const cognitoResult = await cognitoRefreshTokens(rawStoredRefresh);
+        if (!cognitoResult.success) {
+          log.error({
+            event: 'refreshRefreshToken',
+            step: 'cognito_exchange_failed',
+            tid: oldTokenId,
+            userId,
+            error: cognitoResult.error,
+          });
+          await revokeRefreshTokenById(oldTokenId);
+          return { success: false, error: 'invalid_refresh_exchange', debugUserId: userId, debugOldTokenId: oldTokenId };
+        }
+        accessToken = cognitoResult.accessToken;
+        newRefreshToken = cognitoResult.refreshToken;
+        log.info({
+          event: 'refreshRefreshToken',
+          step: 'cognito_exchange_success',
+          tid: oldTokenId,
+          userId,
+          accessTokenLength: accessToken?.length || 0,
+          newRefreshTokenLength: newRefreshToken?.length || 0,
+        });
+      } else {
       const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/$/, '');
       const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
       
@@ -662,8 +896,8 @@ export async function refreshRefreshToken(wrapper, logger = null) {
       }
 
       const session = await resp.json();
-      const accessToken = session.access_token;
-      const newRefreshToken = session.refresh_token;
+      accessToken = session.access_token;
+      newRefreshToken = session.refresh_token;
 
       if (!accessToken) {
         log.error({
@@ -685,6 +919,7 @@ export async function refreshRefreshToken(wrapper, logger = null) {
         accessTokenLength: accessToken?.length || 0,
         newRefreshTokenLength: newRefreshToken?.length || 0,
       });
+      }
 
       // Create NEW token row with new tid (token rotation with revocation of old row)
       try {
@@ -728,7 +963,8 @@ export async function refreshRefreshToken(wrapper, logger = null) {
         return {
           success: true,
           accessToken,
-          newTokenId, // Return new tid so route can create new wrapper JWT
+          newTokenId,
+          userId,
         };
       } catch (err) {
         log.error({
@@ -828,16 +1064,14 @@ export async function checkTokenValidity(authHeader) {
       return { success: false, error: 'Authorization header required', user: null };
     }
 
-    const supabase = getSupabaseClient(authHeader);
     const token = authHeader.replace(/^Bearer\s+/i, '');
+    const { user, error } = await authenticateAccessToken(token);
 
-    const { data, error } = await supabase.auth.getUser(token);
-
-    if (error || !data?.user) {
+    if (error || !user) {
       return { success: false, error: 'Invalid or expired token', user: null };
     }
 
-    return { success: true, error: null, user: data.user };
+    return { success: true, error: null, user };
   } catch (err) {
     console.error('[checkTokenValidity] Error:', err);
     return { success: false, error: err.message, user: null };
@@ -845,11 +1079,14 @@ export async function checkTokenValidity(authHeader) {
 }
 
 /**
- * Extract user ID from an access token JWT
+ * Extract user ID from an access token JWT (Supabase: sync decode; Cognito: use resolveAppUserIdFromAccessToken).
  * @param {string} token - JWT access token
  * @returns {string|null} User ID or null if extraction fails
  */
 export function extractUserIdFromAccessToken(token) {
+  if (isCognitoAuth()) {
+    return null;
+  }
   try {
     const parts = token.split('.');
     if (parts.length === 3) {
@@ -861,6 +1098,8 @@ export function extractUserIdFromAccessToken(token) {
   }
   return null;
 }
+
+export { resolveAppUserIdFromAccessToken };
 
 /**
  * Extract tid from wrapper JWT
@@ -903,13 +1142,26 @@ export function decryptStoredRefreshToken(row) {
 }
 
 /**
- * Exchange raw refresh token with Supabase for new session
+ * Exchange raw refresh token with identity provider for new session
  * Used by mobile clients who send raw tokens
- * @param {string} rawRefreshToken - Raw Supabase refresh token
+ * @param {string} rawRefreshToken - Raw refresh token
  * @returns {object} { success, accessToken, refreshToken, error }
  */
 export async function exchangeRawRefreshTokenWithSupabase(rawRefreshToken) {
   try {
+    if (isCognitoAuth()) {
+      const result = await cognitoRefreshTokens(rawRefreshToken);
+      if (!result.success) {
+        return { success: false, error: result.error || 'Cognito exchange failed' };
+      }
+      return {
+        success: true,
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken,
+        error: null,
+      };
+    }
+
     const baseUrl = `${process.env.SUPABASE_URL.replace(/\/$/, '')}/auth/v1/token`;
     const url = `${baseUrl}?grant_type=refresh_token`;
     
