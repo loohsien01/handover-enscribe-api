@@ -2,7 +2,7 @@
 
 Walkthrough for moving the **application database** off Supabase Postgres onto **Amazon RDS PostgreSQL** (or Aurora PostgreSQL). Auth and PostgREST stay on Supabase during early parts; storage is already on S3.
 
-**Status (2026-07-02):** **Phase A + B complete.** **Phase C PR 0–5 complete** (all app Postgres data paths on `pg`; `supabase-js` retained for auth + storage only). **Data still on Supabase Postgres** until Phase D cutover — pool host unchanged. **Next:** Phase D cutover (restore + flip `DATABASE_URL`). Active Step 2 of [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md).
+**Status (2026-07-02):** **Phase A + B + C complete.** **Phase D dry run complete** (dump/restore verified on EC2 → `enscribe_dryrun`; row counts match Supabase). **Prod still on Supabase Postgres** — pool host unchanged until cutover window. **Next:** schedule cutover night (Part 10 cheat sheet), flip `DATABASE_URL` / `SUPABASE_DB_DIRECT_URL`, post-restore API smoke. Active Step 2 of [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md).
 
 **Prerequisites:** [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) cutover complete (`RECORDINGS_STORAGE_BACKEND=s3` on prod).
 
@@ -23,7 +23,7 @@ Walkthrough for moving the **application database** off Supabase Postgres onto *
 | **7** | `auth.users` + FK strategy | Design + SQL | **Done** — **Option A through Cognito**; map `cognito_sub`; B-heavy only if canonical id changes |
 | **8** | RLS strategy on RDS | Design + SQL | **Done** — **disable RLS** on app tables post-restore; API enforces `user_id` |
 | **9** | Code: expand `pg`, replace `supabase-js` | **Code PR(s)** | **Done** — PR 0–5 merged (see Part 9) |
-| **10** | Data migration + cutover | Ops | Not started |
+| **10** | Data migration + cutover | Ops | **Dry run done** — cutover window pending |
 | **11** | Decommission Supabase Postgres | Ops + cleanup PR | After confidence window |
 
 ### Recommended order
@@ -32,7 +32,7 @@ Walkthrough for moving the **application database** off Supabase Postgres onto *
 Phase A — Infra (Parts 1–5)     ✅ Done — RDS reachable from EC2, empty `enscribe` DB ready
 Phase B — Schema (Parts 6–8)    ✅ Done — dump reviewed, Option A + disable RLS locked
 Phase C — Code (Part 9)         ✅ PR 0–5 done; prod stays on Supabase until Phase D
-Phase D — Data + cutover (10)   logical dump/restore or DMS; flip DATABASE_URL
+Phase D — Data + cutover (10)   dry run ✅; cutover window + flip DATABASE_URL
 Phase E — Cleanup (11)          drop Supabase DB dependency after stable period
 ```
 
@@ -71,7 +71,7 @@ Phase E — Cleanup (11)          drop Supabase DB dependency after stable perio
 | **7 — auth.users** | **Option A (long-term):** copy `auth.users` stub to RDS; same UUIDs; 27 FKs unchanged through Cognito. Map Cognito `sub` → `auth.users.id` at Step 3 (do not force `sub` = Supabase UUID). Optional B-light rename to `public.users`. |
 | **8 — RLS** | **Disable RLS** on app tables after restore (simpler). API is the auth boundary via `request.user.id` + parameterized SQL. Do not re-apply `sql/policies/*.sql` to RDS. |
 
-**Cutover restore scope (Phase D):** `pg_dump` / `pg_restore` for `public` + `archive` + `auth.users` data; skip Supabase-only schemas.
+**Cutover restore scope (Phase D):** two `pg_dump` files (`public` + `archive`, then `auth.users`); `pg_restore` to RDS after `CREATE SCHEMA auth`. See Part 6 and Part 10.
 
 ### Phase C plan (locked 2026-06-30)
 
@@ -198,6 +198,8 @@ psql "$DATABASE_URL" -c 'SELECT version();'
 
 Update [deploy.yml](../.github/workflows/deploy.yml) and EC2 `.env.local` template when cutting over.
 
+**Password special characters:** If the RDS password contains `!`, `#`, `$`, `@`, etc., they must be **percent-encoded** in `DATABASE_URL` (`!` → `%21`, `#` → `%23`, `$` → `%24`). Store the encoded form in GitHub secrets. For interactive `psql` on EC2, prefer `PGPASSWORD='raw-password'` (single quotes) over a connection URI.
+
 ### Code touchpoints
 
 | File | Change |
@@ -249,9 +251,15 @@ Match **timezone** (`UTC`), **locale**, and **max_connections** to expected load
 pg_dump "$SUPABASE_DB_DIRECT_URL" --schema-only --no-owner --no-privileges -f supabase-schema.sql
 # → enscribe-api/supabase-schema.sql (local only; do not commit)
 
-# Full logical dump (cutover window)
-pg_dump "$SUPABASE_DB_DIRECT_URL" --no-owner --no-privileges -Fc -f enscribe.dump
+# Cutover window — TWO dumps (see Part 10; do NOT combine -n and -t in one command)
+pg_dump "$SUPABASE_DB_DIRECT_URL" --no-owner --no-privileges -Fc \
+  -n public -n archive -f enscribe-public-archive.dump
+
+pg_dump "$SUPABASE_DB_DIRECT_URL" --no-owner --no-privileges -Fc \
+  -t auth.users -f enscribe-auth-users.dump
 ```
+
+**Important:** `-t auth.users` causes `pg_dump` to **ignore** `-n public` / `-n archive`. A single command with both only dumps `auth.users` (~13K). Use two separate dumps.
 
 ### Schemas in scope
 
@@ -393,7 +401,7 @@ Supabase RLS policies use `auth.uid()` and the `authenticated` role (example: `s
 | Cleanup jobs | [encounterArchivePurge.js](../src/utils/encounterArchivePurge.js), [unattachedStorageCleanup.js](../src/utils/unattachedStorageCleanup.js), [unattachedNoteTemplateSectionsCleanup.js](../src/utils/unattachedNoteTemplateSectionsCleanup.js) — remaining public-table `.from()` → `pg` |
 | Audit | No Postgres `.from()` in `src/` except `supabase.storage` (S3) |
 | Unit (verified) | `billingEntitlements` **6/6**, `billingStripeSync` **4/4**, `billingUsage` **5/5**, `baaStatus` **5/5** |
-| Integration | Run `test:billing-org`, `test:billing-usage-limits`, `test:auth`, `test:user-profile`, `test:baa` against Supabase before merge |
+| Integration (verified) | `test:billing-org`, `test:billing-usage-limits`, `test:auth`, `test:user-profile`, `test:baa` against Supabase |
 | Prod / data | No env flip; pool still uses `SUPABASE_DB_DIRECT_URL` → Supabase; **no data on RDS yet** |
 
 ### Phase C PR 4 completion log (2026-07-02)
@@ -543,7 +551,7 @@ Supabase RLS policies use `auth.uid()` and the `authenticated` role (example: `s
 | Refresh tokens | `authController`, `refreshTokenPersistence` | Done |
 | Remaining utils / jobs | `patientEncounterUtils`, `billingUsage`, archive/cleanup jobs | Done |
 | Audit | No Postgres `.from()` in `src/` (auth + storage only) | Done |
-| Integration tests | `test:billing-org`, `test:billing-usage-limits`, `test:auth`, `test:user-profile`, `test:baa` | Run before merge |
+| Integration tests | `test:billing-org`, `test:billing-usage-limits`, `test:auth`, `test:user-profile`, `test:baa` | Done |
 
 ### Phase C completion checklist (gate for Phase D)
 
@@ -554,7 +562,7 @@ Supabase RLS policies use `auth.uid()` and the `authenticated` role (example: `s
 - [x] **PR 4** — Nova + jobs on `pg` (`novaChatPersistence`, `novaChatSessionsController`, processors, `jobController`); unit tests verified (10 + 10 + 13 + 5)
 - [x] **PR 5** merged — remaining controllers on `pg`; audit: no Postgres `.from()` in `src/`
 - [x] No prod env flip — EC2 still on Supabase URI; app data remains on Supabase until Phase D
-- [ ] Test suites pass against **Supabase** with migrated code (integration before merge)
+- [x] Test suites pass against **Supabase** with migrated code — PR 5 integration verified (`test:billing-org`, `test:billing-usage-limits`, `test:auth`, `test:user-profile`, `test:baa`)
 - [x] `supabase-js` retained only for **auth** + **storage** — Postgres data paths on `pg`
 
 ### 9.1 — Foundation (detail)
@@ -606,7 +614,7 @@ Each PR: swap `.from()` for parameterized SQL; preserve `user_id` checks; run ex
 | When | Target | Command / location |
 |------|--------|-------------------|
 | **Phase C (each PR)** | Supabase | `npm run test:*` suites listed below |
-| **Phase D (post-restore)** | RDS from EC2 | `psql`, API smoke, `npm test` if tunnel or CI against restored DB |
+| **Phase D (post-restore)** | RDS from EC2 | `psql`, API smoke after cutover flip (see Part 10 cheat sheet) |
 
 | Area | Command |
 |------|---------|
@@ -623,6 +631,32 @@ Each PR: swap `.from()` for parameterized SQL; preserve `user_id` checks; run ex
 
 ## Part 10 — Data migration and cutover
 
+### Phase D dry run completion log (2026-07-02)
+
+| Item | Detail |
+|------|--------|
+| **Where** | EC2 Instance Connect (`/opt/enscribe-api`) |
+| **RDS smoke** | `psql` to `enscribe` — PG **18.3**; extensions `uuid-ossp`, `pgcrypto`, `pg_stat_statements`, `plpgsql` ✅ |
+| **EC2 client** | `sudo dnf swap postgresql15 postgresql17` → `pg_dump` **17.7** (Supabase is **17.4**; RDS is **18.3**) |
+| **Dry run target** | Throwaway DB `enscribe_dryrun` on same RDS instance |
+| **Dump size** | `enscribe-public-archive.dump` ~**4.2M**; auth-only dump was ~13K (wrong command — see Part 6) |
+| **Row counts** | `auth.users`, `patientEncounters`, `recordings`, `notes` — **match Supabase** after restore |
+| **Restore errors** | Expected: `auth.uid()` policies, `authenticated` / `service_role` roles, `public` already exists — **benign** |
+| **RLS** | Disable on `public` + `archive` + `auth` post-restore (practiced on dryrun) |
+| **Prod** | Unchanged — still `SUPABASE_DB_DIRECT_URL` → Supabase |
+
+**Lessons learned (EC2 ops):**
+
+| Topic | Detail |
+|-------|--------|
+| **Do not `source .env.local` on EC2** | Multi-line RSA keys break bash; `grep` individual vars instead |
+| **RDS credentials on EC2** | Prefer `PGHOST` / `PGUSER` / `PGPASSWORD` (single-quoted raw password) over `DATABASE_URL` in shell |
+| **`DATABASE_URL` password** | Special chars (`!`, `#`, `$`) must be **URL-encoded** in connection strings (`%21`, `%23`, `%24`); store encoded form in GitHub secret |
+| **`CREATE SCHEMA auth`** | Required before restore — `-t auth.users` does not emit `CREATE SCHEMA auth` |
+| **Restore order** | `auth.users` dump **first**, then `public` + `archive` (FKs reference `auth.users`) |
+| **IAM** | EC2 role does not need `rds:DescribeDBInstances`; `psql` over TCP is the connectivity check |
+| **PGDG on AL2023** | Not needed — use native `postgresql17` from `amazonlinux` repo (`postgresql15` conflicts; swap packages) |
+
 ### Pre-cutover checklist
 
 **AWS infra (Parts 1–5)**
@@ -630,36 +664,204 @@ Each PR: swap `.from()` for parameterized SQL; preserve `user_id` checks; run ex
 - [x] RDS created, encrypted, Multi-AZ (prod)
 - [x] EC2 → RDS connectivity verified (`psql`)
 - [x] Extensions enabled
-- [x] `DATABASE_URL` format ready (GitHub secret / prod flip deferred to Phase D cutover)
+- [x] `DATABASE_URL` format ready (GitHub secret / prod flip deferred to cutover)
+- [x] EC2 `pg_dump` ≥ 17 (`postgresql17` package on AL2023)
 
 **Schema (Parts 6–8)**
 
 - [x] Schema dump reviewed (`auth`, `public`, `archive`) — export at `supabase-schema.sql` (2026-06-30)
-- [x] `auth.users` bridge strategy — **Option A** (26 users, 27 FKs)
+- [x] `auth.users` bridge strategy — **Option A** (27 users, 27 FKs)
 - [x] RLS plan — **disable on app tables**; API-enforced ownership
 
 **Code (Part 9 — Phase C gate)**
 
-- [x] PR 0 — RDS SSL + gated signup stub (`postgresConnection.js`, `authUsersStub.js`, unit tests)
-- [x] PR 1 — RPCs + encounters/recordings on `pg` (`pgQueryHelpers.js`, controllers); PR 1 tests verified (26 + 89 + 19)
-- [x] PR 2 — notes pipeline on `pg` (`notesController`, `soapNotesController`, `transcriptsController`); PR 2 tests verified (31 + 26 + 22)
-- [x] PR 3 — templates + pre-visit + dot phrases on `pg`; PR 3 tests verified (16 + 19 + 19 + 12 + 10 + 6 + 14)
-- [x] PR 4 — Nova + jobs on `pg`; unit tests verified (10 + 10 + 13 + 5); integration tests before merge
-- [x] PR 5 — remaining controllers on `pg`; audit complete; unit tests verified (6 + 4 + 5 + 5)
-- [ ] Test suites pass against **Supabase** with migrated code (integration before merge)
-- [ ] Post-restore: smoke from **EC2** against RDS (Phase D)
+- [x] PR 0–5 merged; PR 5 integration verified on Supabase
+- [x] Test suites pass against **Supabase** with migrated code
 
-### Cutover steps
+**Phase D dry run**
 
-1. **Maintenance window** (or read-only mode on API if you implement it).
-2. **Final incremental sync** — `pg_dump` / `pg_restore` or AWS DMS for minimal downtime.
-3. **Restore** to RDS: `pg_restore -d "$DATABASE_URL" enscribe.dump`
-4. **Disable RLS** on app tables (Part 8) — batch `ALTER TABLE … DISABLE ROW LEVEL SECURITY` on `public` + `archive` tables (do not re-apply `sql/policies/*.sql`).
-5. **Apply** any pending `sql/` migrations via `npm run migrate:apply-psql`.
-6. **Flip env** on EC2: set `SUPABASE_DB_DIRECT_URL` and/or `DATABASE_URL` → RDS; update [deploy.yml](../.github/workflows/deploy.yml) to pass `DATABASE_URL` from GitHub secret.
-7. **Restart PM2** (`fastify-server`, `nova-summarize-worker`).
-8. **Smoke:** sign-in (Supabase auth still), create encounter, note, recording upload (S3), billing entitlements, cleanup cron paths.
-9. **Rollback plan:** revert DB URL to Supabase URI; restore from pre-cutover snapshot.
+- [x] Two-dump + two-restore flow verified on `enscribe_dryrun`
+- [x] Row counts match Supabase after restore
+- [x] Disable RLS practiced post-restore
+- [ ] **Cutover window** — fresh dump → restore to `enscribe` → flip env → PM2 smoke
+
+### EC2 prep (before cutover window)
+
+**1. PostgreSQL client (one-time on AL2023)**
+
+```bash
+sudo dnf swap postgresql15 postgresql17 -y
+pg_dump --version   # PostgreSQL 17.7
+```
+
+**2. Load env on EC2 (do not `source .env.local` — RSA keys break bash)**
+
+```bash
+cd /opt/enscribe-api
+
+export SUPABASE_DB_DIRECT_URL="$(
+  grep '^SUPABASE_DB_DIRECT_URL=' .env.local \
+  | sed 's/^SUPABASE_DB_DIRECT_URL=//' | sed 's/^"//;s/"$//'
+)"
+
+export PGHOST='enscribe-prod.c8fay082y82d.us-east-1.rds.amazonaws.com'
+export PGPORT=5432
+export PGUSER=enscribe_admin
+export PGPASSWORD='...'          # raw password, single quotes
+export PGSSLMODE=require
+
+psql -d enscribe -c 'SELECT version();'
+```
+
+**3. GitHub `DATABASE_URL` secret** — password must be **URL-encoded** for deploy/app (`!` → `%21`, `#` → `%23`, `$` → `%24`).
+
+---
+
+### Cutover night cheat sheet
+
+Run from **EC2 Instance Connect** (`/opt/enscribe-api`). Schedule a short maintenance / read-only window.
+
+#### 1. Prep
+
+- [ ] Announce maintenance window
+- [ ] EC2: `pg_dump --version` ≥ 17
+- [ ] Load `SUPABASE_DB_DIRECT_URL` + `PG*` vars (see above)
+- [ ] Rollback plan ready: revert EC2 `.env.local` DB URL to Supabase; Supabase snapshot exists
+
+#### 2. Stop writes (minimize drift)
+
+- [ ] Enable read-only on API **or** stop PM2 briefly before final dump:
+  ```bash
+  pm2 stop fastify-server nova-summarize-worker
+  ```
+
+#### 3. Final dump from Supabase (two files — read-only on source)
+
+```bash
+pg_dump "$SUPABASE_DB_DIRECT_URL" --no-owner --no-privileges -Fc \
+  -n public -n archive \
+  -f /tmp/enscribe-public-archive.dump
+
+pg_dump "$SUPABASE_DB_DIRECT_URL" --no-owner --no-privileges -Fc \
+  -t auth.users \
+  -f /tmp/enscribe-auth-users.dump
+
+ls -lh /tmp/enscribe-*.dump
+```
+
+#### 4. Prepare target RDS (`enscribe` database)
+
+```bash
+psql -d enscribe -c "CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION enscribe_admin;"
+```
+
+#### 5. Restore (auth first, then public/archive)
+
+```bash
+pg_restore -d enscribe --no-owner --no-privileges -v \
+  /tmp/enscribe-auth-users.dump 2>&1 | tee /tmp/pg_restore-auth.log
+
+pg_restore -d enscribe --no-owner --no-privileges -v \
+  /tmp/enscribe-public-archive.dump 2>&1 | tee /tmp/pg_restore-public.log
+```
+
+**Expected benign errors** (ignore):
+
+- `schema "public" already exists`
+- `role "authenticated" does not exist` / `role "service_role" does not exist`
+- `function auth.uid() does not exist` (RLS policies — not used on RDS)
+
+**Gate:** row counts must match Supabase:
+
+```bash
+psql -d enscribe -c 'SELECT count(*) FROM auth.users;'
+psql -d enscribe -c 'SELECT count(*) FROM public."patientEncounters";'
+psql "$SUPABASE_DB_DIRECT_URL" -c 'SELECT count(*) FROM auth.users;'
+psql "$SUPABASE_DB_DIRECT_URL" -c 'SELECT count(*) FROM public."patientEncounters";'
+```
+
+#### 6. Disable RLS
+
+```bash
+psql -d enscribe <<'SQL'
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN
+    SELECT format('%I.%I', n.nspname, c.relname) AS fqtn
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname IN ('public', 'archive', 'auth')
+      AND c.relkind = 'r' AND c.relrowsecurity
+  LOOP
+    EXECUTE 'ALTER TABLE ' || r.fqtn || ' DISABLE ROW LEVEL SECURITY';
+  END LOOP;
+END $$;
+SQL
+```
+
+#### 7. Apply pending SQL migrations (if any)
+
+```bash
+cd /opt/enscribe-api
+# Point app at RDS for this command only, or use migrate script with DATABASE_URL
+DATABASE_URL='postgresql://enscribe_admin:R7!kP9#vLm2$@enscribe-prod.c8fay082y82d.us-east-1.rds.amazonaws.com:5432/enscribe?sslmode=require' npm run migrate:apply-psql
+```
+
+#### 8. Flip prod env
+
+- [ ] Update EC2 `/opt/enscribe-api/.env.local`: comment out `SUPABASE_DB_DIRECT_URL`. Set `DATABASE_URL` → **URL-encoded** RDS connection string
+- [ ] Update [deploy.yml](../.github/workflows/deploy.yml): add `DATABASE_URL=${{ secrets.DATABASE_URL }}` to `.env.local` template
+- [ ] Merge/deploy so future deploys keep RDS URL
+
+#### 9. Restart API
+
+**BEST:** Push commit with updated deploy.yml
+Wait till success.
+
+`Verify resolved host`:
+
+cd /opt/enscribe-api
+node -e "
+import { config } from 'dotenv';
+config({ path: '.env.local' });
+import { getSupabasePostgresUrl } from './src/utils/supabasePostgresUrl.js';
+console.log((getSupabasePostgresUrl()||'').replace(/:([^:@/]+)@/, ':***@'));
+"
+
+`Should show *.rds.amazonaws.com, not pooler.supabase.com.`
+
+```bash
+pm2 restart fastify-server nova-summarize-worker
+pm2 status
+```
+
+#### 10. Smoke (prod on RDS, auth still Supabase)
+
+- [ ] Sign-in (Supabase JWT)
+- [ ] Create encounter
+- [ ] Create note
+- [ ] Recording upload (S3)
+- [ ] Billing entitlements
+- [ ] Nova chat session (if applicable)
+
+#### 11. Rollback (if smoke fails)
+
+1. Revert EC2 `.env.local` DB URL to Supabase URI
+2. `pm2 restart fastify-server nova-summarize-worker`
+3. Investigate; RDS `enscribe` can be dropped/re-restored from fresh dump
+
+#### 12. Cleanup temp files
+
+```bash
+rm -f /tmp/enscribe-*.dump /tmp/pg_restore-*.log
+```
+
+---
+
+### Cutover steps (summary)
+
+Same flow as cheat sheet above: maintenance window → two dumps → `CREATE SCHEMA auth` → restore auth → restore public/archive → verify counts → disable RLS → migrate SQL → flip env + deploy.yml → PM2 → smoke → rollback plan ready.
 
 ### Dual-database period (optional)
 
@@ -699,6 +901,17 @@ Not used by `enscribe-api` today. Studio replacement: pgAdmin, DBeaver, or RDS Q
 ### Connection pooler
 
 Supabase transaction pooler (port 6543) ↔ **RDS Proxy** or app-side `pg` pool. EC2 already pools with `max: 10`.
+
+### `pg_dump` version mismatch on EC2
+
+Supabase prod is PostgreSQL **17.x**; Amazon Linux 2023 ships `postgresql15` by default. `pg_dump` must be **≥ server major version** to dump from Supabase.
+
+```bash
+sudo dnf swap postgresql15 postgresql17 -y
+pg_dump --version   # 17.7
+```
+
+Do **not** use PGDG on AL2023 unless needed — native `postgresql17` from the `amazonlinux` repo is sufficient. `postgresql15` and `postgresql17` client packages conflict; swap, do not install both.
 
 ---
 

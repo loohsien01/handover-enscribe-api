@@ -91,8 +91,8 @@ jobs:
           STRIPE_PRICE_PRO_MONTHLY: ${{ secrets.STRIPE_PRICE_PRO_MONTHLY }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          SUPABASE_DB_DIRECT_URL: ${{ secrets.SUPABASE_DB_DIRECT_URL }}
           SUPABASE_DB_HOST: ${{ secrets.SUPABASE_DB_HOST }}
           SUPABASE_DB_NAME: ${{ secrets.SUPABASE_DB_NAME }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
@@ -135,8 +135,8 @@ jobs:
             "REFRESH_TOKEN_SIGNING_KEY_HEX"
             "RSA_PRIVATE_KEY"
             "RSA_PUBLIC_KEY"
+            "DATABASE_URL"
             "SUPABASE_ANON_KEY"
-            "SUPABASE_DB_DIRECT_URL"
             "SUPABASE_DB_HOST"
             "SUPABASE_DB_NAME"
             "SUPABASE_DB_PASSWORD"
@@ -260,8 +260,8 @@ jobs:
           STRIPE_PRICE_PRO_MONTHLY=${{ secrets.STRIPE_PRICE_PRO_MONTHLY }}
           STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
           STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          DATABASE_URL=${{ secrets.DATABASE_URL }}
           SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
-          SUPABASE_DB_DIRECT_URL=${{ secrets.SUPABASE_DB_DIRECT_URL }}
           SUPABASE_DB_HOST=${{ secrets.SUPABASE_DB_HOST }}
           SUPABASE_DB_NAME=${{ secrets.SUPABASE_DB_NAME }}
           SUPABASE_DB_PASSWORD=${{ secrets.SUPABASE_DB_PASSWORD }}
