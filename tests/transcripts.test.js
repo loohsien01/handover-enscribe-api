@@ -181,22 +181,63 @@ async function runTranscriptsTests() {
     });
   }
 
-  // Test 7: POST /transcripts with valid data (create for last recording)
-  // Uses last recording (by ID) which should not have a transcript from setup.test.js
-  // setup.test.js only creates transcripts for first 2 recordings
+  // Test 7: POST /transcripts with valid data (create for a recording without transcript)
+  // Prefer live API state over testData.json IDs (recordings can be deleted between setup runs).
   let createdTranscriptId = null;
   let test7Passed = false;
   let test7Message = '';
-  
+
+  async function findRecordingWithoutTranscript(token) {
+    const headers = { Authorization: `Bearer ${token}` };
+    const [recordingsRes, transcriptsRes] = await Promise.all([
+      fetch(`${runner.baseUrl}/api/recordings`, { headers }),
+      fetch(`${runner.baseUrl}/api/transcripts`, { headers }),
+    ]);
+    if (!recordingsRes.ok || !transcriptsRes.ok) return null;
+
+    const recordings = await recordingsRes.json();
+    const transcripts = await transcriptsRes.json();
+    const recordingIdsWithTranscript = new Set(
+      transcripts.map((t) => Number(t.recording_id)).filter((id) => !Number.isNaN(id))
+    );
+
+    const attached = recordings
+      .filter((r) => r.patientEncounter_id != null && r.id != null)
+      .sort((a, b) => Number(b.id) - Number(a.id));
+
+    return attached.find((r) => !recordingIdsWithTranscript.has(Number(r.id))) ?? null;
+  }
+
+  async function createAttachedRecordingForTranscript(token) {
+    const encounter = testData.encounters?.find((e) => e.id != null);
+    const unattached = testData.recordings?.find((r) => r.id == null && r.path);
+    if (!encounter?.id || !unattached?.path) return null;
+
+    const response = await fetch(`${runner.baseUrl}/api/recordings`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        patientEncounter_id: Number(encounter.id),
+        recording_file_path: unattached.path,
+      }),
+    });
+
+    if (!response.ok) return null;
+    const body = await response.json();
+    const id = Number(body.id ?? body.data?.id);
+    return Number.isNaN(id) ? null : { id };
+  }
+
   if (accessToken && testData.recordings.length > 0) {
-    // Sort recordings by ID (matching setup.test.js ordering)
-    const recordingsSorted = testData.recordings
-      .filter(r => r.id !== null)
-      .sort((a, b) => String(a.id).localeCompare(String(b.id)));
-    
-    if (recordingsSorted.length > 0) {
-      const lastRecording = recordingsSorted[recordingsSorted.length - 1]; // Last recording by ID
-      
+    let targetRecording = await findRecordingWithoutTranscript(accessToken);
+    if (!targetRecording) {
+      targetRecording = await createAttachedRecordingForTranscript(accessToken);
+    }
+
+    if (targetRecording?.id != null) {
       const result = await runner.test('POST /api/transcripts - create transcript', {
         method: 'POST',
         endpoint: '/api/transcripts',
@@ -205,7 +246,7 @@ async function runTranscriptsTests() {
         },
         body: {
           transcript_text: 'This is a test transcript for the recording.',
-          recording_id: lastRecording.id,
+          recording_id: Number(targetRecording.id),
         },
         expectedStatus: 201,
       });
@@ -219,10 +260,10 @@ async function runTranscriptsTests() {
         test7Message = `Expected 201, got ${result.status || 'unknown'}`;
       }
     } else {
-      test7Message = `Insufficient attached recordings: have ${recordingsSorted.length}, need 3`;
+      test7Message = 'No attached recording available without an existing transcript';
     }
   } else {
-    test7Message = `Insufficient recordings in test data: have ${testData.recordings.length}, need 3`;
+    test7Message = `Insufficient recordings in test data: have ${testData.recordings?.length ?? 0}`;
   }
 
   // Test 8: GET /transcripts/:id - get single transcript

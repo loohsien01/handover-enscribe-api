@@ -3,11 +3,14 @@
  * Handles all notes CRUD operations with encryption/decryption using user master key
  */
 import { getSupabaseClient } from '../../utils/supabase.js';
+import { pgQueryOne, pgQueryRows, pgErrorMessage } from '../../utils/pgQueryHelpers.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 
 const notesTable = 'notes';
 const BATCH_SIZE = 10; // Decrypt notes in batches for performance
+
+const NOTES_SORT_COLUMNS = new Set(['created_at', 'updated_at', 'id']);
 
 /**
  * Helper: Validates bigint ID format
@@ -20,6 +23,12 @@ function isValidBigInt(id) {
   } catch (error) {
     return false;
   }
+}
+
+function notesOrderClause(sortBy, order) {
+  const column = NOTES_SORT_COLUMNS.has(sortBy) ? sortBy : 'created_at';
+  const direction = order === 'asc' ? 'ASC' : 'DESC';
+  return `${column} ${direction}`;
 }
 
 /**
@@ -65,7 +74,6 @@ function stripEncryptionFields(notes) {
  */
 export async function getAllNotes(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -73,23 +81,21 @@ export async function getAllNotes(request, reply) {
     }
 
     const { limit, offset, sortBy, order } = request.query;
+    const orderClause = notesOrderClause(sortBy, order);
 
-    const { data, error } = await supabase
-      .from(notesTable)
-      .select('id, patientEncounter_id, updated_at')
-      .eq('user_id', user.id)
-      .order(sortBy, { ascending: order === 'asc' })
-      .range(offset, offset + limit - 1);
-
-    if (error) {
-      console.error('Error fetching notes:', error);
-      return reply.status(500).send({ error: error.message });
-    }
+    const data = await pgQueryRows(
+      `SELECT id, "patientEncounter_id", updated_at
+         FROM ${notesTable}
+        WHERE user_id = $1
+        ORDER BY ${orderClause}
+        LIMIT $2 OFFSET $3`,
+      [user.id, limit, offset]
+    );
 
     return reply.status(200).send(data);
   } catch (error) {
     console.error('Error fetching notes:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -115,19 +121,16 @@ export async function getAllNotesComplete(request, reply) {
     const masterKey = keyResult.masterKey;
 
     const { limit, offset, sortBy, order } = request.query;
+    const orderClause = notesOrderClause(sortBy, order);
 
-    // Fetch notes with user filter
-    const { data, error } = await supabase
-      .from(notesTable)
-      .select('*')
-      .eq('user_id', user.id)
-      .order(sortBy, { ascending: order === 'asc' })
-      .range(offset, offset + limit - 1);
-
-    if (error) {
-      console.error('Error fetching notes:', error);
-      return reply.status(500).send({ error: error.message });
-    }
+    const data = await pgQueryRows(
+      `SELECT *
+         FROM ${notesTable}
+        WHERE user_id = $1
+        ORDER BY ${orderClause}
+        LIMIT $2 OFFSET $3`,
+      [user.id, limit, offset]
+    );
 
     // Decrypt text in batches for performance
     for (let i = 0; i < data.length; i += BATCH_SIZE) {
@@ -147,7 +150,7 @@ export async function getAllNotesComplete(request, reply) {
     return reply.status(200).send(stripEncryptionFields(data));
   } catch (error) {
     console.error('Error fetching notes:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -178,15 +181,14 @@ export async function getNote(request, reply) {
     }
     const masterKey = keyResult.masterKey;
 
-    // Fetch single note
-    const { data: note, error } = await supabase
-      .from(notesTable)
-      .select('*')
-      .eq('id', id)
-      .eq('user_id', user.id)
-      .single();
+    const note = await pgQueryOne(
+      `SELECT *
+         FROM ${notesTable}
+        WHERE id = $1 AND user_id = $2`,
+      [id, user.id]
+    );
 
-    if (error || !note) {
+    if (!note) {
       return reply.status(404).send({ error: 'Note not found' });
     }
 
@@ -199,7 +201,7 @@ export async function getNote(request, reply) {
     return reply.status(200).send(stripEncryptionFields(decryptResult.note));
   } catch (error) {
     console.error('Error fetching note:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -221,14 +223,14 @@ export async function createNote(request, reply) {
 
     // If patientEncounter_id provided, verify user owns it
     if (patientEncounter_id) {
-      const { data: encounter, error: encounterError } = await supabase
-        .from('patientEncounters')
-        .select('id')
-        .eq('id', patientEncounter_id)
-        .eq('user_id', user.id)
-        .single();
+      const encounter = await pgQueryOne(
+        `SELECT id
+           FROM "patientEncounters"
+          WHERE id = $1 AND user_id = $2`,
+        [patientEncounter_id, user.id]
+      );
 
-      if (encounterError || !encounter) {
+      if (!encounter) {
         return reply.status(404).send({ error: 'Patient encounter not found' });
       }
     }
@@ -254,21 +256,16 @@ export async function createNote(request, reply) {
       textIv = encryptResult.iv;
     }
 
-    // Insert note into database
-    const { data: newNote, error: insertError } = await supabase
-      .from(notesTable)
-      .insert({
-        user_id: user.id,
-        patientEncounter_id: patientEncounter_id || null,
-        encrypted_text: encryptedText,
-        text_iv: textIv,
-      })
-      .select()
-      .single();
+    const newNote = await pgQueryOne(
+      `INSERT INTO ${notesTable} (
+         user_id, "patientEncounter_id", encrypted_text, text_iv
+       ) VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [user.id, patientEncounter_id || null, encryptedText, textIv]
+    );
 
-    if (insertError) {
-      console.error('Insert error:', insertError);
-      return reply.status(500).send({ error: insertError.message });
+    if (!newNote) {
+      return reply.status(500).send({ error: 'Failed to create note' });
     }
 
     // Return note with decrypted text in response
@@ -276,7 +273,7 @@ export async function createNote(request, reply) {
     return reply.status(201).send(stripEncryptionFields(newNote));
   } catch (error) {
     console.error('Error creating note:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -310,58 +307,50 @@ export async function updateNote(request, reply) {
     }
     const masterKey = keyResult.masterKey;
 
-    // Fetch note to verify ownership
-    const { data: note, error: fetchError } = await supabase
-      .from(notesTable)
-      .select('*')
-      .eq('id', id)
-      .eq('user_id', user.id)
-      .single();
+    const note = await pgQueryOne(
+      `SELECT *
+         FROM ${notesTable}
+        WHERE id = $1 AND user_id = $2`,
+      [id, user.id]
+    );
 
-    if (fetchError || !note) {
+    if (!note) {
       return reply.status(404).send({ error: 'Note not found' });
     }
 
-    // Build update object
-    const updateData = {};
-    if (text !== undefined) {
-      const noteForEncrypt = { text };
-      const encryptResult = encryptionUtils.encryptNoteText(noteForEncrypt, masterKey);
-      if (!encryptResult.success) {
-        return reply.status(500).send({ error: encryptResult.error });
-      }
-      updateData.encrypted_text = encryptResult.value;
-      updateData.text_iv = encryptResult.iv;
-    }
-
-    // Update note in database
-    const { data: updatedNote, error: updateError } = await supabase
-      .from(notesTable)
-      .update(updateData)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (updateError) {
-      console.error('Update error:', updateError);
-      return reply.status(500).send({ error: updateError.message });
-    }
-
-    // Return note with decrypted text in response
-    if (text !== undefined) {
-      updatedNote.text = text;
-    } else {
-      const decryptResult = await decryptNoteText(updatedNote, masterKey);
+    if (text === undefined) {
+      const decryptResult = await decryptNoteText(note, masterKey);
       if (!decryptResult.success) {
         return reply.status(400).send({ error: decryptResult.error });
       }
-      updatedNote.text = decryptResult.note.text;
+      return reply.status(200).send(stripEncryptionFields(decryptResult.note));
     }
 
+    const noteForEncrypt = { text };
+    const encryptResult = encryptionUtils.encryptNoteText(noteForEncrypt, masterKey);
+    if (!encryptResult.success) {
+      return reply.status(500).send({ error: encryptResult.error });
+    }
+
+    const updatedNote = await pgQueryOne(
+      `UPDATE ${notesTable}
+          SET encrypted_text = $1,
+              text_iv = $2,
+              updated_at = NOW()
+        WHERE id = $3 AND user_id = $4
+        RETURNING *`,
+      [encryptResult.value, encryptResult.iv, id, user.id]
+    );
+
+    if (!updatedNote) {
+      return reply.status(404).send({ error: 'Note not found' });
+    }
+
+    updatedNote.text = text;
     return reply.status(200).send(stripEncryptionFields(updatedNote));
   } catch (error) {
     console.error('Error updating note:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -371,7 +360,6 @@ export async function updateNote(request, reply) {
  */
 export async function deleteNote(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -385,26 +373,20 @@ export async function deleteNote(request, reply) {
       return reply.status(400).send({ error: 'Invalid note ID format' });
     }
 
-    // Delete note and return the deleted data (RLS policy ensures user can only delete their own)
-    const { data, error: deleteError } = await supabase
-      .from(notesTable)
-      .delete()
-      .eq('id', id)
-      .eq('user_id', user.id)
-      .select()
-      .single();
+    const data = await pgQueryOne(
+      `DELETE FROM ${notesTable}
+        WHERE id = $1 AND user_id = $2
+        RETURNING *`,
+      [id, user.id]
+    );
 
-    if (deleteError) {
-      if (deleteError.code === 'PGRST116') {
-        return reply.status(404).send({ error: 'Note not found' });
-      }
-      console.error('Delete error:', deleteError);
-      return reply.status(500).send({ error: deleteError.message });
+    if (!data) {
+      return reply.status(404).send({ error: 'Note not found' });
     }
 
     return reply.status(200).send({ success: true, data: stripEncryptionFields(data) });
   } catch (error) {
     console.error('Error deleting note:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }

@@ -2,12 +2,24 @@
  * SOAP Notes Controller
  * Handles all SOAP note CRUD operations with encryption/decryption
  */
-import { getSupabaseClient } from '../../utils/supabase.js';
+import { pgQueryOne, pgQueryRows, pgErrorMessage } from '../../utils/pgQueryHelpers.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import parseSoapNotes from '../../utils/parseSoapNotes.js';
 
 const soapNoteTable = 'soapNotes';
 const BATCH_SIZE = 10; // Decrypt SOAP notes in batches for performance
+
+const SOAP_NOTE_SORT_COLUMNS = new Set(['created_at', 'updated_at', 'id']);
+
+const SOAP_NOTE_SELECT = `
+  s.*,
+  pe.encrypted_aes_key AS patient_encounter_encrypted_aes_key
+`;
+
+const SOAP_NOTE_FROM = `
+  FROM "${soapNoteTable}" s
+  LEFT JOIN "patientEncounters" pe ON pe.id = s."patientEncounter_id"
+`;
 
 /**
  * Helper: Validates bigint ID format
@@ -20,6 +32,21 @@ function isValidBigInt(id) {
   } catch (error) {
     return false;
   }
+}
+
+function soapNoteOrderClause(sortBy, order) {
+  const column = SOAP_NOTE_SORT_COLUMNS.has(sortBy) ? sortBy : 'created_at';
+  const direction = order === 'asc' ? 'ASC' : 'DESC';
+  return `s.${column} ${direction}`;
+}
+
+function mapSoapNoteRow(row) {
+  if (!row) return null;
+  const { patient_encounter_encrypted_aes_key, ...soapNote } = row;
+  if (patient_encounter_encrypted_aes_key != null) {
+    soapNote.patientEncounter = { encrypted_aes_key: patient_encounter_encrypted_aes_key };
+  }
+  return soapNote;
 }
 
 /**
@@ -60,7 +87,6 @@ async function decryptSoapNoteText(soapNote) {
  */
 export async function getAllSoapNotes(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -82,23 +108,18 @@ export async function getAllSoapNotes(request, reply) {
       return reply.status(400).send({ error: 'Invalid offset parameter: must be a non-negative number' });
     }
 
-    // Fetch SOAP notes with patientEncounter join for encryption key
-    const { data, error } = await supabase
-      .from(soapNoteTable)
-      .select(`
-        *,
-        patientEncounter:patientEncounter_id (
-          encrypted_aes_key
-        )
-      `)
-      .eq('user_id', user.id)
-      .order(sortBy, { ascending: order === 'asc' })
-      .range(offsetNum, offsetNum + limitNum - 1);
+    const orderClause = soapNoteOrderClause(sortBy, order);
 
-    if (error) {
-      console.error('Error fetching SOAP notes:', error);
-      return reply.status(500).send({ error: error.message });
-    }
+    const rows = await pgQueryRows(
+      `SELECT ${SOAP_NOTE_SELECT}
+              ${SOAP_NOTE_FROM}
+             WHERE s.user_id = $1
+             ORDER BY ${orderClause}
+             LIMIT $2 OFFSET $3`,
+      [user.id, limitNum, offsetNum]
+    );
+
+    const data = rows.map(mapSoapNoteRow);
 
     // Decrypt soapNote_text in batches for performance
     for (let i = 0; i < data.length; i += BATCH_SIZE) {
@@ -118,7 +139,7 @@ export async function getAllSoapNotes(request, reply) {
     return reply.status(200).send(data);
   } catch (error) {
     console.error('Error fetching SOAP notes:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -128,7 +149,6 @@ export async function getAllSoapNotes(request, reply) {
  */
 export async function getSoapNote(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -142,20 +162,16 @@ export async function getSoapNote(request, reply) {
       return reply.status(400).send({ error: 'Invalid SOAP note ID format' });
     }
 
-    // Fetch single SOAP note with patientEncounter join
-    const { data: soapNote, error } = await supabase
-      .from(soapNoteTable)
-      .select(`
-        *,
-        patientEncounter:patientEncounter_id (
-          encrypted_aes_key
-        )
-      `)
-      .eq('id', id)
-      .eq('user_id', user.id)
-      .single();
+    const soapNote = mapSoapNoteRow(
+      await pgQueryOne(
+        `SELECT ${SOAP_NOTE_SELECT}
+                ${SOAP_NOTE_FROM}
+               WHERE s.id = $1 AND s.user_id = $2`,
+        [id, user.id]
+      )
+    );
 
-    if (error || !soapNote) {
+    if (!soapNote) {
       return reply.status(404).send({ error: 'SOAP note not found' });
     }
 
@@ -168,7 +184,7 @@ export async function getSoapNote(request, reply) {
     return reply.status(200).send(decryptResult.soapNote);
   } catch (error) {
     console.error('Error fetching SOAP note:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -179,7 +195,6 @@ export async function getSoapNote(request, reply) {
  */
 export async function createSoapNote(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -188,15 +203,14 @@ export async function createSoapNote(request, reply) {
 
     const { patientEncounter_id, soapNote_text } = request.body;
 
-    // Verify user owns the patientEncounter
-    const { data: encounter, error: encounterError } = await supabase
-      .from('patientEncounters')
-      .select('encrypted_aes_key')
-      .eq('id', patientEncounter_id)
-      .eq('user_id', user.id)
-      .single();
+    const encounter = await pgQueryOne(
+      `SELECT encrypted_aes_key
+         FROM "patientEncounters"
+        WHERE id = $1 AND user_id = $2`,
+      [patientEncounter_id, user.id]
+    );
 
-    if (encounterError || !encounter) {
+    if (!encounter) {
       return reply.status(404).send({ error: 'Patient encounter not found' });
     }
 
@@ -222,21 +236,16 @@ export async function createSoapNote(request, reply) {
       return reply.status(500).send({ error: 'Failed to encrypt SOAP note text' });
     }
 
-    // Insert SOAP note into database
-    const { data: newSoapNote, error: insertError } = await supabase
-      .from(soapNoteTable)
-      .insert({
-        user_id: user.id,
-        patientEncounter_id,
-        encrypted_soapNote_text: encryptedText,
-        iv,
-      })
-      .select()
-      .single();
+    const newSoapNote = await pgQueryOne(
+      `INSERT INTO "${soapNoteTable}" (
+         user_id, "patientEncounter_id", "encrypted_soapNote_text", iv
+       ) VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [user.id, patientEncounter_id, encryptedText, iv]
+    );
 
-    if (insertError) {
-      console.error('Insert error:', insertError);
-      return reply.status(500).send({ error: insertError.message });
+    if (!newSoapNote) {
+      return reply.status(500).send({ error: 'Failed to create SOAP note' });
     }
 
     // Return decrypted SOAP note in response
@@ -244,7 +253,7 @@ export async function createSoapNote(request, reply) {
     return reply.status(201).send(newSoapNote);
   } catch (error) {
     console.error('Error creating SOAP note:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -255,7 +264,6 @@ export async function createSoapNote(request, reply) {
  */
 export async function updateSoapNote(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -271,20 +279,16 @@ export async function updateSoapNote(request, reply) {
 
     const { soapNote_text } = request.body;
 
-    // Fetch SOAP note with patientEncounter to get AES key
-    const { data: soapNote, error: fetchError } = await supabase
-      .from(soapNoteTable)
-      .select(`
-        *,
-        patientEncounter:patientEncounter_id (
-          encrypted_aes_key
-        )
-      `)
-      .eq('id', id)
-      .eq('user_id', user.id)
-      .single();
+    const soapNote = mapSoapNoteRow(
+      await pgQueryOne(
+        `SELECT ${SOAP_NOTE_SELECT}
+                ${SOAP_NOTE_FROM}
+               WHERE s.id = $1 AND s.user_id = $2`,
+        [id, user.id]
+      )
+    );
 
-    if (fetchError || !soapNote) {
+    if (!soapNote) {
       return reply.status(404).send({ error: 'SOAP note not found' });
     }
 
@@ -309,20 +313,18 @@ export async function updateSoapNote(request, reply) {
       return reply.status(500).send({ error: 'Failed to encrypt SOAP note text' });
     }
 
-    // Update SOAP note in database
-    const { data: updatedSoapNote, error: updateError } = await supabase
-      .from(soapNoteTable)
-      .update({
-        encrypted_soapNote_text: encryptedText,
-        iv,
-      })
-      .eq('id', id)
-      .select()
-      .single();
+    const updatedSoapNote = await pgQueryOne(
+      `UPDATE "${soapNoteTable}"
+          SET "encrypted_soapNote_text" = $1,
+              iv = $2,
+              updated_at = NOW()
+        WHERE id = $3 AND user_id = $4
+        RETURNING *`,
+      [encryptedText, iv, id, user.id]
+    );
 
-    if (updateError) {
-      console.error('Update error:', updateError);
-      return reply.status(500).send({ error: updateError.message });
+    if (!updatedSoapNote) {
+      return reply.status(404).send({ error: 'SOAP note not found' });
     }
 
     // Return decrypted SOAP note in response
@@ -330,7 +332,7 @@ export async function updateSoapNote(request, reply) {
     return reply.status(200).send(updatedSoapNote);
   } catch (error) {
     console.error('Error updating SOAP note:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -340,7 +342,6 @@ export async function updateSoapNote(request, reply) {
  */
 export async function deleteSoapNote(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -354,26 +355,20 @@ export async function deleteSoapNote(request, reply) {
       return reply.status(400).send({ error: 'Invalid SOAP note ID format' });
     }
 
-    // Delete SOAP note and return the deleted data (RLS policy ensures user can only delete their own)
-    const { data, error: deleteError } = await supabase
-      .from(soapNoteTable)
-      .delete()
-      .eq('id', id)
-      .eq('user_id', user.id)
-      .select()
-      .single();
+    const data = await pgQueryOne(
+      `DELETE FROM "${soapNoteTable}"
+        WHERE id = $1 AND user_id = $2
+        RETURNING *`,
+      [id, user.id]
+    );
 
-    if (deleteError) {
-      if (deleteError.code === 'PGRST116') {
-        return reply.status(404).send({ error: 'SOAP note not found' });
-      }
-      console.error('Delete error:', deleteError);
-      return reply.status(500).send({ error: deleteError.message });
+    if (!data) {
+      return reply.status(404).send({ error: 'SOAP note not found' });
     }
 
     return reply.status(200).send({ success: true, data });
   } catch (error) {
     console.error('Error deleting SOAP note:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }

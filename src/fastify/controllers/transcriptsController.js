@@ -3,6 +3,7 @@
  * Handles all transcript CRUD operations with encryption/decryption
  */
 import { getSupabaseClient } from '../../utils/supabase.js';
+import { pgQueryOne, pgQueryRows, pgErrorMessage } from '../../utils/pgQueryHelpers.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import {
   encryptTranscriptPlaintextWithMasterKey,
@@ -67,14 +68,13 @@ export async function getAllTranscripts(request, reply) {
     }
     const masterKey = keyResult.masterKey;
 
-    const { data, error } = await supabase
-      .from(transcriptTable)
-      .select('*')
-      .order('updated_at', { ascending: false });
-
-    if (error) {
-      return reply.status(500).send({ error: error.message });
-    }
+    const data = await pgQueryRows(
+      `SELECT *
+         FROM ${transcriptTable}
+        WHERE user_id = $1
+        ORDER BY updated_at DESC`,
+      [user.id]
+    );
 
     for (let i = 0; i < data.length; i += BATCH_SIZE) {
       const batch = data.slice(i, i + BATCH_SIZE);
@@ -90,7 +90,7 @@ export async function getAllTranscripts(request, reply) {
     return reply.status(200).send(data);
   } catch (error) {
     console.error('Error fetching transcripts:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -119,17 +119,15 @@ export async function getTranscript(request, reply) {
     }
     const masterKey = keyResult.masterKey;
 
-    const { data, error } = await supabase
-      .from(transcriptTable)
-      .select('*')
-      .eq('id', id)
-      .single();
+    const data = await pgQueryOne(
+      `SELECT *
+         FROM ${transcriptTable}
+        WHERE id = $1 AND user_id = $2`,
+      [id, user.id]
+    );
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return reply.status(404).send({ error: 'Transcript not found' });
-      }
-      return reply.status(500).send({ error: error.message });
+    if (!data) {
+      return reply.status(404).send({ error: 'Transcript not found' });
     }
 
     const decryptionResult = decryptTranscriptText(data, masterKey);
@@ -140,7 +138,7 @@ export async function getTranscript(request, reply) {
     return reply.status(200).send(decryptionResult.transcript);
   } catch (error) {
     console.error('Error fetching transcript:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -174,21 +172,38 @@ export async function createTranscript(request, reply) {
       return reply.status(400).send({ error: encryptionResult.error });
     }
 
-    // Insert encrypted transcript
-    const { data: insertData, error: insertError } = await supabase
-      .from(transcriptTable)
-      .insert([transcript])
-      .select()
-      .single();
+    const recording = await pgQueryOne(
+      `SELECT id
+         FROM recordings
+        WHERE id = $1 AND user_id = $2`,
+      [transcript.recording_id, user.id]
+    );
 
-    if (insertError) {
-      return reply.status(500).send({ error: insertError.message });
+    if (!recording) {
+      return reply.status(404).send({ error: 'Recording not found' });
+    }
+
+    const insertData = await pgQueryOne(
+      `INSERT INTO ${transcriptTable} (
+         user_id, recording_id, encrypted_transcript_text, iv
+       ) VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [
+        user.id,
+        transcript.recording_id,
+        transcript.encrypted_transcript_text,
+        transcript.iv,
+      ]
+    );
+
+    if (!insertData) {
+      return reply.status(500).send({ error: 'Failed to create transcript' });
     }
 
     return reply.status(201).send(insertData);
   } catch (error) {
     console.error('Error creating transcript:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -228,17 +243,15 @@ export async function updateTranscript(request, reply) {
       return reply.status(500).send({ error: keyResult.error });
     }
 
-    const { data: existingTranscript, error: fetchError } = await supabase
-      .from(transcriptTable)
-      .select('recording_id')
-      .eq('id', id)
-      .single();
+    const existingTranscript = await pgQueryOne(
+      `SELECT recording_id
+         FROM ${transcriptTable}
+        WHERE id = $1 AND user_id = $2`,
+      [id, user.id]
+    );
 
-    if (fetchError) {
-      if (fetchError.code === 'PGRST116') {
-        return reply.status(404).send({ error: 'Transcript not found' });
-      }
-      return reply.status(500).send({ error: fetchError.message });
+    if (!existingTranscript) {
+      return reply.status(404).send({ error: 'Transcript not found' });
     }
 
     // Prepare transcript object for encryption
@@ -259,25 +272,29 @@ export async function updateTranscript(request, reply) {
       updated_at: new Date().toISOString(),
     };
 
-    // Update transcript
-    const { data: updatedData, error: updateError } = await supabase
-      .from(transcriptTable)
-      .update(updateData)
-      .eq('id', id)
-      .select()
-      .single();
+    const updatedData = await pgQueryOne(
+      `UPDATE ${transcriptTable}
+          SET encrypted_transcript_text = $1,
+              iv = $2,
+              updated_at = NOW()
+        WHERE id = $3 AND user_id = $4
+        RETURNING *`,
+      [
+        updateData.encrypted_transcript_text,
+        updateData.iv,
+        id,
+        user.id,
+      ]
+    );
 
-    if (updateError) {
-      if (updateError.code === 'PGRST116') {
-        return reply.status(404).send({ error: 'Transcript not found' });
-      }
-      return reply.status(500).send({ error: updateError.message });
+    if (!updatedData) {
+      return reply.status(404).send({ error: 'Transcript not found' });
     }
 
     return reply.status(200).send(updatedData);
   } catch (error) {
     console.error('Error updating transcript:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 
@@ -300,24 +317,21 @@ export async function deleteTranscript(request, reply) {
       return reply.status(400).send({ error: 'Valid transcript ID is required' });
     }
 
-    const { data, error } = await supabase
-      .from(transcriptTable)
-      .delete()
-      .eq('id', id)
-      .select()
-      .single();
+    const data = await pgQueryOne(
+      `DELETE FROM ${transcriptTable}
+        WHERE id = $1 AND user_id = $2
+        RETURNING *`,
+      [id, user.id]
+    );
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return reply.status(404).send({ error: 'Transcript not found' });
-      }
-      return reply.status(500).send({ error: error.message });
+    if (!data) {
+      return reply.status(404).send({ error: 'Transcript not found' });
     }
 
     return reply.status(200).send({ success: true, data });
   } catch (error) {
     console.error('Error deleting transcript:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 

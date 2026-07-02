@@ -2,7 +2,7 @@
 
 Walkthrough for moving the **application database** off Supabase Postgres onto **Amazon RDS PostgreSQL** (or Aurora PostgreSQL). Auth and PostgREST stay on Supabase during early parts; storage is already on S3.
 
-**Status (2026-07-01):** **Phase A + B complete.** **Phase C PR 0 + PR 1 complete and verified** (RDS TLS, signup stub, RPCs + encounters/recordings on `pg`; integration tests pass against Supabase). **Data still on Supabase Postgres** until Phase D cutover — PR 1 only changes the code path (`pg` pool), not the database host. **Next:** PR 2–5, then Phase D cutover. Active Step 2 of [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md).
+**Status (2026-07-02):** **Phase A + B complete.** **Phase C PR 0–2 complete and verified** (RDS TLS, signup stub, RPCs + encounters/recordings + notes pipeline on `pg`; integration tests pass against Supabase). **Data still on Supabase Postgres** until Phase D cutover — code uses `pg` pool only; host unchanged. **Next:** PR 3–5, then Phase D cutover. Active Step 2 of [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md).
 
 **Prerequisites:** [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) cutover complete (`RECORDINGS_STORAGE_BACKEND=s3` on prod).
 
@@ -22,7 +22,7 @@ Walkthrough for moving the **application database** off Supabase Postgres onto *
 | **6** | Schema export / assessment | Ops | **Done** — `supabase-schema.sql` exported; migrate `public` + `archive`; skip `storage`, `realtime`, `graphql*`, `vault` |
 | **7** | `auth.users` + FK strategy | Design + SQL | **Done** — **Option A through Cognito**; map `cognito_sub`; B-heavy only if canonical id changes |
 | **8** | RLS strategy on RDS | Design + SQL | **Done** — **disable RLS** on app tables post-restore; API enforces `user_id` |
-| **9** | Code: expand `pg`, replace `supabase-js` | **Code PR(s)** | **In progress** — **PR 0–1 done**; PR 2–5 pending (see Part 9) |
+| **9** | Code: expand `pg`, replace `supabase-js` | **Code PR(s)** | **In progress** — **PR 0–2 done**; PR 3–5 pending (see Part 9) |
 | **10** | Data migration + cutover | Ops | Not started |
 | **11** | Decommission Supabase Postgres | Ops + cleanup PR | After confidence window |
 
@@ -31,7 +31,7 @@ Walkthrough for moving the **application database** off Supabase Postgres onto *
 ```text
 Phase A — Infra (Parts 1–5)     ✅ Done — RDS reachable from EC2, empty `enscribe` DB ready
 Phase B — Schema (Parts 6–8)    ✅ Done — dump reviewed, Option A + disable RLS locked
-Phase C — Code (Part 9)         🔄 PR 0–1 ✅ — PR 2→5 pending; prod stays on Supabase until Phase D
+Phase C — Code (Part 9)         🔄 PR 0–2 ✅ — PR 3→5 pending; prod stays on Supabase until Phase D
 Phase D — Data + cutover (10)   logical dump/restore or DMS; flip DATABASE_URL
 Phase E — Cleanup (11)          drop Supabase DB dependency after stable period
 ```
@@ -81,7 +81,8 @@ See **Part 9** for full PR breakdown. Summary:
 |----|--------|
 | **0** | RDS SSL pool + gated signup `auth.users` stub — **Done** |
 | **1** | 3 RPCs + encounters + recordings — **Done** (26 + 89 + 19 integration tests verified) |
-| **2–5** | Remaining controllers / workers |
+| **2** | Notes pipeline (`notes`, `soapNotes`, `transcripts`) — **Done** (31 + 26 + 22 integration tests verified) |
+| **3–5** | Remaining controllers / workers |
 | **Deploy** | `DATABASE_URL` GitHub secret exists; **deploy.yml + prod flip deferred to Phase D** |
 | **Tests** | Supabase until Phase D; RDS smoke from EC2 after restore |
 
@@ -109,6 +110,9 @@ These modules use `querySupabasePostgres` / `supabasePostgresPool.js` (connectio
 | Patient encounters (full) | `patientEncountersController.js` — CRUD + `create_patient_encounter_complete` RPC | 1 |
 | Recordings (DB paths) | `recordingsController.js` | 1 |
 | Note templates complete (RPC only) | `noteTemplatesCompleteController.js` — `create_note_template_complete` / `update_note_template_complete`; `.from()` CRUD deferred to PR 3 | 1 |
+| Notes (full) | `notesController.js` — CRUD on `pg`; master key via `userSecurityConfigController` (still supabase until PR 5) | 2 |
+| SOAP notes (full) | `soapNotesController.js` — CRUD + `patientEncounters` join on `pg` | 2 |
+| Transcripts (full) | `transcriptsController.js` — CRUD on `pg`; explicit `user_id` + recording ownership checks | 2 |
 | Billing entitlements / usage | `billingEntitlements.js`, `billingUsage.js` | pre-9 |
 | Archive + retention jobs | `encounterArchivePurge.js`, `archiveStoragePurge.js`, `archiveStorageManifestSync.js` | pre-9 |
 | Cleanup jobs | `unattachedStorageCleanup.js`, `unattachedNoteTemplateSectionsCleanup.js`, `cleanupExcludedUserIds.js` | pre-9 |
@@ -353,7 +357,18 @@ Supabase RLS policies use `auth.uid()` and the `authenticated` role (example: `s
 
 **Goal:** All data paths use `querySupabasePostgres` (or renamed pool). Supabase client remains only for **auth** until Step 3 (Cognito) / Part 11. Storage is already S3-only.
 
-**Phase C status:** **PR 0–1 complete and verified (2026-07-01).** Ship PR 2–5 incrementally; **prod and app data stay on Supabase Postgres URI until Phase D.**
+**Phase C status:** **PR 0–2 complete and verified (2026-07-02).** Ship PR 3–5 incrementally; **prod and app data stay on Supabase Postgres URI until Phase D.**
+
+### Phase C PR 2 completion log (2026-07-02)
+
+| Item | Detail |
+|------|--------|
+| [notesController.js](../src/fastify/controllers/notesController.js) | All `.from()` → `pg`; explicit `user_id` filters; master key still via `userSecurityConfigController` (supabase until PR 5) |
+| [soapNotesController.js](../src/fastify/controllers/soapNotesController.js) | CRUD on `pg`; `patientEncounters` join for `encrypted_aes_key`; sort column whitelist |
+| [transcriptsController.js](../src/fastify/controllers/transcriptsController.js) | CRUD on `pg`; explicit `user_id` on all paths; recording ownership check on create (replaces RLS `with check`) |
+| Integration (verified) | `test:notes` **31/31**, `test:soap-notes` **26/26**, `test:transcripts` **22/22** — all against Supabase Postgres |
+| [transcripts.test.js](../tests/transcripts.test.js) | Test 7 uses live API to find/create recording without transcript (avoids stale `testData.json` IDs) |
+| Prod / data | No env flip; pool still uses `SUPABASE_DB_DIRECT_URL` → Supabase; **no data on RDS yet** |
 
 ### Phase C PR 1 completion log (2026-07-01)
 
@@ -422,12 +437,14 @@ Supabase RLS policies use `auth.uid()` and the `authenticated` role (example: `s
 | Unit tests | [pgQueryHelpers.unit.test.js](../tests/pgQueryHelpers.unit.test.js), `package.json` `test:unit` | Done |
 | Integration tests | `test:patient-encounters`, `test:recordings`, `test:note-templates-complete` | Done — 26/26, 89/89, 19/19 (see PR 1 log) |
 
-### PR 2 — Notes pipeline
+### PR 2 — Notes pipeline — Done
 
-| Task | File(s) |
-|------|---------|
-| Controller migration | `notesController`, `soapNotesController`, `transcriptsController` |
-| Tests | relevant note/transcript suites |
+| Task | File(s) | Status |
+|------|---------|--------|
+| Notes CRUD on `pg` | [notesController.js](../src/fastify/controllers/notesController.js) | Done |
+| SOAP notes CRUD + encounter join | [soapNotesController.js](../src/fastify/controllers/soapNotesController.js) | Done |
+| Transcripts CRUD on `pg` | [transcriptsController.js](../src/fastify/controllers/transcriptsController.js) | Done — recording ownership check on create |
+| Integration tests | `test:notes`, `test:soap-notes`, `test:transcripts` | Done — 31/31, 26/26, 22/22 (see PR 2 log) |
 
 ### PR 3 — Templates + pre-visit + dot phrases
 
@@ -455,7 +472,8 @@ Supabase RLS policies use `auth.uid()` and the `authenticated` role (example: `s
 
 - [x] **PR 0** — RDS SSL + signup stub (gated); unit tests pass
 - [x] **PR 1** — 3 RPCs on `pg`; `patientEncountersController` + `recordingsController` on `pg`; PR 1 integration tests verified (26 + 89 + 19)
-- [ ] **PR 2–5** merged — remaining controllers on `pg`
+- [x] **PR 2** — `notesController`, `soapNotesController`, `transcriptsController` on `pg`; PR 2 integration tests verified (31 + 26 + 22)
+- [ ] **PR 3–5** merged — remaining controllers on `pg`
 - [x] No prod env flip — EC2 still on Supabase URI; app data remains on Supabase until Phase D
 - [ ] Test suites pass against **Supabase** with migrated code (after PR 1–5; PR 1 slice ✅)
 - [ ] `supabase-js` retained only for **auth** (`getUser`, `signUp`, `signIn`, admin auth helpers) — after PR 1–5
@@ -515,6 +533,7 @@ Each PR: swap `.from()` for parameterized SQL; preserve `user_id` checks; run ex
 |------|---------|
 | PR 0 unit | `npm run test:unit` (includes `postgresConnection`, `authUsersStub`, `pgQueryHelpers`) |
 | PR 1 integration | `npm run test:patient-encounters`, `npm run test:recordings`, `npm run test:note-templates-complete` |
+| PR 2 integration | `npm run test:notes`, `npm run test:soap-notes`, `npm run test:transcripts` |
 | Billing | `npm run test:billing-org`, `npm run test:billing-usage-limits` |
 | Auth (unchanged) | `npm run test:auth` |
 
@@ -543,7 +562,8 @@ Each PR: swap `.from()` for parameterized SQL; preserve `user_id` checks; run ex
 
 - [x] PR 0 — RDS SSL + gated signup stub (`postgresConnection.js`, `authUsersStub.js`, unit tests)
 - [x] PR 1 — RPCs + encounters/recordings on `pg` (`pgQueryHelpers.js`, controllers); PR 1 tests verified (26 + 89 + 19)
-- [ ] PR 2–5 merged — remaining controllers on `pg`
+- [x] PR 2 — notes pipeline on `pg` (`notesController`, `soapNotesController`, `transcriptsController`); PR 2 tests verified (31 + 26 + 22)
+- [ ] PR 3–5 merged — remaining controllers on `pg`
 - [ ] Test suites pass against **Supabase** with migrated code (after PR 1–5; PR 1 slice ✅)
 - [ ] Post-restore: smoke from **EC2** against RDS (Phase D)
 
