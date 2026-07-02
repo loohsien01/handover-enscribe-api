@@ -8,11 +8,13 @@
  * - GET /api/jobs/prompt-llm/:jobId/encounter-bundle — saved encounter bundle (generate-and-save jobs with note_id)
  */
 
-import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
 import { getSupabaseClient } from '../../utils/supabase.js';
 import { promptLlmProcessor } from '../processors/promptLlmProcessor.js';
 import parseSoapNotes from '../../utils/parseSoapNotes.js';
 import { getPatientEncounterBundleByNoteId } from './patientEncountersController.js';
+import { pgQueryOne, pgCoerceBigIntFields } from '../../utils/pgQueryHelpers.js';
+
+const jobsTable = 'jobs';
 
 /**
  * Create a new SOAP note generation job (used by generate-note routes).
@@ -35,25 +37,23 @@ export async function createPromptLlmJobHandler(request, reply) {
       noteTemplate_id: noteTemplate_id ?? null,
     });
 
-    // Create job record in database
-    const supabase = supabaseAdmin();
-    const { data: job, error: createError } = await supabase
-      .from('jobs')
-      .insert({
-        user_id: userId,
-        recording_file_path,
-        status: 'pending',
-      })
-      .select()
-      .single();
-
-    if (createError) {
+    let job;
+    try {
+      job = await pgQueryOne(
+        `INSERT INTO ${jobsTable} (user_id, recording_file_path, status)
+         VALUES ($1, $2, 'pending')
+         RETURNING *`,
+        [userId, recording_file_path]
+      );
+    } catch (createError) {
       console.error('[createPromptLlmJobHandler] Database error:', createError);
       return reply.status(500).send({ error: 'Failed to create job' });
     }
 
-    // Spawn async processor (fire and forget)
-    // Pass noteTemplate_id as parameter, not stored in DB
+    if (!job) {
+      return reply.status(500).send({ error: 'Failed to create job' });
+    }
+
     const authorizationHeader = request.headers.authorization;
     setImmediate(() => {
       promptLlmProcessor(job.id, userId, authorizationHeader, noteTemplate_id).catch((err) => {
@@ -61,7 +61,6 @@ export async function createPromptLlmJobHandler(request, reply) {
       });
     });
 
-    // Return immediately with jobId and status
     return reply.status(202).send({
       id: job.id,
       status: 'pending',
@@ -84,19 +83,20 @@ export async function createPromptLlmJobAndSaveNoteHandler(request, reply) {
     const { recording_file_path, noteTemplate_id, patient_encounter_name: patientEncounterName } = request.body;
     const userId = request.user.id;
 
-    const supabase = supabaseAdmin();
-    const { data: job, error: createError } = await supabase
-      .from('jobs')
-      .insert({
-        user_id: userId,
-        recording_file_path,
-        status: 'pending',
-      })
-      .select()
-      .single();
-
-    if (createError) {
+    let job;
+    try {
+      job = await pgQueryOne(
+        `INSERT INTO ${jobsTable} (user_id, recording_file_path, status)
+         VALUES ($1, $2, 'pending')
+         RETURNING *`,
+        [userId, recording_file_path]
+      );
+    } catch (createError) {
       console.error('[createPromptLlmJobAndSaveNoteHandler] Database error:', createError);
+      return reply.status(500).send({ error: 'Failed to create job' });
+    }
+
+    if (!job) {
       return reply.status(500).send({ error: 'Failed to create job' });
     }
 
@@ -134,27 +134,31 @@ export async function getPromptLlmJobStatusHandler(request, reply) {
     const userId = request.user.id;
     const includeResult = request.query.includeResult === 'true';
 
-    // Query job (RLS automatically filters to user's jobs)
-    const supabase = supabaseAdmin();
-    const { data: job, error: queryError } = await supabase
-      .from('jobs')
-      .select('id, status, transcript_text, soap_note_text, error_message, created_at, updated_at, note_id')
-      .eq('id', jobId)
-      .eq('user_id', userId)
-      .single();
+    let job;
+    try {
+      job = await pgQueryOne(
+        `SELECT id, status, transcript_text, soap_note_text, error_message, created_at, updated_at, note_id
+           FROM ${jobsTable}
+          WHERE id = $1 AND user_id = $2`,
+        [jobId, userId]
+      );
+    } catch (queryError) {
+      console.error('[getPromptLlmJobStatusHandler] Job query error:', jobId, queryError);
+      return reply.status(500).send({ error: 'Failed to load job' });
+    }
 
-    if (queryError || !job) {
-      console.error('[getPromptLlmJobStatusHandler] Job not found:', jobId, queryError);
+    if (!job) {
+      console.error('[getPromptLlmJobStatusHandler] Job not found:', jobId);
       return reply.status(404).send({ error: 'Job not found' });
     }
 
-    // Build base response (always include)
+    job = pgCoerceBigIntFields(job, ['note_id']);
+
     const response = {
       id: job.id,
       status: job.status,
     };
 
-    // Add transcript and error if available
     if (job.transcript_text) {
       response.transcript_text = job.transcript_text;
     }
@@ -162,7 +166,6 @@ export async function getPromptLlmJobStatusHandler(request, reply) {
       response.error_message = job.error_message;
     }
 
-    // If includeResult requested and job is complete, parse and return SOAP note
     if (includeResult && job.status === 'complete' && job.soap_note_text) {
       try {
         const parsed = parseSoapNotes({ soap_note_text: job.soap_note_text });
@@ -199,18 +202,25 @@ export async function getPromptLlmJobEncounterBundleHandler(request, reply) {
     const userId = request.user.id;
     const user = request.user;
 
-    const supabase = supabaseAdmin();
-    const { data: job, error: queryError } = await supabase
-      .from('jobs')
-      .select('id, status, note_id')
-      .eq('id', jobId)
-      .eq('user_id', userId)
-      .single();
+    let job;
+    try {
+      job = await pgQueryOne(
+        `SELECT id, status, note_id
+           FROM ${jobsTable}
+          WHERE id = $1 AND user_id = $2`,
+        [jobId, userId]
+      );
+    } catch (queryError) {
+      console.error('[getPromptLlmJobEncounterBundleHandler] Job query error:', jobId, queryError);
+      return reply.status(500).send({ error: 'Failed to load job' });
+    }
 
-    if (queryError || !job) {
-      console.error('[getPromptLlmJobEncounterBundleHandler] Job not found:', jobId, queryError);
+    if (!job) {
+      console.error('[getPromptLlmJobEncounterBundleHandler] Job not found:', jobId);
       return reply.status(404).send({ error: 'Job not found' });
     }
+
+    job = pgCoerceBigIntFields(job, ['note_id']);
 
     if (job.note_id == null) {
       return reply.status(404).send({

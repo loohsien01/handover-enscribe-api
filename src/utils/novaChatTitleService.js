@@ -14,8 +14,9 @@ import {
 } from './novaChatTitle.js';
 import {
   loadNovaChatSessionFromSupabase,
-  novaChatCompletionJobsTable,
   persistNovaChatSession,
+  countNovaCompletionJobsByStatus,
+  loadChatSessionTitle,
 } from './novaChatPersistence.js';
 import {
   normalizeNovaSessionShape,
@@ -60,33 +61,16 @@ export async function maybeRunNovaChatTitleAfterFirstCompletion(args) {
   const { userId, chatId, authorizationHeader } = args;
   const supabase = getSupabaseClient(authorizationHeader);
 
-  const { count, error: countErr } = await supabase
-    .from(novaChatCompletionJobsTable)
-    .select('id', { count: 'exact', head: true })
-    .eq('chat_id', chatId)
-    .eq('user_id', userId)
-    .eq('status', 'complete');
-
-  if (countErr) {
-    console.error('[novaChatTitle] count complete jobs:', countErr);
-    return;
-  }
-  if (count !== 1) {
+  const completeCount = await countNovaCompletionJobsByStatus(userId, chatId, 'complete');
+  if (completeCount !== 1) {
     return;
   }
 
-  const { data: titleRow, error: titleErr } = await supabase
-    .from('chat_sessions')
-    .select('title')
-    .eq('id', chatId)
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  if (titleErr || !titleRow) {
-    if (titleErr) console.error('[novaChatTitle] load title:', titleErr);
+  const title = await loadChatSessionTitle(userId, chatId);
+  if (!title) {
     return;
   }
-  if (titleRow.title !== NOVA_CHAT_DEFAULT_TITLE) {
+  if (title !== NOVA_CHAT_DEFAULT_TITLE) {
     return;
   }
 
@@ -126,13 +110,8 @@ export async function maybeRunNovaChatTitleAfterFirstCompletion(args) {
     return;
   }
 
-  const { data: freshTitleRow } = await supabase
-    .from('chat_sessions')
-    .select('title')
-    .eq('id', chatId)
-    .eq('user_id', userId)
-    .maybeSingle();
-  if (!freshTitleRow || freshTitleRow.title !== NOVA_CHAT_DEFAULT_TITLE) {
+  const freshTitle = await loadChatSessionTitle(userId, chatId);
+  if (!freshTitle || freshTitle !== NOVA_CHAT_DEFAULT_TITLE) {
     return;
   }
 

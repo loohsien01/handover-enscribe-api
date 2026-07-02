@@ -21,8 +21,11 @@ import {
   loadNovaChatSessionFromSupabase,
   persistNovaChatSession,
   insertChatTokenUsageRow,
-  novaChatCompletionJobsTable,
+  claimNovaCompletionJob,
+  updateNovaCompletionJob,
+  loadChatSessionOrganizationId,
 } from '../../utils/novaChatPersistence.js';
+import { pgQueryOne } from '../../utils/pgQueryHelpers.js';
 import * as userSecurityConfigController from '../controllers/userSecurityConfigController.js';
 import { getNovaChatCompletionRequestBody } from '../../utils/claudeRequestBody.js';
 import { claudeInvokeModel, claudeStreamModel } from '../../utils/bedrockClient.js';
@@ -42,6 +45,8 @@ import {
 import { maybeRunNovaChatTitleAfterFirstCompletion } from '../../utils/novaChatTitleService.js';
 import { maybeRunPreVisitSummaryTitleDetailsExtraction } from '../../utils/novaPreVisitSummaryTitleDetailsService.js';
 import { createPreVisitSummary } from '../controllers/preVisitSummariesController.js';
+
+const preVisitSummariesTable = 'pre_visit_summaries';
 
 /**
  * @param {import('redis').RedisClientType} redis
@@ -66,28 +71,6 @@ async function loadSessionRedisThenSupabaseForJob(redis, authorizationHeader, us
 }
 
 /**
- * @param {import('@supabase/supabase-js').SupabaseClient} supabase
- * @param {string} jobId
- * @param {string} userId
- * @param {string} status
- * @param {Record<string, unknown>} [extra]
- */
-async function updateJobRow(supabase, jobId, userId, status, extra = {}) {
-  const { error } = await supabase
-    .from(novaChatCompletionJobsTable)
-    .update({
-      status,
-      ...extra,
-    })
-    .eq('id', jobId)
-    .eq('user_id', userId);
-
-  if (error) {
-    console.error(`[novaChatCompletionProcessor] update job ${jobId}:`, error);
-  }
-}
-
-/**
  * @param {string} jobId
  * @param {string} userId
  * @param {string} chatId
@@ -98,29 +81,16 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
   const { savePreVisitSummary = false, extractTitleDetails = false } = options;
   const supabase = getSupabaseClient(authorizationHeader);
 
-  const { data: claimed, error: claimErr } = await supabase
-    .from(novaChatCompletionJobsTable)
-    .update({
-      status: 'running',
-      started_at: new Date().toISOString(),
-    })
-    .eq('id', jobId)
-    .eq('user_id', userId)
-    .eq('status', 'pending')
-    .select('id, model')
-    .maybeSingle();
+  const claimed = await claimNovaCompletionJob(userId, jobId);
 
-  if (claimErr) {
-    console.error(`[novaChatCompletionProcessor] claim job ${jobId}:`, claimErr);
-    return;
-  }
   if (!claimed?.id) {
     return;
   }
 
   const redis = await getRedisClient();
   if (!redis) {
-    await updateJobRow(supabase, jobId, userId, 'failed', {
+    await updateNovaCompletionJob(userId, jobId, {
+      status: 'failed',
       error_code: 'REDIS_UNAVAILABLE',
       error_message: 'Redis is not configured',
       completed_at: new Date().toISOString(),
@@ -130,7 +100,8 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
 
   const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, userId);
   if (!keyResult.success) {
-    await updateJobRow(supabase, jobId, userId, 'failed', {
+    await updateNovaCompletionJob(userId, jobId, {
+      status: 'failed',
       error_code: 'NOVA_MASTER_KEY_FAILED',
       error_message: keyResult.error || 'Failed to resolve encryption key',
       completed_at: new Date().toISOString(),
@@ -139,15 +110,11 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
   }
   const masterKey = keyResult.masterKey;
 
-  const { data: orgRow, error: orgErr } = await supabase
-    .from('chat_sessions')
-    .select('organization_id')
-    .eq('id', chatId)
-    .eq('user_id', userId)
-    .maybeSingle();
+  const organizationId = await loadChatSessionOrganizationId(userId, chatId);
 
-  if (orgErr || !orgRow) {
-    await updateJobRow(supabase, jobId, userId, 'failed', {
+  if (!organizationId) {
+    await updateNovaCompletionJob(userId, jobId, {
+      status: 'failed',
       error_code: 'NOVA_SESSION_NOT_FOUND',
       error_message: 'Chat session not found',
       completed_at: new Date().toISOString(),
@@ -158,14 +125,15 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
   const billingCtx = await resolveBillingContext(userId);
   try {
     await assertUsageAllowed({
-      organizationId: orgRow.organization_id,
+      organizationId,
       metric: USAGE_METRICS.NOVA_RESPONSE,
       bypassUsageLimits: billingCtx.bypassUsageLimits,
       planKeyForLimits: billingCtx.planKeyForLimits,
     });
   } catch (err) {
     if (err instanceof UsageLimitExceededError) {
-      await updateJobRow(supabase, jobId, userId, 'failed', {
+      await updateNovaCompletionJob(userId, jobId, {
+        status: 'failed',
         error_code: err.code,
         error_message: err.message,
         completed_at: new Date().toISOString(),
@@ -177,7 +145,8 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
 
   let session = await loadSessionRedisThenSupabaseForJob(redis, authorizationHeader, userId, chatId, masterKey);
   if (!session) {
-    await updateJobRow(supabase, jobId, userId, 'failed', {
+    await updateNovaCompletionJob(userId, jobId, {
+      status: 'failed',
       error_code: 'NOVA_SESSION_NOT_FOUND',
       error_message: 'Chat session not found or expired',
       completed_at: new Date().toISOString(),
@@ -192,7 +161,8 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
   const userMessageForBedrock = lastMsg?.role === 'user' ? lastMsg.content : '';
 
   if (!userMessageForBedrock || typeof userMessageForBedrock !== 'string') {
-    await updateJobRow(supabase, jobId, userId, 'failed', {
+    await updateNovaCompletionJob(userId, jobId, {
+      status: 'failed',
       error_code: 'NOVA_COMPLETION_INVALID_STATE',
       error_message: 'Expected last session message to be the pending user turn',
       completed_at: new Date().toISOString(),
@@ -202,7 +172,8 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
 
   const modelId = resolveNovaBedrockModelId(claimed.model);
   if (!modelId) {
-    await updateJobRow(supabase, jobId, userId, 'failed', {
+    await updateNovaCompletionJob(userId, jobId, {
+      status: 'failed',
       error_code: 'NOVA_MODEL_INVALID',
       error_message: 'Invalid model preset on job row',
       completed_at: new Date().toISOString(),
@@ -212,14 +183,14 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
 
   let forPreVisitSummary = savePreVisitSummary;
   if (!forPreVisitSummary) {
-    const { data: preVisitSummaryRow } = await supabase
-      .from('pre_visit_summaries')
-      .select('id')
-      .eq('chat_id', chatId)
-      .eq('user_id', userId)
-      .limit(1)
-      .maybeSingle();
-    forPreVisitSummary = !!preVisitSummaryRow?.id;
+    const preVisitSummaryRow = await pgQueryOne(
+      `SELECT id
+         FROM ${preVisitSummariesTable}
+        WHERE chat_id = $1 AND user_id = $2
+        LIMIT 1`,
+      [chatId, userId]
+    );
+    forPreVisitSummary = Boolean(preVisitSummaryRow?.id);
   }
 
   const reqBody = getNovaChatCompletionRequestBody({
@@ -244,7 +215,8 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
     }
   } catch (err) {
     console.error('[novaChatCompletionProcessor] Bedrock invoke failed:', err);
-    await updateJobRow(supabase, jobId, userId, 'failed', {
+    await updateNovaCompletionJob(userId, jobId, {
+      status: 'failed',
       error_code: 'NOVA_BEDROCK_FAILED',
       error_message: process.env.NODE_ENV !== 'production' ? String(err?.message || err) : 'Model request failed',
       completed_at: new Date().toISOString(),
@@ -271,7 +243,8 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
   });
   if (!persistResult.success) {
     console.error('[novaChatCompletionProcessor] persist failed:', persistResult.error);
-    await updateJobRow(supabase, jobId, userId, 'failed', {
+    await updateNovaCompletionJob(userId, jobId, {
+      status: 'failed',
       error_code: 'NOVA_SESSION_PERSIST_FAILED',
       error_message: persistResult.error || 'Failed to persist chat session',
       completed_at: new Date().toISOString(),
@@ -283,7 +256,7 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
     const tokenResult = await insertChatTokenUsageRow(supabase, {
       chatId,
       userId,
-      organizationId: orgRow.organization_id,
+      organizationId,
       input_tokens: inv.usage.input_tokens,
       output_tokens: inv.usage.output_tokens,
       model: inv.modelId,
@@ -317,7 +290,7 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
 
   const recordNovaUsage = () =>
     recordUsageSuccess({
-      organizationId: orgRow.organization_id,
+      organizationId,
       userId,
       metric: USAGE_METRICS.NOVA_RESPONSE,
       idempotencyKey: `nova_response:job:${jobId}`,
@@ -343,7 +316,8 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
     if (!createResult.success) {
       console.error('[novaChatCompletionProcessor] createPreVisitSummary failed:', createResult.error);
       await recordNovaUsage();
-      await updateJobRow(supabase, jobId, userId, 'failed', {
+      await updateNovaCompletionJob(userId, jobId, {
+        status: 'failed',
         error_code: 'PRE_VISIT_SUMMARY_PERSIST_FAILED',
         error_message: createResult.error || 'Failed to persist Pre-Visit Summary',
         usage: usagePayload,
@@ -357,7 +331,8 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
     }
 
     await recordNovaUsage();
-    await updateJobRow(supabase, jobId, userId, 'complete', {
+    await updateNovaCompletionJob(userId, jobId, {
+      status: 'complete',
       pre_visit_summary_id: createResult.preVisitSummary.id,
       usage: usagePayload,
       error_code: null,
@@ -375,7 +350,8 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
 
   await recordNovaUsage();
 
-  await updateJobRow(supabase, jobId, userId, 'complete', {
+  await updateNovaCompletionJob(userId, jobId, {
+    status: 'complete',
     usage: usagePayload,
     error_code: null,
     error_message: null,

@@ -17,7 +17,8 @@ import {
 } from './novaChatTitle.js';
 import {
   loadNovaChatSessionFromSupabase,
-  novaChatCompletionJobsTable,
+  countNovaCompletionJobsByStatus,
+  countNovaPreVisitPersistFailedJobs,
 } from './novaChatPersistence.js';
 import {
   normalizeNovaSessionShape,
@@ -29,38 +30,14 @@ import * as userSecurityConfigController from '../fastify/controllers/userSecuri
 /**
  * True when this chat has exactly one successful Nova turn (complete or pre-visit-summary save failure).
  *
- * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
  * @param {string} chatId
  * @returns {Promise<boolean>}
  */
-async function isFirstSuccessfulNovaTurnForChat(supabase, userId, chatId) {
-  const { count: completeCount, error: completeErr } = await supabase
-    .from(novaChatCompletionJobsTable)
-    .select('id', { count: 'exact', head: true })
-    .eq('chat_id', chatId)
-    .eq('user_id', userId)
-    .eq('status', 'complete');
-
-  if (completeErr) {
-    console.error('[novaPreVisitSummaryTitleDetails] count complete jobs:', completeErr);
-    return false;
-  }
-
-  const { count: vpFailCount, error: vpFailErr } = await supabase
-    .from(novaChatCompletionJobsTable)
-    .select('id', { count: 'exact', head: true })
-    .eq('chat_id', chatId)
-    .eq('user_id', userId)
-    .eq('status', 'failed')
-    .eq('error_code', 'PRE_VISIT_SUMMARY_PERSIST_FAILED');
-
-  if (vpFailErr) {
-    console.error('[novaPreVisitSummaryTitleDetails] count pre-visit summary failed jobs:', vpFailErr);
-    return false;
-  }
-
-  return (completeCount ?? 0) + (vpFailCount ?? 0) === 1;
+async function isFirstSuccessfulNovaTurnForChat(userId, chatId) {
+  const completeCount = await countNovaCompletionJobsByStatus(userId, chatId, 'complete');
+  const vpFailCount = await countNovaPreVisitPersistFailedJobs(userId, chatId);
+  return completeCount + vpFailCount === 1;
 }
 
 /**
@@ -96,7 +73,7 @@ export async function maybeRunPreVisitSummaryTitleDetailsExtraction(args) {
   const { userId, chatId, jobId, authorizationHeader } = args;
   const supabase = getSupabaseClient(authorizationHeader);
 
-  const isFirstTurn = await isFirstSuccessfulNovaTurnForChat(supabase, userId, chatId);
+  const isFirstTurn = await isFirstSuccessfulNovaTurnForChat(userId, chatId);
   if (!isFirstTurn) {
     return;
   }

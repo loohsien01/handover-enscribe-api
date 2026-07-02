@@ -15,7 +15,13 @@ import {
   persistNovaChatSession,
   insertChatTokenUsageRow,
   novaChatCompletionJobsTable,
+  loadChatSessionOrganizationId,
+  chatSessionExistsForUser,
+  insertNovaCompletionJob,
+  deleteNovaCompletionJob,
+  isPgUniqueViolation,
 } from '../../utils/novaChatPersistence.js';
+import { pgQueryOne } from '../../utils/pgQueryHelpers.js';
 import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
@@ -265,21 +271,16 @@ export async function postNovaChatTokenUsage(request, reply) {
   const { chatId } = request.params;
   const body = request.body;
 
-  const { data: sess, error } = await supabase
-    .from('chat_sessions')
-    .select('organization_id')
-    .eq('id', chatId)
-    .eq('user_id', userId)
-    .maybeSingle();
+  const organizationId = await loadChatSessionOrganizationId(userId, chatId);
 
-  if (error || !sess) {
+  if (!organizationId) {
     return reply.status(404).send({ error: 'Chat session not found', code: 'NOVA_SESSION_NOT_FOUND' });
   }
 
   const result = await insertChatTokenUsageRow(supabase, {
     chatId,
     userId,
-    organizationId: sess.organization_id,
+    organizationId,
     input_tokens: body.input_tokens,
     output_tokens: body.output_tokens,
     model: body.model,
@@ -415,30 +416,23 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
 
   const supabase = getSupabaseClient(request.headers.authorization);
 
-  const { data: sessionExists, error: sessionCheckErr } = await supabase
-    .from('chat_sessions')
-    .select('id')
-    .eq('id', chatId)
-    .eq('user_id', userId)
-    .maybeSingle();
+  const sessionExists = await chatSessionExistsForUser(userId, chatId);
 
-  if (sessionCheckErr || !sessionExists) {
+  if (!sessionExists) {
     return reply.status(404).send({
       error: 'Chat session not found or expired',
       code: 'NOVA_SESSION_NOT_FOUND',
     });
   }
 
-  const { data: doneJob } = await supabase
-    .from(novaChatCompletionJobsTable)
-    .select('id, status, usage, pre_visit_summary_id, error_code, error_message')
-    .eq('chat_id', chatId)
-    .eq('user_id', userId)
-    .eq('client_message_id', body.client_message_id)
-    .eq('status', 'complete')
-    .order('completed_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const doneJob = await pgQueryOne(
+    `SELECT id, status, usage, pre_visit_summary_id, error_code, error_message
+       FROM ${novaChatCompletionJobsTable}
+      WHERE chat_id = $1 AND user_id = $2 AND client_message_id = $3 AND status = 'complete'
+      ORDER BY completed_at DESC NULLS LAST
+      LIMIT 1`,
+    [chatId, userId, body.client_message_id]
+  );
 
   if (doneJob) {
     const masterKey = await userMasterKeyOr500(request, reply);
@@ -447,13 +441,13 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
     return reply.status(200).send(payload);
   }
 
-  const { data: activeJob } = await supabase
-    .from(novaChatCompletionJobsTable)
-    .select('id, client_message_id, status')
-    .eq('chat_id', chatId)
-    .eq('user_id', userId)
-    .in('status', ['pending', 'running'])
-    .maybeSingle();
+  const activeJob = await pgQueryOne(
+    `SELECT id, client_message_id, status
+       FROM ${novaChatCompletionJobsTable}
+      WHERE chat_id = $1 AND user_id = $2 AND status IN ('pending', 'running')
+      LIMIT 1`,
+    [chatId, userId]
+  );
 
   if (activeJob) {
     if (activeJob.client_message_id === body.client_message_id) {
@@ -469,16 +463,14 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
     });
   }
 
-  const { data: latestFailedForClientId } = await supabase
-    .from(novaChatCompletionJobsTable)
-    .select('id')
-    .eq('chat_id', chatId)
-    .eq('user_id', userId)
-    .eq('client_message_id', body.client_message_id)
-    .eq('status', 'failed')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const latestFailedForClientId = await pgQueryOne(
+    `SELECT id
+       FROM ${novaChatCompletionJobsTable}
+      WHERE chat_id = $1 AND user_id = $2 AND client_message_id = $3 AND status = 'failed'
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [chatId, userId, body.client_message_id]
+  );
 
   const hasFailedRetry = Boolean(latestFailedForClientId?.id);
 
@@ -491,33 +483,24 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
     throw err;
   }
 
-  const { data: newJob, error: insErr } = await supabase
-    .from(novaChatCompletionJobsTable)
-    .insert({
-      user_id: userId,
-      chat_id: chatId,
-      client_message_id: body.client_message_id,
-      model: body.model,
-      status: 'pending',
-    })
-    .select('id')
-    .single();
+  const insertResult = await insertNovaCompletionJob(userId, chatId, body.model, body.client_message_id);
 
-  if (insErr) {
-    if (insErr.code === '23503') {
+  if (insertResult.error) {
+    const insErr = insertResult.error;
+    if (insErr && typeof insErr === 'object' && 'code' in insErr && insErr.code === '23503') {
       return reply.status(404).send({
         error: 'Chat session not found or expired',
         code: 'NOVA_SESSION_NOT_FOUND',
       });
     }
-    if (insErr.code === '23505') {
-      const { data: again } = await supabase
-        .from(novaChatCompletionJobsTable)
-        .select('id, client_message_id, status')
-        .eq('chat_id', chatId)
-        .eq('user_id', userId)
-        .in('status', ['pending', 'running'])
-        .maybeSingle();
+    if (isPgUniqueViolation(insErr)) {
+      const again = await pgQueryOne(
+        `SELECT id, client_message_id, status
+           FROM ${novaChatCompletionJobsTable}
+          WHERE chat_id = $1 AND user_id = $2 AND status IN ('pending', 'running')
+          LIMIT 1`,
+        [chatId, userId]
+      );
       if (again?.client_message_id === body.client_message_id) {
         return reply.status(202).send({ id: again.id, status: again.status, chat_id: chatId });
       }
@@ -530,15 +513,17 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
     return reply.status(500).send({ error: 'Failed to create completion job' });
   }
 
+  const newJob = insertResult;
+
   const masterKey = await userMasterKeyOr500(request, reply);
   if (!masterKey) {
-    await supabase.from(novaChatCompletionJobsTable).delete().eq('id', newJob.id).eq('user_id', userId);
+    await deleteNovaCompletionJob(userId, newJob.id);
     return;
   }
 
   let session = await loadSessionRedisThenSupabase(redis, request, userId, chatId, masterKey);
   if (!session) {
-    await supabase.from(novaChatCompletionJobsTable).delete().eq('id', newJob.id).eq('user_id', userId);
+    await deleteNovaCompletionJob(userId, newJob.id);
     return reply.status(404).send({ error: 'Chat session not found or expired', code: 'NOVA_SESSION_NOT_FOUND' });
   }
 
@@ -551,13 +536,13 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
     if (last?.role === 'user' && last.content === body.message) {
       skipUserAppend = true;
     } else if (last?.role === 'user') {
-      await supabase.from(novaChatCompletionJobsTable).delete().eq('id', newJob.id).eq('user_id', userId);
+      await deleteNovaCompletionJob(userId, newJob.id);
       return reply.status(400).send({
         error: 'client_message_id retry requires the same message as the pending user turn',
         code: 'NOVA_CLIENT_MESSAGE_MISMATCH',
       });
     } else {
-      await supabase.from(novaChatCompletionJobsTable).delete().eq('id', newJob.id).eq('user_id', userId);
+      await deleteNovaCompletionJob(userId, newJob.id);
       return reply.status(400).send({
         error:
           'Cannot retry this client_message_id: session does not end with the expected user message. Reload the thread or use a new client_message_id.',
@@ -580,7 +565,7 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
     });
 
     if (!persistResult.success) {
-      await supabase.from(novaChatCompletionJobsTable).delete().eq('id', newJob.id).eq('user_id', userId);
+      await deleteNovaCompletionJob(userId, newJob.id);
       return reply.status(500).send({
         error: persistResult.error || 'Failed to persist chat session',
         code: 'NOVA_SESSION_PERSIST_FAILED',
@@ -625,14 +610,14 @@ export async function getNovaChatCompletionJob(request, reply) {
   const { chatId, jobId } = request.params;
   const supabase = getSupabaseClient(request.headers.authorization);
 
-  const { data: job, error } = await supabase
-    .from(novaChatCompletionJobsTable)
-    .select('id, chat_id, status, usage, pre_visit_summary_id, error_code, error_message')
-    .eq('id', jobId)
-    .eq('user_id', userId)
-    .maybeSingle();
+  const job = await pgQueryOne(
+    `SELECT id, chat_id, status, usage, pre_visit_summary_id, error_code, error_message
+       FROM ${novaChatCompletionJobsTable}
+      WHERE id = $1 AND user_id = $2`,
+    [jobId, userId]
+  );
 
-  if (error || !job || job.chat_id !== chatId) {
+  if (!job || job.chat_id !== chatId) {
     return reply.status(404).send({
       error: 'Job not found',
       code: 'NOVA_COMPLETION_JOB_NOT_FOUND',
@@ -657,14 +642,14 @@ export async function getNovaChatCompletionJobPreVisitSummary(request, reply) {
   const { chatId, jobId } = request.params;
   const supabase = getSupabaseClient(request.headers.authorization);
 
-  const { data: job, error } = await supabase
-    .from(novaChatCompletionJobsTable)
-    .select('id, chat_id, pre_visit_summary_id')
-    .eq('id', jobId)
-    .eq('user_id', userId)
-    .maybeSingle();
+  const job = await pgQueryOne(
+    `SELECT id, chat_id, pre_visit_summary_id
+       FROM ${novaChatCompletionJobsTable}
+      WHERE id = $1 AND user_id = $2`,
+    [jobId, userId]
+  );
 
-  if (error || !job || job.chat_id !== chatId) {
+  if (!job || job.chat_id !== chatId) {
     return reply.status(404).send({
       error: 'Job not found',
       code: 'NOVA_COMPLETION_JOB_NOT_FOUND',

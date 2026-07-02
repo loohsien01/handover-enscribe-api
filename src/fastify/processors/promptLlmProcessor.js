@@ -13,6 +13,8 @@
 
 import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
 import { getSupabaseClient } from '../../utils/supabase.js';
+import { pgQueryOne, pgErrorMessage } from '../../utils/pgQueryHelpers.js';
+import { querySupabasePostgres } from '../../utils/supabasePostgresPool.js';
 import { patientEncounterCompleteBundle } from '../controllers/patientEncountersController.js';
 import * as claudeRequestBody from '../../utils/claudeRequestBody.js';
 import { transcribe_expand_mask } from '../controllers/transcribeController.js';
@@ -103,21 +105,22 @@ function cleanRawText(s) {
   return s;
 }
 
+const jobsTable = 'jobs';
+
 /**
  * Helper: Update job status in database
  */
 async function updateJobStatus(jobId, status, updates = {}) {
-  const supabase = supabaseAdmin();
-  const { error } = await supabase
-    .from('jobs')
-    .update({
-      status,
-      ...updates,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', jobId);
+  const fields = { status, ...updates, updated_at: new Date().toISOString() };
+  const keys = Object.keys(fields);
+  const sets = keys.map((key, i) => `${key} = $${i + 2}`).join(', ');
 
-  if (error) {
+  try {
+    await querySupabasePostgres(
+      `UPDATE ${jobsTable} SET ${sets} WHERE id = $1`,
+      [jobId, ...keys.map((key) => fields[key])]
+    );
+  } catch (error) {
     console.error(`[updateJobStatus] Failed to update job ${jobId}:`, error);
   }
 }
@@ -126,35 +129,35 @@ async function updateJobStatus(jobId, status, updates = {}) {
  * Reuse transcript_text from another job for the same user + recording when that job
  * already reached generating or complete (transcript persisted; LLM-notated dotphrase form when available).
  *
- * @param {*} supabase - supabaseAdmin client
  * @param {string} userId
  * @param {string} recordingFilePath
  * @param {string} excludeJobId - current job id
  * @returns {Promise<string|null>}
  */
-async function findTranscriptFromPriorJob(supabase, userId, recordingFilePath, excludeJobId) {
-  const { data, error } = await supabase
-    .from('jobs')
-    .select('transcript_text')
-    .eq('user_id', userId)
-    .eq('recording_file_path', recordingFilePath)
-    .in('status', ['generating', 'complete'])
-    .neq('id', excludeJobId)
-    .not('transcript_text', 'is', null)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+async function findTranscriptFromPriorJob(userId, recordingFilePath, excludeJobId) {
+  try {
+    const row = await pgQueryOne(
+      `SELECT transcript_text
+         FROM ${jobsTable}
+        WHERE user_id = $1
+          AND recording_file_path = $2
+          AND status IN ('generating', 'complete')
+          AND id <> $3
+          AND transcript_text IS NOT NULL
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+      [userId, recordingFilePath, excludeJobId]
+    );
 
-  if (error) {
-    console.warn(`[findTranscriptFromPriorJob] ${excludeJobId}: ${error.message}`);
+    const t = row?.transcript_text;
+    if (typeof t === 'string' && t.length > 0) {
+      return t;
+    }
+    return null;
+  } catch (error) {
+    console.warn(`[findTranscriptFromPriorJob] ${excludeJobId}: ${pgErrorMessage(error)}`);
     return null;
   }
-
-  const t = data?.transcript_text;
-  if (typeof t === 'string' && t.length > 0) {
-    return t;
-  }
-  return null;
 }
 
 /**
@@ -224,16 +227,19 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
   console.log(`[promptLlmProcessor] Starting job ${jobId} for user ${userId}`);
 
   try {
-    // Get job record to retrieve recording path
     const supabase = supabaseAdmin();
-    const { data: job, error: getError } = await supabase
-      .from('jobs')
-      .select('recording_file_path')
-      .eq('id', jobId)
-      .single();
+    let job;
+    try {
+      job = await pgQueryOne(
+        `SELECT recording_file_path FROM ${jobsTable} WHERE id = $1`,
+        [jobId]
+      );
+    } catch (getError) {
+      throw new Error(`Failed to retrieve job: ${pgErrorMessage(getError)}`);
+    }
 
-    if (getError || !job) {
-      throw new Error(`Failed to retrieve job: ${getError?.message}`);
+    if (!job) {
+      throw new Error('Failed to retrieve job: not found');
     }
 
     const { recording_file_path } = job;
@@ -258,7 +264,6 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
     const transcribeStartTime = Date.now();
 
     const reusedTranscript = await findTranscriptFromPriorJob(
-      supabase,
       userId,
       recording_file_path,
       jobId
