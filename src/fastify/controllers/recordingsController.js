@@ -4,6 +4,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { getSupabaseClient } from '../../utils/supabase.js';
+import { pgQueryOne, pgQueryRows, pgErrorMessage } from '../../utils/pgQueryHelpers.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import {
   normalizeRecordingStorageKey,
@@ -15,8 +16,6 @@ import {
   recordingContentTypeForExtension,
 } from '../../utils/recordingsStorage.js';
 
-const recordingTableName = 'recordings';
-const patientEncounterTableName = 'patientEncounters';
 
 /**
  * Get recordings with attachment status
@@ -64,24 +63,21 @@ export async function getRecordingsAttachments(request, reply) {
     try {
     console.time(labelFetchRecordings);
     let recordingsData;
-    let recordingsError;
     try {
-      const recRes = await supabase
-        .from(recordingTableName)
-        .select(`
-        *,
-        patientEncounters:patientEncounter_id (*)
-      `)
-        .order('recording_file_path', { ascending: true });
-      recordingsData = recRes.data;
-      recordingsError = recRes.error;
+      recordingsData = await pgQueryRows(
+        `SELECT r.*,
+                CASE WHEN pe.id IS NOT NULL THEN row_to_json(pe) END AS "patientEncounters"
+           FROM recordings r
+           LEFT JOIN "patientEncounters" pe ON pe.id = r."patientEncounter_id"
+          WHERE r.user_id = $1
+          ORDER BY r.recording_file_path ASC`,
+        [userId]
+      );
+    } catch (recordingsError) {
+      console.error('Error fetching recordings:', recordingsError);
+      return reply.status(500).send({ error: pgErrorMessage(recordingsError) });
     } finally {
       console.timeEnd(labelFetchRecordings);
-    }
-
-    if (recordingsError) {
-      console.error('Error fetching recordings:', recordingsError);
-      return reply.status(500).send({ error: recordingsError.message });
     }
 
     console.log(`[getRecordingsAttachments] Fetched ${recordingsData?.length || 0} recordings from DB`);
@@ -290,40 +286,30 @@ export async function createRecording(request, reply) {
 
     const { patientEncounter_id, recording_file_path } = request.body;
 
-    // Use the user's authenticated client with their authorization header
-    const supabase = getSupabaseClient(request.headers.authorization);
-    
     // Verify the encounter exists and belongs to this user
-    const { data: encounterData, error: encounterError } = await supabase
-      .from(patientEncounterTableName)
-      .select('id')
-      .eq('id', patientEncounter_id)
-      .eq('user_id', userId);
+    const encounterData = await pgQueryOne(
+      `SELECT id
+         FROM "patientEncounters"
+        WHERE id = $1 AND user_id = $2`,
+      [patientEncounter_id, userId]
+    );
 
-    if (encounterError) {
-      console.error('[createRecording] Encounter query error:', encounterError);
-      return reply.status(500).send({ error: 'Database error' });
-    }
-
-    if (!encounterData || encounterData.length === 0) {
+    if (!encounterData) {
       console.error('[createRecording] No matching encounter found for id:', patientEncounter_id);
       return reply.status(404).send({ error: 'Patient encounter not found' });
     }
 
     // Create the recording entry
-    const { data, error } = await supabase
-      .from(recordingTableName)
-      .insert({
-        user_id: userId,
-        patientEncounter_id: patientEncounter_id,
-        recording_file_path: recording_file_path,
-      })
-      .select()
-      .single();
+    const data = await pgQueryOne(
+      `INSERT INTO recordings (
+         user_id, "patientEncounter_id", recording_file_path, created_at
+       ) VALUES ($1, $2, $3, NOW())
+       RETURNING *`,
+      [userId, patientEncounter_id, recording_file_path]
+    );
 
-    if (error) {
-      console.error('[createRecording] Error creating recording:', error);
-      return reply.status(500).send({ error: error.message });
+    if (!data) {
+      return reply.status(500).send({ error: 'Failed to create recording' });
     }
 
     console.log('[createRecording] Recording created successfully');
@@ -356,14 +342,14 @@ export async function getRecordings(request, reply) {
 
     // Single recording mode: Get by ID with signed URL generation
     if (recordingId) {
-      // RLS policy ensures user can only access their own recordings
-      const { data: recording, error } = await supabase
-        .from(recordingTableName)
-        .select('*')
-        .eq('id', recordingId)
-        .single();
+      const recording = await pgQueryOne(
+        `SELECT *
+           FROM recordings
+          WHERE id = $1 AND user_id = $2`,
+        [recordingId, userId]
+      );
 
-      if (error || !recording) {
+      if (!recording) {
         return reply.status(404).send({ error: 'Recording not found' });
       }
 
@@ -386,20 +372,18 @@ export async function getRecordings(request, reply) {
         const now = new Date();
         const expiresAt = new Date(now.getTime() + expirySeconds * 1000).toISOString();
 
-        // Update the recording with the new signed URL and expiry
-        const { data: updateData, error: updateError } = await supabase
-          .from(recordingTableName)
-          .update({
-            recording_file_signed_url: signedUrl,
-            recording_file_signed_url_expiry: expiresAt
-          })
-          .eq('id', recording.id)
-          .select()
-          .single();
+        const updateData = await pgQueryOne(
+          `UPDATE recordings
+              SET recording_file_signed_url = $1,
+                  recording_file_signed_url_expiry = $2
+            WHERE id = $3 AND user_id = $4
+            RETURNING *`,
+          [signedUrl, expiresAt, recording.id, userId]
+        );
 
-        if (updateError) {
-          console.error('[getRecordings] Error updating signed URL:', updateError);
-          return reply.status(500).send({ error: updateError.message });
+        if (!updateData) {
+          console.error('[getRecordings] Error updating signed URL: no row updated');
+          return reply.status(500).send({ error: 'Failed to update recording signed URL' });
         }
 
         return reply.status(200).send(updateData);
@@ -410,16 +394,13 @@ export async function getRecordings(request, reply) {
     }
 
     // Batch mode: List all recordings for this user
-    // RLS policy ensures user can only access their own recordings
-    const { data, error } = await supabase
-      .from(recordingTableName)
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('[getRecordings] Error fetching recordings:', error);
-      return reply.status(500).send({ error: error.message });
-    }
+    const data = await pgQueryRows(
+      `SELECT *
+         FROM recordings
+        WHERE user_id = $1
+        ORDER BY created_at DESC`,
+      [userId]
+    );
 
     return reply.status(200).send(data);
   } catch (error) {
@@ -449,14 +430,14 @@ export async function deleteRecording(request, reply) {
     }
 
     // Fetch the recording to get the audio file path
-    // RLS policy ensures user can only access their own recordings
-    const { data: recording, error: fetchError } = await supabase
-      .from(recordingTableName)
-      .select('*')
-      .eq('id', recordingId)
-      .single();
+    const recording = await pgQueryOne(
+      `SELECT *
+         FROM recordings
+        WHERE id = $1 AND user_id = $2`,
+      [recordingId, userId]
+    );
 
-    if (fetchError || !recording) {
+    if (!recording) {
       return reply.status(404).send({ error: 'Recording not found' });
     }
 
@@ -473,16 +454,16 @@ export async function deleteRecording(request, reply) {
     }
 
     // Delete the DB record
-    const { data, error } = await supabase
-      .from(recordingTableName)
-      .delete()
-      .eq('id', recordingId)
-      .select()
-      .single();
+    const data = await pgQueryOne(
+      `DELETE FROM recordings
+        WHERE id = $1 AND user_id = $2
+        RETURNING *`,
+      [recordingId, userId]
+    );
 
-    if (error) {
-      console.error('[deleteRecording] Error deleting recording:', error);
-      return reply.status(500).send({ error: error.message });
+    if (!data) {
+      console.error('[deleteRecording] Error deleting recording: no row deleted');
+      return reply.status(404).send({ error: 'Recording not found' });
     }
 
     return reply.status(200).send({ success: true, data });

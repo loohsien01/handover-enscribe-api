@@ -84,6 +84,27 @@ async function streamToBuffer(body) {
 
 /**
  * @param {string} key
+ * @param {Buffer | Uint8Array | string} body
+ * @param {{ contentType?: string }} [opts]
+ * @returns {Promise<void>}
+ */
+export async function putS3Object(key, body, opts = {}) {
+  const normalized = normalizeRecordingStorageKey(key);
+  if (!normalized) {
+    throw new Error('Invalid S3 object key');
+  }
+  await getRecordingsS3Client().send(
+    new PutObjectCommand({
+      Bucket: getRecordingsBucket(),
+      Key: normalized,
+      Body: body,
+      ...(opts.contentType ? { ContentType: opts.contentType } : {}),
+    })
+  );
+}
+
+/**
+ * @param {string} key
  * @param {{ contentType?: string, expiresIn?: number }} [opts]
  * @returns {Promise<string>}
  */

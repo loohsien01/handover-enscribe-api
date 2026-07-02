@@ -21,6 +21,7 @@ import {
   listS3RootUserPrefixes,
   recordingContentTypeForExtension,
   isS3NotFoundError,
+  putS3Object,
 } from './recordingsS3Client.js';
 
 export const AUDIO_BUCKET = 'audio-files';
@@ -190,6 +191,48 @@ export async function deleteRecordingObject(supabase, key) {
 
   if (shouldUseSupabaseForWrites() || backend === 'dual-read') {
     const { error } = await supabase.storage.from(AUDIO_BUCKET).remove([normalized]);
+    if (error) errors.push(error);
+  }
+
+  if (errors.length > 0) {
+    const first = errors[0];
+    throw first instanceof Error ? first : new Error(String(first));
+  }
+}
+
+/**
+ * Upload a recording blob to the active backend(s). dual-read writes to both.
+ *
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase
+ * @param {string} key
+ * @param {Buffer | Uint8Array | string} body
+ * @param {{ contentType?: string }} [opts]
+ * @returns {Promise<void>}
+ */
+export async function uploadRecordingObject(supabase, key, body, opts = {}) {
+  const normalized = normalizeRecordingStorageKey(key);
+  if (!normalized) {
+    throw new Error('Invalid recording storage key');
+  }
+
+  const ext = normalized.split('.').pop()?.toLowerCase() || '';
+  const contentType = opts.contentType ?? recordingContentTypeForExtension(ext);
+  const backend = getRecordingsStorageBackend();
+  const errors = [];
+
+  if (shouldUseS3ForWrites() || backend === 'dual-read') {
+    try {
+      await putS3Object(normalized, body, contentType ? { contentType } : {});
+    } catch (err) {
+      errors.push(err);
+    }
+  }
+
+  if (shouldUseSupabaseForWrites() || backend === 'dual-read') {
+    const { error } = await supabase.storage.from(AUDIO_BUCKET).upload(normalized, body, {
+      upsert: true,
+      ...(contentType ? { contentType } : {}),
+    });
     if (error) errors.push(error);
   }
 

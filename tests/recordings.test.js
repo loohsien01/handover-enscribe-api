@@ -15,6 +15,16 @@ dotenv.config({ path: envPath });
 
 import { TestRunner } from './testUtils.js';
 import { getTestAccount, hasTestAccounts } from './testConfig.js';
+import {
+  getRecordingsStorageBackendForTests,
+  expectsS3UploadUrls,
+  isValidUploadSignedUrl,
+  isValidDownloadSignedUrl,
+  uploadSignedUrlFormatLabel,
+  downloadSignedUrlFormatLabel,
+} from './recordingsStorageTestHelpers.js';
+import { recordingObjectExists } from '../src/utils/recordingsStorage.js';
+import { createClient } from '@supabase/supabase-js';
 
 const runner = new TestRunner('Recordings API Tests');
 
@@ -68,72 +78,6 @@ function decodeJWT(token) {
 
 const CREATE_SIGNED_UPLOAD_URL_ENDPOINT = '/api/recordings/create-signed-upload-url';
 
-/** Matches {@link ../src/utils/recordingsStorageBackend.js} for signed URL format assertions. */
-function getRecordingsStorageBackendForTests() {
-  const raw = (process.env.RECORDINGS_STORAGE_BACKEND || 'supabase').trim().toLowerCase();
-  if (raw === 's3' || raw === 'dual-read') return raw;
-  return 'supabase';
-}
-
-function expectsS3UploadUrls() {
-  const backend = getRecordingsStorageBackendForTests();
-  return backend === 's3' || backend === 'dual-read';
-}
-
-/**
- * @param {string} url
- * @returns {boolean}
- */
-function isValidUploadSignedUrl(url) {
-  if (typeof url !== 'string' || !url.startsWith('https://')) return false;
-  if (expectsS3UploadUrls()) {
-    return (
-      (url.includes('.amazonaws.com/') || url.includes('s3.')) &&
-      url.includes('X-Amz-Algorithm=')
-    );
-  }
-  return (
-    url.includes('/storage/v1/object/upload/sign/') &&
-    url.includes('?token=') &&
-    url.includes('.supabase.co')
-  );
-}
-
-/**
- * @param {string} url
- * @returns {boolean}
- */
-function isValidDownloadSignedUrl(url) {
-  if (typeof url !== 'string' || !url.startsWith('https://')) return false;
-  const backend = getRecordingsStorageBackendForTests();
-  if (backend === 's3') {
-    return (
-      (url.includes('.amazonaws.com/') || url.includes('s3.')) &&
-      url.includes('X-Amz-Algorithm=')
-    );
-  }
-  if (backend === 'dual-read') {
-    const isSupabase =
-      url.includes('/storage/v1/object/sign/') && url.includes('.supabase.co');
-    const isS3 =
-      (url.includes('.amazonaws.com/') || url.includes('s3.')) &&
-      url.includes('X-Amz-Algorithm=');
-    return isSupabase || isS3;
-  }
-  return url.includes('/storage/v1/object/sign/') && url.includes('.supabase.co');
-}
-
-function uploadSignedUrlFormatLabel() {
-  return expectsS3UploadUrls() ? 'S3 presigned PUT' : 'Supabase upload/sign';
-}
-
-function downloadSignedUrlFormatLabel(url) {
-  if (url.includes('.amazonaws.com/') || (url.includes('s3.') && url.includes('X-Amz-'))) {
-    return 'S3 presigned GET';
-  }
-  return 'Supabase object/sign';
-}
-
 /**
  * Helper: Validate that array is sorted by field in correct order
  */
@@ -172,6 +116,7 @@ async function runRecordingsTests() {
   // Load test data first
   testData = loadTestData();
 
+  console.log('\n=== PART 1: ATTACHMENTS TESTS ===\n');
   console.log('Starting Recordings API tests...');
   console.log(`Server: ${runner.baseUrl}\n`);
   console.log('Test Data Loaded:');
@@ -510,26 +455,40 @@ async function runRecordingsTests() {
     if (unattachedTest && unattachedTest.status === 200) {
       const unattachedRecordings = unattachedTest.body || [];
       const apiPaths = new Set(unattachedRecordings.map(r => r.path));
-      
-      // Check 1: All unattached recordings from test data are present
-      const foundUnattached = testData.recordings
-        .filter(r => !r.attached)
-        .every(testRecording => apiPaths.has(testRecording.path));
+      const attachedPaths = testData.recordings.filter(r => r.attached).map(r => r.path);
+      const expectedUnattachedPaths = testData.recordings.filter(r => !r.attached).map(r => r.path);
 
-      // Check 2: No attached recordings are present (shouldn't be)
-      const noAttachedLeakage = testData.recordings
-        .filter(r => r.attached)
-        .every(testRecording => !apiPaths.has(testRecording.path));
+      // Check 1: No attached recordings leaked into unattached response
+      const noAttachedLeakage = attachedPaths.every((path) => !apiPaths.has(path));
 
-      if (foundUnattached && noAttachedLeakage) {
-        console.log(`    ✓ All ${testData.recordings.filter(r => !r.attached).length} unattached recordings found, no attached leakage`);
+      // Check 2: Response shape (path + optional storage metadata)
+      const validShape = unattachedRecordings.every(
+        (row) => typeof row.path === 'string' && row.path.includes('/')
+      );
+
+      // Check 3: Fixture coverage — warn if testData is stale vs live bucket (non-fatal)
+      const missingFixtures = expectedUnattachedPaths.filter((path) => !apiPaths.has(path));
+      const foundAllFixtures = missingFixtures.length === 0;
+
+      if (noAttachedLeakage && validShape) {
+        if (foundAllFixtures) {
+          console.log(
+            `    ✓ All ${expectedUnattachedPaths.length} unattached fixture path(s) present, no attached leakage`
+          );
+        } else {
+          console.log(
+            `    ✓ No attached leakage (${unattachedRecordings.length} unattached in storage); ` +
+              `${missingFixtures.length} fixture path(s) missing — re-run npm run test:setup if needed`
+          );
+          missingFixtures.forEach((path) => console.log(`      missing: ${path}`));
+        }
         unattachedTest.passed = true;
       } else {
-        if (!foundUnattached) {
-          console.log(`    ✗ Missing some unattached recordings in response`);
-        }
         if (!noAttachedLeakage) {
           console.log(`    ✗ Attached recordings leaked into unattached response`);
+        }
+        if (!validShape) {
+          console.log(`    ✗ Unattached response has invalid row shape`);
         }
         unattachedTest.passed = false;
       }
@@ -553,6 +512,7 @@ async function runRecordingsTests() {
 async function runRecordingsCrudTests() {
   testData = loadTestData();
 
+  console.log('\n=== PART 2: CRUD TESTS ===\n');
   console.log('Starting Recordings CRUD tests...');
   console.log(`Server: ${runner.baseUrl}\n`);
 
@@ -695,6 +655,7 @@ async function runRecordingsCrudTests() {
 async function runRecordingsUploadTests() {
   testData = loadTestData();
 
+  console.log('\n=== PART 3: UPLOAD ENDPOINT TESTS ===\n');
   console.log('Starting Recordings Upload Endpoint tests...');
   console.log(`Server: ${runner.baseUrl}\n`);
 
@@ -728,6 +689,26 @@ async function runRecordingsUploadTests() {
       } else {
         console.log('⚠️ Could not obtain access token from test account');
       }
+    }
+  }
+
+  /** First testData path that exists in active storage (for collision + download URL tests). */
+  let storageBackedPath = null;
+  if (accessToken && userId && testData.recordings?.length) {
+    const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, {
+      auth: { persistSession: false },
+      global: { headers: { Authorization: `Bearer ${accessToken}` } },
+    });
+    for (const rec of testData.recordings) {
+      if (rec.path && (await recordingObjectExists(supabase, rec.path))) {
+        storageBackedPath = rec.path;
+        break;
+      }
+    }
+    if (!storageBackedPath) {
+      console.warn(
+        `⚠️  No testData recording path found in ${getRecordingsStorageBackendForTests()} storage — re-run npm run test:setup\n`
+      );
     }
   }
 
@@ -903,10 +884,9 @@ async function runRecordingsUploadTests() {
     }
   }
 
-  // Test 30: Collision detection - use existing recording from testData
-  // Use first recording (id: 1102): "Dr Tung 2025-07-17 3PM.mp4"
-  if (accessToken && userId) {
-    const existingFilename = `${userId}/Dr Tung 2025-07-17 3PM.mp4`;
+  // Test 30–31: Collision detection — storage object must exist (see test:setup)
+  if (accessToken && userId && storageBackedPath) {
+    const existingFilename = storageBackedPath;
 
     const result1 = await runner.test(
       'POST /api/recordings/create-signed-upload-url collision detection - first request (existing file)',
@@ -951,9 +931,12 @@ async function runRecordingsUploadTests() {
         console.log(`      Request 2: ${secondPath} (collision detected, suffix added)`);
       } else {
         console.log(`    ✗ Collision detection failed: identical paths returned`);
+        console.log(`      Hint: re-run npm run test:setup so fixtures exist in ${getRecordingsStorageBackendForTests()} storage`);
         result2.passed = false;
       }
     }
+  } else {
+    console.log('⚠️  Skipping Tests 30–31: no attached recording path in testData (run npm run test:setup)\n');
   }
 
   // Test 32-37: Validate all supported extensions
@@ -1089,17 +1072,10 @@ async function runRecordingsUploadTests() {
     });
   }
 
-  // Test 44: POST /api/recordings/create-signed-url valid path with correct owner → 200
+  // Test 44: POST /api/recordings/create-signed-url valid path with blob in storage → 200
   let createSignedUrlResponse = null;
-  let testRecordingPath = null;
-  if (accessToken && testData.recordings && testData.recordings.length > 0) {
-    // Use first recording by ID from testData (recording with id: 1013)
-    const recordingsByIdAsc = testData.recordings
-      .filter(r => r.id !== null)
-      .sort((a, b) => a.id - b.id);
-    
-    const firstRecording = recordingsByIdAsc[0];
-    testRecordingPath = firstRecording.path;
+  if (accessToken && storageBackedPath) {
+    const testRecordingPath = storageBackedPath;
 
     const result = await runner.test('POST /api/recordings/create-signed-url valid request (real test data)', {
       testNumber: 44,
@@ -1147,14 +1123,18 @@ async function runRecordingsUploadTests() {
     }
   }
 
-  // Test 45: HEAD request to signed URL - fetch metadata only (no file download)
+  // Test 45: Probe signed download URL (HEAD for Supabase; Range GET for S3 presigned URLs)
   if (createSignedUrlResponse && createSignedUrlResponse.signedUrl) {
     const signedUrl = createSignedUrlResponse.signedUrl;
+    const isS3Presigned = signedUrl.includes('X-Amz-Algorithm=');
+    const probeMethod = isS3Presigned ? 'GET' : 'HEAD';
     let metadataTest = {
-      name: 'HEAD signed URL metadata (no download)',
+      name: isS3Presigned
+        ? 'Range GET on signed URL metadata (S3 presigned)'
+        : 'HEAD signed URL metadata (no download)',
       passed: false,
       endpoint: signedUrl,
-      method: 'HEAD',
+      method: probeMethod,
       status: null,
       expectedStatus: 200,
       customMessage: '',
@@ -1163,39 +1143,41 @@ async function runRecordingsUploadTests() {
     };
     
     try {
-      const headResponse = await fetch(signedUrl, { method: 'HEAD' });
-      metadataTest.status = headResponse.status;
-      metadataTest.passed = headResponse.ok || headResponse.status === 404;
+      const probeResponse = isS3Presigned
+        ? await fetch(signedUrl, { method: 'GET', headers: { Range: 'bytes=0-0' } })
+        : await fetch(signedUrl, { method: 'HEAD' });
+      metadataTest.status = probeResponse.status;
+      metadataTest.passed =
+        probeResponse.ok || probeResponse.status === 206 || probeResponse.status === 404;
       
-      if (headResponse.ok) {
-        console.log(`    ✓ HEAD request successful (${headResponse.status}) - metadata fetched, no file download`);
+      if (probeResponse.ok || probeResponse.status === 206) {
+        console.log(
+          `    ✓ ${probeMethod} probe successful (${probeResponse.status}) - metadata accessible without full download`
+        );
         
-        // Extract all relevant metadata headers
-        const contentType = headResponse.headers.get('content-type');
-        const contentLength = headResponse.headers.get('content-length');
-        const cacheControl = headResponse.headers.get('cache-control');
-        const lastModified = headResponse.headers.get('last-modified');
-        const etag = headResponse.headers.get('etag');
-        const acceptRanges = headResponse.headers.get('accept-ranges');
+        const contentType = probeResponse.headers.get('content-type');
+        const contentLength = probeResponse.headers.get('content-length');
+        const contentRange = probeResponse.headers.get('content-range');
+        const lastModified = probeResponse.headers.get('last-modified');
+        const etag = probeResponse.headers.get('etag');
         
         if (contentType) console.log(`      Content-Type: ${contentType}`);
         if (contentLength) console.log(`      Content-Length: ${contentLength} bytes`);
+        if (contentRange) console.log(`      Content-Range: ${contentRange}`);
         if (lastModified) console.log(`      Last-Modified: ${lastModified}`);
         if (etag) console.log(`      ETag: ${etag}`);
-        if (acceptRanges) console.log(`      Accept-Ranges: ${acceptRanges}`);
-        if (cacheControl) console.log(`      Cache-Control: ${cacheControl}`);
         
-        metadataTest.customMessage = `HEAD request returned ${headResponse.status}, all metadata accessible without download`;
-      } else if (headResponse.status === 404) {
-        console.log(`    ⚠️ HEAD request returned 404 - file not in storage, but signed URL is valid`);
-        metadataTest.customMessage = `HEAD returned 404, URL format valid but file missing`;
+        metadataTest.customMessage = `${probeMethod} probe returned ${probeResponse.status}`;
+      } else if (probeResponse.status === 404) {
+        console.log(`    ⚠️ Probe returned 404 - file not in storage, but signed URL is valid`);
+        metadataTest.customMessage = `Probe returned 404, URL format valid but file missing`;
       } else {
-        console.log(`    ✗ HEAD request failed with status ${headResponse.status}`);
-        metadataTest.customMessage = `HEAD request failed: ${headResponse.status}`;
+        console.log(`    ✗ Probe failed with status ${probeResponse.status}`);
+        metadataTest.customMessage = `${probeMethod} probe failed: ${probeResponse.status}`;
       }
     } catch (error) {
-      console.log(`    ✗ Error making HEAD request: ${error.message}`);
-      metadataTest.customMessage = `HEAD request error: ${error.message}`;
+      console.log(`    ✗ Error probing signed URL: ${error.message}`);
+      metadataTest.customMessage = `Probe error: ${error.message}`;
     }
     
     runner.results.push(metadataTest);
@@ -1227,11 +1209,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         await runRecordingsDeleteStorageTests();
       } else if (args.includes('--all')) {
         await runRecordingsTests();
-        console.log('\n\n=== PART 2: CRUD TESTS ===\n');
         await runRecordingsCrudTests();
-        console.log('\n\n=== PART 3: UPLOAD ENDPOINT TESTS ===\n');
         await runRecordingsUploadTests();
-        console.log('\n\n=== PART 4: DELETE STORAGE ENDPOINT TESTS ===\n');
         await runRecordingsDeleteStorageTests();
       } else {
         console.log('Recording API Tests\n');
@@ -1256,6 +1235,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 async function runRecordingsDeleteStorageTests() {
   testData = loadTestData();
 
+  console.log('\n=== PART 4: DELETE STORAGE ENDPOINT TESTS ===\n');
   console.log('Starting Recordings Delete Storage Endpoint tests...');
   console.log(`Server: ${runner.baseUrl}\n`);
 

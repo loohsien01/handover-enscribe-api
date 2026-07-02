@@ -19,6 +19,7 @@ dotenv.config({ path: envPath });
 
 import { TestRunner } from './testUtils.js';
 import { getTestAccount, hasTestAccounts } from './testConfig.js';
+import { isValidDownloadSignedUrl, downloadSignedUrlFormatLabel } from './recordingsStorageTestHelpers.js';
 import { createClient } from '@supabase/supabase-js';
 
 const runner = new TestRunner('Patient Encounters API Tests');
@@ -679,14 +680,12 @@ async function runPatientEncounterTests() {
                   return { passed: false, message: 'Recording missing recording_file_signed_url (should be auto-generated in getCompletePatientEncounter)' };
                 }
 
-                // Check signed URL is valid (contains Supabase domain)
-                if (!recording.recording_file_signed_url.includes('supabase.co')) {
-                  return { passed: false, message: 'Signed URL does not appear valid (missing supabase.co domain)' };
-                }
-
-                // Check signed URL is HTTPS
-                if (!recording.recording_file_signed_url.startsWith('https://')) {
-                  return { passed: false, message: 'Signed URL must be HTTPS' };
+                // Check signed URL is valid for active storage backend (S3 or Supabase)
+                if (!isValidDownloadSignedUrl(recording.recording_file_signed_url)) {
+                  return {
+                    passed: false,
+                    message: `Signed URL does not match expected ${downloadSignedUrlFormatLabel(recording.recording_file_signed_url)} format (RECORDINGS_STORAGE_BACKEND=${process.env.RECORDINGS_STORAGE_BACKEND || 'supabase'})`,
+                  };
                 }
 
                 // Check signed URL expiry exists and is valid

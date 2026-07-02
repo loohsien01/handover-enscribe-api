@@ -4,6 +4,8 @@
  * Validation is handled in routes using Zod schemas
  */
 import { getSupabaseClient } from '../../utils/supabase.js';
+import { pgQueryOne, pgQueryRows, pgErrorMessage } from '../../utils/pgQueryHelpers.js';
+import { querySupabasePostgres } from '../../utils/supabasePostgresPool.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import {
   normalizeRecordingStorageKey,
@@ -23,10 +25,6 @@ import {
   resolveBillingContext,
 } from '../../utils/billingUsage.js';
 
-const patientEncounterTable = 'patientEncounters';
-const recordingTable = 'recordings';
-const notesTable = 'notes';
-const transcriptTable = 'transcripts';
 
 /**
  * Helper: Validates bigint ID format
@@ -54,7 +52,6 @@ function stripPatientEncounterEncryptionFields(encounter) {
  */
 export async function getAllPatientEncounters(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -63,16 +60,14 @@ export async function getAllPatientEncounters(request, reply) {
 
     const { limit, offset, decryptName } = request.query;
 
-    const { data, error } = await supabase
-      .from(patientEncounterTable)
-      .select('*')
-      .eq('user_id', user.id)
-      .order('updated_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    if (error) {
-      return reply.status(500).send({ error: error.message });
-    }
+    const data = await pgQueryRows(
+      `SELECT *
+         FROM "patientEncounters"
+        WHERE user_id = $1
+        ORDER BY updated_at DESC
+        LIMIT $2 OFFSET $3`,
+      [user.id, limit, offset]
+    );
 
     for (const encounter of data) {
       if (!decryptName) {
@@ -114,7 +109,6 @@ export async function getAllPatientEncounters(request, reply) {
  */
 export async function getPatientEncounter(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -129,17 +123,15 @@ export async function getPatientEncounter(request, reply) {
       return reply.status(400).send({ error: 'Invalid ID format - must be a numeric ID' });
     }
 
-    const { data: encounter, error } = await supabase
-      .from(patientEncounterTable)
-      .select('*')
-      .eq('id', id)
-      .single();
+    const encounter = await pgQueryOne(
+      `SELECT *
+         FROM "patientEncounters"
+        WHERE id = $1 AND user_id = $2`,
+      [id, user.id]
+    );
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return reply.status(404).send({ error: 'Encounter not found' });
-      }
-      return reply.status(500).send({ error: error.message });
+    if (!encounter) {
+      return reply.status(404).send({ error: 'Encounter not found' });
     }
 
     if (!decryptName) {
@@ -173,7 +165,6 @@ export async function getPatientEncounter(request, reply) {
  */
 export async function createPatientEncounter(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -183,28 +174,26 @@ export async function createPatientEncounter(request, reply) {
     // Request body is already validated by route
     const encounter = request.body;
 
-    // Set user_id to authenticated user
-    encounter.user_id = user.id;
-
     // Generate AES key and IV for patient encounter
     const { aesKey, iv } = encryptionUtils.generateAESKeyAndIV();
-    encounter.iv = iv;
-    encounter.encrypted_aes_key = encryptionUtils.encryptAESKey(aesKey);
+    const encrypted_aes_key = encryptionUtils.encryptAESKey(aesKey);
 
     // Encrypt patient name
+    let encrypted_name = null;
     if (encounter.name) {
-      encounter.encrypted_name = encryptionUtils.encryptText(encounter.name, aesKey, iv);
-      delete encounter.name; // Remove plain field before insert
+      encrypted_name = encryptionUtils.encryptText(encounter.name, aesKey, iv);
     }
 
-    const { data, error } = await supabase
-      .from(patientEncounterTable)
-      .insert([encounter])
-      .select()
-      .single();
+    const data = await pgQueryOne(
+      `INSERT INTO "patientEncounters" (
+         user_id, encrypted_name, iv, encrypted_aes_key, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, NOW(), NOW())
+       RETURNING *`,
+      [user.id, encrypted_name, iv, encrypted_aes_key]
+    );
 
-    if (error) {
-      return reply.status(500).send({ error: error.message });
+    if (!data) {
+      return reply.status(500).send({ error: 'Failed to create patient encounter' });
     }
 
     // Decrypt name for response and clean up encryption fields
@@ -233,7 +222,6 @@ export async function createPatientEncounter(request, reply) {
  */
 export async function updatePatientEncounter(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -251,57 +239,35 @@ export async function updatePatientEncounter(request, reply) {
     const updates = request.body;
 
     // Step 1: Fetch existing encounter to verify it exists and get encryption key
-    const { data: encounter, error: fetchError } = await supabase
-      .from(patientEncounterTable)
-      .select('*')
-      .eq('id', id)
-      .single();
+    const encounter = await pgQueryOne(
+      `SELECT *
+         FROM "patientEncounters"
+        WHERE id = $1 AND user_id = $2`,
+      [id, user.id]
+    );
 
-    if (fetchError) {
-      if (fetchError.code === 'PGRST116') {
-        return reply.status(404).send({ error: 'Encounter not found' });
-      }
-      return reply.status(500).send({ error: fetchError.message });
+    if (!encounter) {
+      return reply.status(404).send({ error: 'Encounter not found' });
     }
 
-    // Step 2: Prepare update object
-    const dbUpdates = {};
-
-    // If name is being updated, encrypt it using the existing encryption key and IV
+    // Step 2: Prepare update — only name is user-editable today
+    let encrypted_name = encounter.encrypted_name;
     if (updates.name !== undefined) {
-      // Decrypt the existing AES key from the database
       const aes_key = encryptionUtils.decryptAESKey(encounter.encrypted_aes_key);
-      
-      // Encrypt the new name using the existing key and IV
-      const encrypted_name = encryptionUtils.encryptText(updates.name, aes_key, encounter.iv);
-      
-      dbUpdates.encrypted_name = encrypted_name;
-      // Keep the same IV and encrypted_aes_key (no need to update them)
+      encrypted_name = encryptionUtils.encryptText(updates.name, aes_key, encounter.iv);
     }
-
-    // Copy other fields as-is (they're not encrypted)
-    for (const key of Object.keys(updates)) {
-      if (key !== 'name') {
-        dbUpdates[key] = updates[key];
-      }
-    }
-
-    // Set updated_at timestamp
-    dbUpdates.updated_at = new Date().toISOString();
 
     // Step 3: Update in database
-    const { data: updatedData, error: updateError } = await supabase
-      .from(patientEncounterTable)
-      .update(dbUpdates)
-      .eq('id', id)
-      .select()
-      .single();
+    const updatedData = await pgQueryOne(
+      `UPDATE "patientEncounters"
+          SET encrypted_name = $1, updated_at = NOW()
+        WHERE id = $2 AND user_id = $3
+        RETURNING *`,
+      [encrypted_name, id, user.id]
+    );
 
-    if (updateError) {
-      if (updateError.code === 'PGRST116') {
-        return reply.status(404).send({ error: 'Encounter not found' });
-      }
-      return reply.status(500).send({ error: updateError.message });
+    if (!updatedData) {
+      return reply.status(404).send({ error: 'Encounter not found' });
     }
 
     // Step 4: Decrypt response for client
@@ -328,7 +294,6 @@ export async function updatePatientEncounter(request, reply) {
  */
 export async function deletePatientEncounter(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -342,18 +307,15 @@ export async function deletePatientEncounter(request, reply) {
       return reply.status(400).send({ error: 'Invalid ID format - must be a numeric ID' });
     }
 
-    const { data, error } = await supabase
-      .from(patientEncounterTable)
-      .delete()
-      .eq('id', id)
-      .select()
-      .single();
+    const data = await pgQueryOne(
+      `DELETE FROM "patientEncounters"
+        WHERE id = $1 AND user_id = $2
+        RETURNING *`,
+      [id, user.id]
+    );
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return reply.status(404).send({ error: 'Encounter not found' });
-      }
-      return reply.status(500).send({ error: error.message });
+    if (!data) {
+      return reply.status(404).send({ error: 'Encounter not found' });
     }
 
     return reply.status(200).send({ success: true, data });
@@ -394,18 +356,15 @@ export async function getCompletePatientEncounter(request, reply) {
     const encounterId = parseInt(id);
 
     // Step 0: Fetch patient encounter
-    const { data: encounterData, error: encounterError } = await supabase
-      .from(patientEncounterTable)
-      .select('*')
-      .eq('id', encounterId)
-      .eq('user_id', user.id)
-      .single();
+    const encounterData = await pgQueryOne(
+      `SELECT *
+         FROM "patientEncounters"
+        WHERE id = $1 AND user_id = $2`,
+      [encounterId, user.id]
+    );
 
-    if (encounterError) {
-      if (encounterError.code === 'PGRST116') {
-        return reply.status(404).send({ error: 'Encounter not found' });
-      }
-      return reply.status(500).send({ error: encounterError.message });
+    if (!encounterData) {
+      return reply.status(404).send({ error: 'Encounter not found' });
     }
 
     // Decrypt AES key for this encounter
@@ -425,21 +384,19 @@ export async function getCompletePatientEncounter(request, reply) {
 
     // Step 1: Fetch recording linked to encounter
     console.log('Step 1: Fetching recording linked to encounterId:', encounterId);
-    const { data: recordingData, error: recordingError } = await supabase
-      .from('recordings')
-      .select('*')
-      .eq('patientEncounter_id', encounterId)
-      .single();
+    const recordingData = await pgQueryOne(
+      `SELECT *
+         FROM recordings
+        WHERE "patientEncounter_id" = $1 AND user_id = $2`,
+      [encounterId, user.id]
+    );
 
     let recording = null;
-    if (recordingError && recordingError.code !== 'PGRST116') {
-      console.error('Recording query error:', recordingError);
-      return reply.status(500).send({ error: recordingError.message });
-    } else if (recordingData) {
+    if (recordingData) {
       recording = recordingData;
       delete recording.iv;
-    } else if (recordingError?.code === 'PGRST116') {
-      console.warn('No recording found for encounterId:', encounterId, 'RLS may have filtered the result or no recording linked');
+    } else {
+      console.warn('No recording found for encounterId:', encounterId);
     }
 
     // Step 1.5: Generate/refresh signed URL if needed
@@ -462,18 +419,24 @@ export async function getCompletePatientEncounter(request, reply) {
           recording.recording_file_signed_url = signedUrl;
           recording.recording_file_signed_url_expiry = expiresAt;
 
-          const { error: updateError } = await supabase
-            .from('recordings')
-            .update({
-              recording_file_signed_url: recording.recording_file_signed_url,
-              recording_file_signed_url_expiry: recording.recording_file_signed_url_expiry
-            })
-            .eq('id', recording.id)
-            .select()
-            .single();
-          
-          if (updateError) {
-            console.warn('Error updating recording signed URL (continuing):', updateError?.message || updateError);
+          try {
+            await querySupabasePostgres(
+              `UPDATE recordings
+                  SET recording_file_signed_url = $1,
+                      recording_file_signed_url_expiry = $2
+                WHERE id = $3 AND user_id = $4`,
+              [
+                recording.recording_file_signed_url,
+                recording.recording_file_signed_url_expiry,
+                recording.id,
+                user.id,
+              ]
+            );
+          } catch (updateError) {
+            console.warn(
+              'Error updating recording signed URL (continuing):',
+              updateError instanceof Error ? updateError.message : updateError
+            );
           }
         } catch (signedError) {
           console.warn(
@@ -488,15 +451,14 @@ export async function getCompletePatientEncounter(request, reply) {
 
     let transcript = null;
     if (recording?.id) {
-      const { data: transcriptData, error: transcriptError } = await supabase
-        .from(transcriptTable)
-        .select('*')
-        .eq('recording_id', recording.id)
-        .maybeSingle();
+      const transcriptData = await pgQueryOne(
+        `SELECT *
+           FROM transcripts
+          WHERE recording_id = $1 AND user_id = $2`,
+        [recording.id, user.id]
+      );
 
-      if (transcriptError && transcriptError.code !== 'PGRST116') {
-        return reply.status(500).send({ error: transcriptError.message });
-      } else if (transcriptData) {
+      if (transcriptData) {
         const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, encounterData.user_id);
         if (keyResult.success) {
           const dr = decryptTranscriptRowWithMasterKey(transcriptData, keyResult.masterKey);
@@ -516,15 +478,15 @@ export async function getCompletePatientEncounter(request, reply) {
 
     // Step 2: Fetch notes for encounter
     console.log('Step 2: Fetching notes for encounterId:', encounterId);
-    const { data: notesData, error: notesError } = await supabase
-      .from('notes')
-      .select('*')
-      .eq('patientEncounter_id', encounterId);
+    const notesData = await pgQueryRows(
+      `SELECT *
+         FROM notes
+        WHERE "patientEncounter_id" = $1 AND user_id = $2`,
+      [encounterId, user.id]
+    );
 
     let encounterNotes = [];
-    if (notesError && notesError.code !== 'PGRST116') {
-      return reply.status(500).send({ error: notesError.message });
-    } else if (notesData && Array.isArray(notesData)) {
+    if (notesData && Array.isArray(notesData)) {
       // Get user's master key for note decryption
       const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, encounterData.user_id);
       if (keyResult.success) {
@@ -595,15 +557,15 @@ export async function getPatientEncounterBundleByNoteId(supabase, user, noteId) 
     throw err;
   }
 
-  const { data: noteRow, error: noteError } = await supabase
-    .from(notesTable)
-    .select('*')
-    .eq('id', idStr)
-    .eq('user_id', user.id)
-    .single();
+  const noteRow = await pgQueryOne(
+    `SELECT *
+       FROM notes
+      WHERE id = $1 AND user_id = $2`,
+    [idStr, user.id]
+  );
 
-  if (noteError || !noteRow) {
-    const err = new Error(noteError?.code === 'PGRST116' ? 'Note not found' : noteError?.message || 'Note not found');
+  if (!noteRow) {
+    const err = new Error('Note not found');
     err.statusCode = 404;
     throw err;
   }
@@ -615,17 +577,15 @@ export async function getPatientEncounterBundleByNoteId(supabase, user, noteId) 
     throw err;
   }
 
-  const { data: encounterData, error: encounterError } = await supabase
-    .from(patientEncounterTable)
-    .select('*')
-    .eq('id', encounterId)
-    .eq('user_id', user.id)
-    .single();
+  const encounterData = await pgQueryOne(
+    `SELECT *
+       FROM "patientEncounters"
+      WHERE id = $1 AND user_id = $2`,
+    [encounterId, user.id]
+  );
 
-  if (encounterError || !encounterData) {
-    const err = new Error(
-      encounterError?.code === 'PGRST116' ? 'Encounter not found' : encounterError?.message || 'Encounter not found'
-    );
+  if (!encounterData) {
+    const err = new Error('Encounter not found');
     err.statusCode = 404;
     throw err;
   }
@@ -639,18 +599,15 @@ export async function getPatientEncounterBundleByNoteId(supabase, user, noteId) 
   delete encounterData.encrypted_aes_key;
   delete encounterData.iv;
 
-  const { data: recordingData, error: recordingError } = await supabase
-    .from(recordingTable)
-    .select('*')
-    .eq('patientEncounter_id', encounterId)
-    .single();
+  const recordingData = await pgQueryOne(
+    `SELECT *
+       FROM recordings
+      WHERE "patientEncounter_id" = $1 AND user_id = $2`,
+    [encounterId, user.id]
+  );
 
   let recording = null;
-  if (recordingError && recordingError.code !== 'PGRST116') {
-    const err = new Error(recordingError.message);
-    err.statusCode = 500;
-    throw err;
-  } else if (recordingData) {
+  if (recordingData) {
     recording = recordingData;
     delete recording.iv;
   }
@@ -670,16 +627,21 @@ export async function getPatientEncounterBundleByNoteId(supabase, user, noteId) 
         recording.recording_file_signed_url = signedUrl;
         recording.recording_file_signed_url_expiry = expiresAt;
 
-        const { error: updateError } = await supabase
-          .from(recordingTable)
-          .update({
-            recording_file_signed_url: recording.recording_file_signed_url,
-            recording_file_signed_url_expiry: recording.recording_file_signed_url_expiry,
-          })
-          .eq('id', recording.id);
+        const { rowCount } = await querySupabasePostgres(
+          `UPDATE recordings
+              SET recording_file_signed_url = $1,
+                  recording_file_signed_url_expiry = $2
+            WHERE id = $3 AND user_id = $4`,
+          [
+            recording.recording_file_signed_url,
+            recording.recording_file_signed_url_expiry,
+            recording.id,
+            user.id,
+          ]
+        );
 
-        if (updateError) {
-          const err = new Error(updateError.message);
+        if (rowCount === 0) {
+          const err = new Error('Failed to update recording signed URL');
           err.statusCode = 500;
           throw err;
         }
@@ -717,17 +679,14 @@ export async function getPatientEncounterBundleByNoteId(supabase, user, noteId) 
 
   let transcriptOut = null;
   if (recording?.id) {
-    const { data: transcriptData, error: transcriptError } = await supabase
-      .from(transcriptTable)
-      .select('*')
-      .eq('recording_id', recording.id)
-      .maybeSingle();
+    const transcriptData = await pgQueryOne(
+      `SELECT *
+         FROM transcripts
+        WHERE recording_id = $1 AND user_id = $2`,
+      [recording.id, user.id]
+    );
 
-    if (transcriptError && transcriptError.code !== 'PGRST116') {
-      const err = new Error(transcriptError.message);
-      err.statusCode = 500;
-      throw err;
-    } else if (transcriptData) {
+    if (transcriptData) {
       const tKey = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, encounterData.user_id);
       if (tKey.success) {
         const dr = decryptTranscriptRowWithMasterKey(transcriptData, tKey.masterKey);
@@ -829,22 +788,35 @@ export async function patientEncounterCompleteBundle(supabase, user, body, optio
   const recordingIV = encryptionUtils.generateRandomIVBase64();
 
   console.log('Calling create_patient_encounter_complete SQL function');
-  const { data, error } = await supabase.rpc('create_patient_encounter_complete', {
-    p_user_id: user.id,
-    p_encrypted_name: encryptedName,
-    p_encounter_iv: encounterIV,
-    p_encrypted_aes_key: encryptedAESKey,
-    p_recording_file_path: recording.recording_file_path,
-    p_recording_iv: recordingIV,
-    p_note_encrypted_text: noteEncryptResult.value,
-    p_note_text_iv: noteEncryptResult.iv,
-    p_transcript_encrypted_text: pTranscriptEnc,
-    p_transcript_iv: pTranscriptIv,
-  });
-
-  if (error) {
+  let data;
+  try {
+    const { rows } = await querySupabasePostgres(
+      `SELECT create_patient_encounter_complete(
+         $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10
+       ) AS result`,
+      [
+        user.id,
+        encryptedName,
+        encounterIV,
+        encryptedAESKey,
+        recording.recording_file_path,
+        recordingIV,
+        noteEncryptResult.value,
+        noteEncryptResult.iv,
+        pTranscriptEnc,
+        pTranscriptIv,
+      ]
+    );
+    data = rows[0]?.result;
+  } catch (error) {
     console.error('SQL function error:', error);
-    const err = new Error(error.message);
+    const err = new Error(pgErrorMessage(error));
+    err.statusCode = 500;
+    throw err;
+  }
+
+  if (!data) {
+    const err = new Error('create_patient_encounter_complete returned no data');
     err.statusCode = 500;
     throw err;
   }

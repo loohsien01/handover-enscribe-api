@@ -8,6 +8,8 @@
  */
 
 import { getSupabaseClient, createAuthClient } from '../../utils/supabase.js';
+import { querySupabasePostgres } from '../../utils/supabasePostgresPool.js';
+import { isPgUniqueViolation, pgErrorMessage, toPgJsonbParam, pgIdToNumber } from '../../utils/pgQueryHelpers.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import {
   getSystemMasterKey,
@@ -455,38 +457,30 @@ export async function createNoteTemplateComplete(request, reply) {
       existing: existingSections.length,
     });
 
-    // Call RPC function
-    // Note: Pass sections as object, not stringified - Supabase client handles JSON serialization
-    const { data, error } = await supabase.rpc('create_note_template_complete', {
-      p_name: name,
-      p_user_id: userId,
-      p_sections: sectionsForRpc,
-    });
-
-    if (error) {
-      console.error('[createNoteTemplateComplete] Supabase error:', {
-        code: error.code,
-        message: error.message,
-        details: error.details,
-        hint: error.hint,
+    // Call RPC function via pg (service pool; function is SECURITY DEFINER)
+    let data;
+    try {
+      const { rows } = await querySupabasePostgres(
+        `SELECT * FROM create_note_template_complete($1, $2::uuid, $3::jsonb)`,
+        [name, userId, toPgJsonbParam(sectionsForRpc)]
+      );
+      data = rows;
+    } catch (error) {
+      console.error('[createNoteTemplateComplete] Postgres error:', {
+        code: error?.code,
+        message: pgErrorMessage(error),
         fullError: error,
       });
-      
-      // Handle unique constraint violations (23505) at controller level
-      if (error.code === '23505') {
-        console.log('[createNoteTemplateComplete] Duplicate constraint detected:', {
-          constraintName: error.message,
-        });
-        
-        // Only template name constraint exists now (section names allow duplicates)
+
+      if (isPgUniqueViolation(error)) {
         return reply.status(409).send({
           code: 'DUPLICATE_TEMPLATE_NAME',
           message: 'A template with this name already exists for your account',
           field: 'name',
         });
       }
-      
-      return reply.status(500).send({ error: 'RPC invocation failed', details: error.message });
+
+      return reply.status(500).send({ error: 'RPC invocation failed', details: pgErrorMessage(error) });
     }
 
     if (!data || !data[0].success) {
@@ -523,7 +517,7 @@ export async function createNoteTemplateComplete(request, reply) {
       return reply.status(400).send({ error: errorMessage || 'Failed to create template' });
     }
 
-    const templateId = data[0].template_id;
+    const templateId = pgIdToNumber(data[0].template_id);
 
     // Fetch complete data to return
     const result = await getCompleteTemplate(supabase, templateId, userId);
@@ -633,40 +627,35 @@ export async function updateNoteTemplateComplete(request, reply) {
       count: sectionsForRpc?.length || 0,
     });
 
-    // Call RPC function
-    // Note: Pass id as number, not BigInt - Supabase client can't serialize BigInt
-    // Note: Pass sections as object, not stringified - Supabase client handles JSON serialization
-    const { data, error } = await supabase.rpc('update_note_template_complete', {
-      p_template_id: parseInt(id, 10),
-      p_user_id: userId,
-      p_name: name || existing.name,
-      p_sections: sectionsForRpc,
-    });
-
-    if (error) {
-      console.error('[updateNoteTemplateComplete] Supabase error:', {
-        code: error.code,
-        message: error.message,
-        details: error.details,
-        hint: error.hint,
+    // Call RPC function via pg (service pool; function is SECURITY DEFINER)
+    let data;
+    try {
+      const { rows } = await querySupabasePostgres(
+        `SELECT * FROM update_note_template_complete($1::bigint, $2::uuid, $3, $4::jsonb)`,
+        [
+          parseInt(id, 10),
+          userId,
+          name || existing.name,
+          sectionsForRpc != null ? toPgJsonbParam(sectionsForRpc) : null,
+        ]
+      );
+      data = rows;
+    } catch (error) {
+      console.error('[updateNoteTemplateComplete] Postgres error:', {
+        code: error?.code,
+        message: pgErrorMessage(error),
         fullError: error,
       });
-      
-      // Handle unique constraint violations (23505) at controller level
-      if (error.code === '23505') {
-        console.log('[updateNoteTemplateComplete] Duplicate constraint detected:', {
-          constraintName: error.message,
-        });
-        
-        // Only template name constraint exists now (section names allow duplicates)
+
+      if (isPgUniqueViolation(error)) {
         return reply.status(409).send({
           code: 'DUPLICATE_TEMPLATE_NAME',
           message: 'A template with this name already exists for your account',
           field: 'name',
         });
       }
-      
-      return reply.status(500).send({ error: 'RPC invocation failed', details: error.message });
+
+      return reply.status(500).send({ error: 'RPC invocation failed', details: pgErrorMessage(error) });
     }
 
     if (!data || !data[0].success) {

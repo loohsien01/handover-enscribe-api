@@ -20,8 +20,15 @@ dotenv.config({ path: envPath });
 
 import { getTestAccount, hasTestAccounts, getApiBaseUrl } from './testConfig.js';
 import { createClient } from '@supabase/supabase-js';
+import { getRecordingsStorageBackend } from '../src/utils/recordingsStorageBackend.js';
+import {
+  uploadRecordingObject,
+  recordingObjectExists,
+  listUserRecordingObjects,
+  AUDIO_BUCKET,
+} from '../src/utils/recordingsStorage.js';
 
-const RECORDINGS_BUCKET = 'audio-files';
+const RECORDINGS_BUCKET = AUDIO_BUCKET;
 const FIXTURES_DIR = path.resolve(__dirname, 'fixtures');
 const FIXTURES_README = path.resolve(__dirname, 'fixtures/README.txt');
 const TEST_DATA_FILE = path.resolve(__dirname, 'testData.json');
@@ -61,7 +68,7 @@ async function createRecordingEntry(accessToken, recordingPath, encounterId) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        patientEncounter_id: encounterId,
+        patientEncounter_id: Number(encounterId),
         recording_file_path: recordingPath,
       }),
     });
@@ -149,23 +156,20 @@ function readDotPhraseFixtures() {
 }
 
 /**
- * Upload file to Supabase storage
+ * Upload fixture to active storage backend (Supabase, S3, or dual-read).
  */
 async function uploadToStorage(supabase, userId, localPath, filename) {
   try {
     const fileData = fs.readFileSync(localPath);
     const remotePath = `${userId}/${filename}`;
-    
-    const { data, error } = await supabase.storage
-      .from(RECORDINGS_BUCKET)
-      .upload(remotePath, fileData, { upsert: true });
 
-    if (error) {
-      console.error(`  ✗ Error uploading ${filename}:`, error.message);
-      return null;
+    if (await recordingObjectExists(supabase, remotePath)) {
+      console.log(`  ⏭️  Skipping "${filename}" (already in storage)`);
+      return remotePath;
     }
 
-    console.log(`  ✓ Uploaded: ${remotePath}`);
+    await uploadRecordingObject(supabase, remotePath, fileData);
+    console.log(`  ✓ Uploaded: ${remotePath} (${getRecordingsStorageBackend()})`);
     return remotePath;
   } catch (error) {
     console.error(`  ✗ Error uploading ${filename}:`, error.message);
@@ -210,7 +214,7 @@ async function setupTestRecordings(accessToken, supabase, userId) {
         const existing = existingMap.get(name);
         
         if (existing) {
-          createdEncounters.push(existing);
+          createdEncounters.push({ ...existing, id: Number(existing.id) });
           console.log(`  ⏭️  Encounter "${name}" exists (ID: ${existing.id})`);
         } else {
           try {
@@ -225,7 +229,7 @@ async function setupTestRecordings(accessToken, supabase, userId) {
             
             if (createResponse.ok) {
               const created = await createResponse.json();
-              const encounterId = created.id || created.data?.id;
+              const encounterId = Number(created.id || created.data?.id);
               createdEncounters.push({ id: encounterId, name });
               console.log(`  ✓ Created encounter: "${name}" (ID: ${encounterId})`);
             } else {
@@ -245,38 +249,15 @@ async function setupTestRecordings(accessToken, supabase, userId) {
   
   console.log();
   
-  // STEP 4B: Check storage and upload only missing files
+  // STEP 4B: Upload fixtures to active storage backend (S3 / Supabase / dual-read)
   console.log('Checking storage and uploading missing files...');
-  
-  // Get list of files already in storage
-  let storageFiles = [];
-  try {
-    const { data, error } = await supabase.storage
-      .from(RECORDINGS_BUCKET)
-      .list(`${userId}`, { limit: 100 });
-    
-    if (error) {
-      console.warn(`  ⚠️  Error listing storage: ${error.message}`);
-    } else {
-      storageFiles = (data || []).map(f => f.name);
-    }
-  } catch (error) {
-    console.warn(`  ⚠️  Error checking storage: ${error.message}`);
-  }
-  
-  // Upload only files that don't already exist in storage
+
   const uploadedFiles = [];
   for (const filename of fixtureFiles) {
-    if (storageFiles.includes(filename)) {
-      console.log(`  ⏭️  Skipping "${filename}" (already in storage)`);
-      uploadedFiles.push({ filename, remotePath: `${userId}/${filename}` });
-    } else {
-      const localPath = path.join(FIXTURES_DIR, filename);
-      const remotePath = await uploadToStorage(supabase, userId, localPath, filename);
-      if (remotePath) {
-        uploadedFiles.push({ filename, remotePath });
-        console.log(`  ✓ Uploaded: "${filename}"`);
-      }
+    const localPath = path.join(FIXTURES_DIR, filename);
+    const remotePath = await uploadToStorage(supabase, userId, localPath, filename);
+    if (remotePath) {
+      uploadedFiles.push({ filename, remotePath });
     }
   }
   
@@ -322,27 +303,26 @@ async function setupTestRecordings(accessToken, supabase, userId) {
       continue;
     }
     
-    const encounterId = createdEncounters[i]?.id;
+    const encounterId = Number(createdEncounters[i]?.id);
     
-    if (!encounterId) {
+    if (!encounterId || Number.isNaN(encounterId)) {
       console.log(`  ✗ Skipping "${filename}": No encounter available`);
       continue;
     }
     
-    // Check if recording already exists with this file_path and encounter_id
-    const existingRecording = existingRecordings.find(r => 
-      r.recording_file_path === remotePath && 
-      r.patientEncounter_id === encounterId
+    // Check if recording already exists for this storage path
+    const existingRecording = existingRecordings.find(
+      (r) => r.recording_file_path === remotePath
     );
-    
+
     if (existingRecording) {
       console.log(`  ⏭️  Recording "${filename}" already exists (ID: ${existingRecording.id})`);
       recordings.push({
-        id: existingRecording.id,
+        id: Number(existingRecording.id),
         filename,
         path: remotePath,
-        attached: true,
-        encounterId,
+        attached: existingRecording.patientEncounter_id != null,
+        encounterId: existingRecording.patientEncounter_id ?? encounterId,
       });
       continue;
     }
@@ -362,7 +342,7 @@ async function setupTestRecordings(accessToken, supabase, userId) {
       
       if (response.ok) {
         const recordingData = await response.json();
-        const recordingId = recordingData.id || recordingData.data?.id;
+        const recordingId = Number(recordingData.id || recordingData.data?.id);
         
         console.log(`  ✓ Created recording: "${filename}" (attached to encounter ${encounterId})`);
         
@@ -375,7 +355,11 @@ async function setupTestRecordings(accessToken, supabase, userId) {
         });
       } else {
         const error = await response.json();
-        console.log(`  ✗ Failed to create recording for "${filename}": ${error.error || response.statusText}`);
+        const msg =
+          typeof error.error === 'string'
+            ? error.error
+            : JSON.stringify(error.error ?? error);
+        console.log(`  ✗ Failed to create recording for "${filename}": ${msg}`);
       }
     } catch (error) {
       console.log(`  ✗ Error creating recording for "${filename}": ${error.message}`);
@@ -387,16 +371,12 @@ async function setupTestRecordings(accessToken, supabase, userId) {
 }
 
 /**
- * Get all remote recordings from Supabase bucket using user's token
+ * List remote recording files for the user via active storage backend.
  */
 async function getRemoteRecordingFiles(supabase, userId) {
   try {
-    const { data, error } = await supabase.storage
-      .from(RECORDINGS_BUCKET)
-      .list(`${userId}`, { limit: 100 });
-
-    if (error) throw error;
-    return (data || []).map(file => ({
+    const items = await listUserRecordingObjects(supabase, userId);
+    return items.map((file) => ({
       name: file.name,
       path: `${userId}/${file.name}`,
     }));
@@ -840,7 +820,9 @@ async function setupTranscripts(accessToken, recordings) {
     
     try {
       // Filter transcripts for this specific recording (client-side filtering)
-      const existingTranscripts = allTranscripts.filter(t => t.recording_id === recording.id);
+      const existingTranscripts = allTranscripts.filter(
+        (t) => Number(t.recording_id) === Number(recording.id)
+      );
       const existingTranscript = existingTranscripts.length > 0 ? existingTranscripts[0] : null;
       
       // FIRST 2 RECORDINGS: Create transcripts
@@ -872,7 +854,7 @@ Patient: Thank you, doctor. I appreciate your time.`;
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            recording_id: recording.id,
+            recording_id: Number(recording.id),
             transcript_text: mockTranscriptText,
           }),
         });
@@ -891,7 +873,11 @@ Patient: Thank you, doctor. I appreciate your time.`;
           console.log(`  ✓ Created transcript for "${recording.filename}" (ID: ${transcriptId})`);
         } else {
           const error = await createResponse.json();
-          console.warn(`  ⚠️  Failed to create transcript for "${recording.filename}": ${error.error || createResponse.status}`);
+          const msg =
+            typeof error.error === 'string'
+              ? error.error
+              : JSON.stringify(error.error ?? error);
+          console.warn(`  ⚠️  Failed to create transcript for "${recording.filename}": ${msg}`);
         }
       } else {
         // 3RD+ RECORDINGS: Delete transcripts if they exist
@@ -1149,7 +1135,7 @@ async function setupTestData() {
     console.log(`  Transcripts: ${createdTranscripts.length} created`);
     console.log(`  SOAP Notes: ${createdSoapNotes.length} created (3 expected)`);
     console.log(`  DotPhrases: ${createdDotPhrases.length} reconciled`);
-    console.log(`  Storage: ${RECORDINGS_BUCKET} bucket`);
+    console.log(`  Storage: ${getRecordingsStorageBackend()} (${RECORDINGS_BUCKET})`);
     console.log(`  Config: ${TEST_DATA_FILE}`);
     console.log('\nYou can now run:');
     console.log('  npm run test:soap-notes   - Test the SOAP notes API');
