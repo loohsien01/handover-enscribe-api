@@ -1,3 +1,6 @@
+import { querySupabasePostgres } from './supabasePostgresPool.js';
+import { pgQueryOne } from './pgQueryHelpers.js';
+
 /**
  * @param {import('stripe').Stripe.Subscription} subscription
  * @param {{ proPrice: string | undefined, priceId: string | undefined }} priceMatch
@@ -48,30 +51,27 @@ export function derivePlanKeyFromSubscription(subscription) {
 }
 
 /**
- * @param {import('@supabase/supabase-js').SupabaseClient} admin
  * @param {import('stripe').Stripe.Subscription} subscription
  * @param {string | undefined} organizationIdHint
  */
-export async function syncOrganizationFromSubscription(admin, subscription, organizationIdHint) {
+export async function syncOrganizationFromSubscription(subscription, organizationIdHint) {
   let orgId = organizationIdHint || subscription.metadata?.organization_id;
   const customerId =
     typeof subscription.customer === 'string' ? subscription.customer : subscription.customer?.id;
 
   if (!orgId && customerId) {
-    const { data } = await admin
-      .from('organizations')
-      .select('id')
-      .eq('stripe_customer_id', customerId)
-      .maybeSingle();
-    orgId = data?.id;
+    const row = await pgQueryOne(
+      `SELECT id FROM public.organizations WHERE stripe_customer_id = $1 LIMIT 1`,
+      [customerId]
+    );
+    orgId = row?.id ? String(row.id) : undefined;
   }
   if (!orgId && subscription.id) {
-    const { data } = await admin
-      .from('organizations')
-      .select('id')
-      .eq('stripe_subscription_id', subscription.id)
-      .maybeSingle();
-    orgId = data?.id;
+    const row = await pgQueryOne(
+      `SELECT id FROM public.organizations WHERE stripe_subscription_id = $1 LIMIT 1`,
+      [subscription.id]
+    );
+    orgId = row?.id ? String(row.id) : undefined;
   }
   if (!orgId) {
     return { ok: false, reason: 'organization_not_found' };
@@ -86,16 +86,25 @@ export async function syncOrganizationFromSubscription(admin, subscription, orga
     ? new Date(periodEndUnix * 1000).toISOString()
     : null;
 
-  const patch = {
-    stripe_subscription_id: subscription.id,
-    ...(customerId ? { stripe_customer_id: customerId } : {}),
-    subscription_status: subscription.status,
-    plan_key: planKey,
-    current_period_end: periodEnd,
-    cancel_at_period_end: subscription.cancel_at_period_end ?? false,
-  };
+  await querySupabasePostgres(
+    `UPDATE public.organizations
+        SET stripe_subscription_id = $2,
+            stripe_customer_id = COALESCE($3, stripe_customer_id),
+            subscription_status = $4,
+            plan_key = $5,
+            current_period_end = $6::timestamptz,
+            cancel_at_period_end = $7
+      WHERE id = $1`,
+    [
+      orgId,
+      subscription.id,
+      customerId ?? null,
+      subscription.status,
+      planKey,
+      periodEnd,
+      subscription.cancel_at_period_end ?? false,
+    ]
+  );
 
-  const { error } = await admin.from('organizations').update(patch).eq('id', orgId);
-  if (error) throw error;
   return { ok: true, organizationId: orgId };
 }

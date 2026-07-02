@@ -1,8 +1,11 @@
-import { getSupabaseClient } from '../../utils/supabase.js';
 import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
-import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
+import {
+  ensurePersonalOrganization,
+} from '../../services/personalOrganization.js';
+import { pgQueryOne, pgErrorMessage } from '../../utils/pgQueryHelpers.js';
+import { querySupabasePostgres } from '../../utils/supabasePostgresPool.js';
 
-const userProfileTable = 'userProfiles';
+const userProfileTable = '"userProfiles"';
 
 /**
  * Verify auth.users row exists (handles rare races after JWT issue).
@@ -36,7 +39,7 @@ async function ensureAuthUserExists(userId) {
 }
 
 /**
- * Map common Postgres / Supabase errors to status + JSON body
+ * Map common Postgres errors to status + JSON body
  * @returns {{ status: number, payload: object }}
  */
 function profileDbErrorToHttp(error) {
@@ -72,55 +75,56 @@ function mapProfileDbError(error, reply) {
 
 /**
  * Insert or update the profile row for user_id (one row per user).
- * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
  * @param {{ username: string, specialty: string }} fields
  * @returns {Promise<{ ok: true, data: object, created: boolean } | { ok: false, status: number, payload: object }>}
  */
-export async function upsertUserProfileForUser(supabase, userId, fields) {
+export async function upsertUserProfileForUser(userId, fields) {
   const { username, specialty } = fields;
 
-  const { data: existing, error: fetchError } = await supabase
-    .from(userProfileTable)
-    .select('id')
-    .eq('user_id', userId)
-    .maybeSingle();
+  try {
+    const existing = await pgQueryOne(
+      `SELECT id FROM public.${userProfileTable} WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    );
 
-  if (fetchError) {
-    console.error('[userProfile] upsert fetch existing:', fetchError);
-    return {
-      ok: false,
-      status: 500,
-      payload: { error: 'Failed to save profile' },
-    };
-  }
-
-  if (existing) {
-    const { data, error } = await supabase
-      .from(userProfileTable)
-      .update({ username, specialty })
-      .eq('user_id', userId)
-      .select()
-      .single();
-
-    if (error) {
-      const { status, payload } = profileDbErrorToHttp(error);
-      return { ok: false, status, payload };
+    if (existing) {
+      const data = await pgQueryOne(
+        `UPDATE public.${userProfileTable}
+            SET username = $2, specialty = $3
+          WHERE user_id = $1
+          RETURNING *`,
+        [userId, username, specialty]
+      );
+      if (!data) {
+        return {
+          ok: false,
+          status: 500,
+          payload: { error: 'Failed to save profile' },
+        };
+      }
+      return { ok: true, data, created: false };
     }
-    return { ok: true, data, created: false };
-  }
 
-  const { data, error } = await supabase
-    .from(userProfileTable)
-    .insert([{ user_id: userId, username, specialty }])
-    .select()
-    .single();
+    const data = await pgQueryOne(
+      `INSERT INTO public.${userProfileTable} (user_id, username, specialty)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [userId, username, specialty]
+    );
 
-  if (error) {
+    if (!data) {
+      return {
+        ok: false,
+        status: 500,
+        payload: { error: 'Failed to save profile' },
+      };
+    }
+    return { ok: true, data, created: true };
+  } catch (error) {
     const { status, payload } = profileDbErrorToHttp(error);
     return { ok: false, status, payload };
   }
-  return { ok: true, data, created: true };
 }
 
 /**
@@ -128,19 +132,12 @@ export async function upsertUserProfileForUser(supabase, userId, fields) {
  */
 export async function getUserProfile(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const userId = request.user.id;
 
-    const { data, error } = await supabase
-      .from(userProfileTable)
-      .select('*')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    if (error) {
-      console.error('[userProfile] GET select error:', error);
-      return reply.status(500).send({ error: 'Failed to fetch profile' });
-    }
+    const data = await pgQueryOne(
+      `SELECT * FROM public.${userProfileTable} WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    );
 
     if (!data) {
       return reply.status(404).send({ error: 'Profile not found' });
@@ -148,8 +145,8 @@ export async function getUserProfile(request, reply) {
 
     return reply.status(200).send(data);
   } catch (err) {
-    console.error('[userProfile] GET:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    console.error('[userProfile] GET:', pgErrorMessage(err));
+    return reply.status(500).send({ error: 'Failed to fetch profile' });
   }
 }
 
@@ -167,9 +164,7 @@ export async function createOrUpdateUserProfile(request, reply) {
       return reply.status(422).send(authCheck.replyPayload);
     }
 
-    const supabase = getSupabaseClient(request.headers.authorization);
-
-    const result = await upsertUserProfileForUser(supabase, userId, {
+    const result = await upsertUserProfileForUser(userId, {
       username,
       specialty,
     });
@@ -203,18 +198,10 @@ export async function patchUserProfile(request, reply) {
       return reply.status(422).send(authCheck.replyPayload);
     }
 
-    const supabase = getSupabaseClient(request.headers.authorization);
-
-    const { data: existing, error: fetchError } = await supabase
-      .from(userProfileTable)
-      .select('id')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    if (fetchError) {
-      console.error('[userProfile] PATCH fetch:', fetchError);
-      return reply.status(500).send({ error: 'Failed to update profile' });
-    }
+    const existing = await pgQueryOne(
+      `SELECT id FROM public.${userProfileTable} WHERE user_id = $1 LIMIT 1`,
+      [userId]
+    );
 
     if (!existing) {
       return reply.status(404).send({ error: 'Profile not found' });
@@ -224,17 +211,38 @@ export async function patchUserProfile(request, reply) {
     if (body.username !== undefined) patch.username = body.username;
     if (body.specialty !== undefined) patch.specialty = body.specialty;
 
-    const { data, error } = await supabase
-      .from(userProfileTable)
-      .update(patch)
-      .eq('user_id', userId)
-      .select()
-      .single();
+    if (Object.keys(patch).length === 0) {
+      const data = await pgQueryOne(
+        `SELECT * FROM public.${userProfileTable} WHERE user_id = $1 LIMIT 1`,
+        [userId]
+      );
+      return reply.status(200).send(data);
+    }
 
-    if (error) {
+    const sets = [];
+    const params = [userId];
+    let idx = 2;
+    if (patch.username !== undefined) {
+      sets.push(`username = $${idx++}`);
+      params.push(patch.username);
+    }
+    if (patch.specialty !== undefined) {
+      sets.push(`specialty = $${idx++}`);
+      params.push(patch.specialty);
+    }
+
+    try {
+      const data = await pgQueryOne(
+        `UPDATE public.${userProfileTable}
+            SET ${sets.join(', ')}
+          WHERE user_id = $1
+          RETURNING *`,
+        params
+      );
+      return reply.status(200).send(data);
+    } catch (error) {
       return mapProfileDbError(error, reply);
     }
-    return reply.status(200).send(data);
   } catch (err) {
     console.error('[userProfile] PATCH:', err);
     return reply.status(500).send({ error: 'Internal server error' });

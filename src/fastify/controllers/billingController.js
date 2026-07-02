@@ -1,12 +1,15 @@
-import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
 import { getStripe } from '../../utils/stripeClient.js';
-import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
+import {
+  ensurePersonalOrganization,
+  loadPersonalOrgAndMembership,
+} from '../../services/personalOrganization.js';
 import {
   computeEntitlements,
   loadInternalAccess,
 } from '../../utils/billingEntitlements.js';
 import { syncOrganizationFromSubscription } from '../../utils/billingStripeSync.js';
 import { loadUsageForUserContext } from '../../utils/billingUsage.js';
+import { querySupabasePostgres } from '../../utils/supabasePostgresPool.js';
 
 const PRO_PRICE_ENV = 'STRIPE_PRICE_PRO_MONTHLY';
 
@@ -15,40 +18,9 @@ function getFrontendBase() {
   return String(base).replace(/\/$/, '');
 }
 
-async function getPersonalOrgAndMembership(admin, userId) {
-  const { data: org, error: orgErr } = await admin
-    .from('organizations')
-    .select('*')
-    .eq('personal_owner_user_id', userId)
-    .eq('type', 'personal')
-    .maybeSingle();
-
-  if (orgErr) {
-    console.error('[billing] load org:', orgErr);
-    return { error: orgErr };
-  }
-  if (!org) {
-    return { org: null, member: null };
-  }
-
-  const { data: member, error: memErr } = await admin
-    .from('organization_members')
-    .select('role')
-    .eq('organization_id', org.id)
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  if (memErr) {
-    console.error('[billing] load member:', memErr);
-    return { error: memErr };
-  }
-
-  return { org, member };
-}
-
-async function getOrCreatePersonalOrgAndMembership(admin, user) {
+async function getOrCreatePersonalOrgAndMembership(user) {
   const userId = user.id;
-  const first = await getPersonalOrgAndMembership(admin, userId);
+  const first = await loadPersonalOrgAndMembership(userId);
   if (first.error || first.org) return first;
 
   try {
@@ -58,15 +30,14 @@ async function getOrCreatePersonalOrgAndMembership(admin, user) {
     return { error: err };
   }
 
-  return await getPersonalOrgAndMembership(admin, userId);
+  return loadPersonalOrgAndMembership(userId);
 }
 
 /**
  * GET /api/billing/status
  */
 export async function getBillingStatus(request, reply) {
-  const admin = supabaseAdmin();
-  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(admin, request.user);
+  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(request.user);
   if (error) {
     return reply.status(500).send({ error: 'Failed to load billing' });
   }
@@ -127,8 +98,7 @@ export async function createCheckoutSession(request, reply) {
   }
 
   const userId = request.user.id;
-  const admin = supabaseAdmin();
-  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(admin, request.user);
+  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(request.user);
   if (error) {
     return reply.status(500).send({ error: 'Failed to load organization' });
   }
@@ -149,11 +119,12 @@ export async function createCheckoutSession(request, reply) {
       metadata: { organization_id: org.id, user_id: userId },
     });
     customerId = customer.id;
-    const { error: upErr } = await admin
-      .from('organizations')
-      .update({ stripe_customer_id: customerId })
-      .eq('id', org.id);
-    if (upErr) {
+    try {
+      await querySupabasePostgres(
+        `UPDATE public.organizations SET stripe_customer_id = $2 WHERE id = $1`,
+        [org.id, customerId]
+      );
+    } catch (upErr) {
       console.error('[billing] save customer id:', upErr);
       return reply.status(500).send({ error: 'Failed to persist Stripe customer' });
     }
@@ -188,8 +159,7 @@ export async function createPortalSession(request, reply) {
     return reply.status(503).send({ error: 'Stripe not configured' });
   }
 
-  const admin = supabaseAdmin();
-  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(admin, request.user);
+  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(request.user);
   if (error) {
     return reply.status(500).send({ error: 'Failed to load organization' });
   }
@@ -232,8 +202,7 @@ async function updatePersonalOrgCancelAtPeriodEnd(request, reply, cancelAtPeriod
     return reply.status(503).send({ error: 'Stripe not configured' });
   }
 
-  const admin = supabaseAdmin();
-  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(admin, request.user);
+  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(request.user);
   if (error) {
     return reply.status(500).send({ error: 'Failed to load organization' });
   }
@@ -272,7 +241,7 @@ async function updatePersonalOrgCancelAtPeriodEnd(request, reply, cancelAtPeriod
     return reply.status(502).send({ error: 'Stripe request failed' });
   }
 
-  await syncOrganizationFromSubscription(admin, subscription, org.id);
+  await syncOrganizationFromSubscription(subscription, org.id);
 
   const periodEndUnix =
     subscription.current_period_end ||

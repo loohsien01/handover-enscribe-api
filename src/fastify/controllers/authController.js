@@ -1,14 +1,18 @@
 import { getSupabaseClient } from '../../utils/supabase.js';
-import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
 import crypto from 'crypto';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import { upsertUserProfileForUser } from './userProfileController.js';
 import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
 import { ensureAuthUsersStubAfterSignup } from '../../utils/authUsersStub.js';
+import {
+  findRefreshTokenById,
+  insertRefreshTokenRow,
+  revokeRefreshTokenById,
+  updateRefreshTokenById,
+} from '../../utils/refreshTokenPersistence.js';
 
 // Refresh token storage settings
 const REFRESH_MAX_AGE_SECONDS = Number(process.env.REFRESH_MAX_AGE_SECONDS || 3 * 24 * 3600);
-const refreshTokensTable = 'refreshTokens';
 
 /** App route for Supabase recovery (must be allowlisted in Supabase + match your SPA). */
 const PASSWORD_RESET_REDIRECT_PATH = '/reset-password';
@@ -100,8 +104,7 @@ export async function signUp(email, password, opts = {}) {
     /** Optional profile row (service role); only set when client sent `userProfile`. */
     const signupProfileExtras = {};
     if (opts.userProfile && data?.user?.id) {
-      const admin = supabaseAdmin();
-      const prof = await upsertUserProfileForUser(admin, data.user.id, opts.userProfile);
+      const prof = await upsertUserProfileForUser(data.user.id, opts.userProfile);
       if (prof.ok) {
         signupProfileExtras.userProfile = prof.data;
         if (prof.created) {
@@ -124,33 +127,28 @@ export async function signUp(email, password, opts = {}) {
       // Persist refresh token server-side (same as sign-in)
       let tid = null;
       try {
-        const admin = supabaseAdmin();
         const refreshToken = data?.session?.refresh_token;
 
         if (refreshToken) {
           tid = crypto.randomUUID();
           const hashed = encryptionUtils.hashToken(refreshToken);
           const enc = encryptionUtils.encryptRefreshToken(refreshToken);
+          const now = new Date().toISOString();
 
-          const { error: insertErr } = await admin
-            .from(refreshTokensTable)
-            .insert([
-              {
-                id: tid,
-                user_id: data.user.id,
-                token_hash: hashed,
-                token_enc: enc,
-                issued_at: new Date().toISOString(),
-                last_activity_at: new Date().toISOString(),
-                expires_at: new Date(Date.now() + REFRESH_MAX_AGE_SECONDS * 1000).toISOString(),
-                revoked: false,
-              },
-            ]);
-
-          if (insertErr) {
-            console.error('[signUp] Failed to store refresh token:', insertErr);
-          } else {
+          try {
+            await insertRefreshTokenRow({
+              id: tid,
+              user_id: data.user.id,
+              token_hash: hashed,
+              token_enc: enc,
+              issued_at: now,
+              last_activity_at: now,
+              expires_at: new Date(Date.now() + REFRESH_MAX_AGE_SECONDS * 1000).toISOString(),
+              revoked: false,
+            });
             console.log('[signUp] Refresh token stored with id:', tid);
+          } catch (insertErr) {
+            console.error('[signUp] Failed to store refresh token:', insertErr);
           }
         }
       } catch (err) {
@@ -216,13 +214,13 @@ export async function signIn(email, password) {
 
     // Persist refresh token server-side
     try {
-      const admin = supabaseAdmin();
       const refreshToken = data?.session?.refresh_token;
 
       if (refreshToken) {
         const tid = crypto.randomUUID();
         const hashed = encryptionUtils.hashToken(refreshToken);
         const enc = encryptionUtils.encryptRefreshToken(refreshToken);
+        const now = new Date().toISOString();
 
         console.log('[signIn] Storing encrypted token', {
           tid,
@@ -232,25 +230,20 @@ export async function signIn(email, password) {
           encryptedTokenPreview: enc.substring(0, 50),
         });
 
-        const { data: insertData, error: insertErr } = await admin
-          .from(refreshTokensTable)
-          .insert([
-            {
-              id: tid,
-              user_id: data.user.id,
-              token_hash: hashed,
-              token_enc: enc,
-              issued_at: new Date().toISOString(),
-              last_activity_at: new Date().toISOString(),
-              expires_at: new Date(Date.now() + REFRESH_MAX_AGE_SECONDS * 1000).toISOString(),
-              revoked: false,
-            },
-          ]);
-
-        if (insertErr) {
-          console.error('[signIn] Failed to store refresh token:', insertErr);
-        } else {
+        try {
+          await insertRefreshTokenRow({
+            id: tid,
+            user_id: data.user.id,
+            token_hash: hashed,
+            token_enc: enc,
+            issued_at: now,
+            last_activity_at: now,
+            expires_at: new Date(Date.now() + REFRESH_MAX_AGE_SECONDS * 1000).toISOString(),
+            revoked: false,
+          });
           console.log('[signIn] Refresh token stored with id:', tid);
+        } catch (insertErr) {
+          console.error('[signIn] Failed to store refresh token:', insertErr);
         }
 
         return {
@@ -287,7 +280,6 @@ export async function signOut(userId, refreshTokenFromCookie = null) {
     // Revoke server-side refresh token
     if (refreshTokenFromCookie) {
       try {
-        const admin = supabaseAdmin();
         const parts = refreshTokenFromCookie.split('.');
 
         if (parts.length === 3) {
@@ -306,13 +298,10 @@ export async function signOut(userId, refreshTokenFromCookie = null) {
               const tid = payload.tid;
 
               if (tid) {
-                await admin
-                  .from(refreshTokensTable)
-                  .update({
-                    revoked: true,
-                    last_activity_at: new Date().toISOString(),
-                  })
-                  .eq('id', tid);
+                await updateRefreshTokenById(tid, {
+                  revoked: true,
+                  last_activity_at: new Date().toISOString(),
+                });
 
                 console.log('[signOut] Refresh token revoked:', tid);
               }
@@ -483,18 +472,12 @@ export async function refreshRefreshToken(wrapper, logger = null) {
       return { success: false, error: 'refresh_expired', debugUserId: userId, debugOldTokenId: oldTokenId };
     }
 
-    // Lookup old token row in DB
-    const admin = supabaseAdmin();
     log.info({ event: 'refreshRefreshToken', step: 'db_lookup', tid: oldTokenId, userId });
-    
-    const { data: oldRow, error: lookupErr } = await admin
-      .from(refreshTokensTable)
-      .select('*')
-      .eq('id', oldTokenId)
-      .limit(1)
-      .maybeSingle();
 
-    if (lookupErr) {
+    let oldRow;
+    try {
+      oldRow = await findRefreshTokenById(oldTokenId);
+    } catch (lookupErr) {
       log.error({
         event: 'refreshRefreshToken',
         step: 'db_lookup_error',
@@ -559,7 +542,7 @@ export async function refreshRefreshToken(wrapper, logger = null) {
     const inactivityLimitMs = REFRESH_INACTIVITY_LIMIT_SECONDS * 1000;
     
     if (oldRow.last_activity_at && inactivityMs > inactivityLimitMs) {
-      await admin.from(refreshTokensTable).update({ revoked: true }).eq('id', oldTokenId);
+      await revokeRefreshTokenById(oldTokenId);
       log.error({
         event: 'refreshRefreshToken',
         step: 'inactivity_timeout',
@@ -601,7 +584,7 @@ export async function refreshRefreshToken(wrapper, logger = null) {
         userId,
         tokenEncLength: oldRow.token_enc?.length || 0,
       });
-      await admin.from(refreshTokensTable).update({ revoked: true }).eq('id', oldTokenId);
+      await revokeRefreshTokenById(oldTokenId);
       return { success: false, error: 'invalid_refresh', debugUserId: userId, debugOldTokenId: oldTokenId };
     }
 
@@ -614,7 +597,7 @@ export async function refreshRefreshToken(wrapper, logger = null) {
         userId,
         decryptedTokenLength: rawStoredRefresh?.length || 0,
       });
-      await admin.from(refreshTokensTable).update({ revoked: true }).eq('id', oldTokenId);
+      await revokeRefreshTokenById(oldTokenId);
       return { success: false, error: 'invalid_refresh', debugUserId: userId, debugOldTokenId: oldTokenId };
     }
 
@@ -674,7 +657,7 @@ export async function refreshRefreshToken(wrapper, logger = null) {
           storedEncTokenLength: oldRow.token_enc?.length || 0,
           decryptedTokenLength: rawStoredRefresh?.length || 0,
         });
-        await admin.from(refreshTokensTable).update({ revoked: true }).eq('id', oldTokenId);
+        await revokeRefreshTokenById(oldTokenId);
         return { success: false, error: 'invalid_refresh_exchange', debugUserId: userId, debugOldTokenId: oldTokenId };
       }
 
@@ -708,22 +691,20 @@ export async function refreshRefreshToken(wrapper, logger = null) {
         const newTokenId = crypto.randomUUID();
         const hashed = encryptionUtils.hashToken(newRefreshToken);
         const enc = encryptionUtils.encryptRefreshToken(newRefreshToken);
+        const now = new Date().toISOString();
 
-        // Insert new row with new tid
-        const { error: insertErr } = await admin
-          .from(refreshTokensTable)
-          .insert([{
+        try {
+          await insertRefreshTokenRow({
             id: newTokenId,
             user_id: userId,
             token_hash: hashed,
             token_enc: enc,
-            issued_at: new Date().toISOString(),
-            last_activity_at: new Date().toISOString(),
+            issued_at: now,
+            last_activity_at: now,
             expires_at: new Date(Date.now() + REFRESH_MAX_AGE_SECONDS * 1000).toISOString(),
             revoked: false,
-          }]);
-
-        if (insertErr) {
+          });
+        } catch (insertErr) {
           log.error({
             event: 'refreshRefreshToken',
             step: 'token_rotation_insert_failed',
@@ -734,7 +715,7 @@ export async function refreshRefreshToken(wrapper, logger = null) {
         }
 
         // Revoke old row for security
-        await admin.from(refreshTokensTable).update({ revoked: true }).eq('id', oldTokenId);
+        await revokeRefreshTokenById(oldTokenId);
 
         log.info({
           event: 'refreshRefreshToken',
@@ -811,16 +792,14 @@ export async function checkRefreshCookieStatus(wrapper) {
     if (!tokenId) return { success: true, cookiePresent: false };
     if (exp && Date.now() > exp * 1000) return { success: true, cookiePresent: false };
 
-    // Lookup in DB
-    const admin = supabaseAdmin();
-    const { data: row, error } = await admin
-      .from(refreshTokensTable)
-      .select('*')
-      .eq('id', tokenId)
-      .limit(1)
-      .maybeSingle();
+    let row;
+    try {
+      row = await findRefreshTokenById(tokenId);
+    } catch {
+      return { success: true, cookiePresent: false };
+    }
 
-    if (error || !row) return { success: true, cookiePresent: false };
+    if (!row) return { success: true, cookiePresent: false };
     if (row.revoked) return { success: true, cookiePresent: false };
     if (new Date(row.expires_at).getTime() < Date.now()) return { success: true, cookiePresent: false };
 
@@ -977,27 +956,23 @@ export async function exchangeRawRefreshTokenWithSupabase(rawRefreshToken) {
  */
 export async function storeAndWrapNewRefreshToken(rawRefreshToken, userId) {
   try {
-    const admin = supabaseAdmin();
     const newTid = crypto.randomUUID();
     const hashed = encryptionUtils.hashToken(rawRefreshToken);
     const enc = encryptionUtils.encryptRefreshToken(rawRefreshToken);
+    const now = new Date().toISOString();
 
-    const { error: insertErr } = await admin
-      .from(refreshTokensTable)
-      .insert([
-        {
-          id: newTid,
-          user_id: userId,
-          token_hash: hashed,
-          token_enc: enc,
-          issued_at: new Date().toISOString(),
-          last_activity_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + REFRESH_MAX_AGE_SECONDS * 1000).toISOString(),
-          revoked: false,
-        },
-      ]);
-
-    if (insertErr) {
+    try {
+      await insertRefreshTokenRow({
+        id: newTid,
+        user_id: userId,
+        token_hash: hashed,
+        token_enc: enc,
+        issued_at: now,
+        last_activity_at: now,
+        expires_at: new Date(Date.now() + REFRESH_MAX_AGE_SECONDS * 1000).toISOString(),
+        revoked: false,
+      });
+    } catch (insertErr) {
       console.error('[storeAndWrapNewRefreshToken] Insert error:', insertErr);
       return { success: false, error: insertErr.message };
     }

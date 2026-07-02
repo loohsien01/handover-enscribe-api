@@ -104,7 +104,7 @@ export async function runArchiveStorageManifestSync(supabase, opts = {}) {
 
   try {
     const fromRoot = await listRootUserPrefixes(supabase);
-    const fromRec = await listDistinctRecordingUserIds(supabase);
+    const fromRec = await listDistinctRecordingUserIds();
     const userPrefixes = [...new Set([...fromRoot, ...fromRec])].sort((a, b) => a.localeCompare(b));
 
     /** @type {{ path: string, user_id: string, updated_at: string }[]} */
