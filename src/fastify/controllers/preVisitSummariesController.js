@@ -3,17 +3,30 @@
  * `createPreVisitSummary` is the single write path for new rows (POST handler + Nova save processor).
  */
 import { getSupabaseClient } from '../../utils/supabase.js';
+import {
+  pgQueryOne,
+  pgQueryRows,
+  pgErrorMessage,
+} from '../../utils/pgQueryHelpers.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import { chatSessionsTable } from '../../utils/novaChatPersistence.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 
 const preVisitSummariesTable = 'pre_visit_summaries';
 
+const PRE_VISIT_SUMMARY_SORT_COLUMNS = new Set(['created_at', 'updated_at', 'id']);
+
 /**
  * @param {string} id
  */
 function isValidUuid(id) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
+}
+
+function preVisitSummaryOrderClause(sortBy, order) {
+  const column = PRE_VISIT_SUMMARY_SORT_COLUMNS.has(sortBy) ? sortBy : 'created_at';
+  const direction = order === 'asc' ? 'ASC' : 'DESC';
+  return `${column} ${direction}`;
 }
 
 /**
@@ -39,36 +52,35 @@ function formatPreVisitSummaryRow(row, masterKey, textOverride) {
 }
 
 /**
- * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
  * @param {string} chatId
  */
-async function verifyOwnedChatSession(supabase, userId, chatId) {
-  const { data, error } = await supabase
-    .from(chatSessionsTable)
-    .select('id')
-    .eq('id', chatId)
-    .eq('user_id', userId)
-    .maybeSingle();
+async function verifyOwnedChatSession(userId, chatId) {
+  try {
+    const data = await pgQueryOne(
+      `SELECT id
+         FROM ${chatSessionsTable}
+        WHERE id = $1 AND user_id = $2`,
+      [chatId, userId]
+    );
 
-  if (error) {
+    if (!data) {
+      return {
+        success: false,
+        error: 'Chat session not found',
+        code: 'PRE_VISIT_SUMMARY_CHAT_NOT_FOUND',
+      };
+    }
+
+    return { success: true };
+  } catch (error) {
     console.error('[createPreVisitSummary] chat session lookup failed:', error);
     return {
       success: false,
-      error: error.message || 'Failed to verify chat session',
+      error: pgErrorMessage(error) || 'Failed to verify chat session',
       code: 'PRE_VISIT_SUMMARY_CHAT_LOOKUP_FAILED',
     };
   }
-
-  if (!data) {
-    return {
-      success: false,
-      error: 'Chat session not found',
-      code: 'PRE_VISIT_SUMMARY_CHAT_NOT_FOUND',
-    };
-  }
-
-  return { success: true };
 }
 
 /**
@@ -88,7 +100,7 @@ export async function createPreVisitSummary(supabase, userId, masterKey, input) 
     };
   }
 
-  const chatCheck = await verifyOwnedChatSession(supabase, userId, chatId);
+  const chatCheck = await verifyOwnedChatSession(userId, chatId);
   if (!chatCheck.success) {
     return chatCheck;
   }
@@ -109,36 +121,41 @@ export async function createPreVisitSummary(supabase, userId, masterKey, input) 
     textIv = encryptResult.iv;
   }
 
-  const { data: row, error } = await supabase
-    .from(preVisitSummariesTable)
-    .insert({
-      user_id: userId,
-      chat_id: chatId,
-      encrypted_text: encryptedText,
-      text_iv: textIv,
-    })
-    .select()
-    .single();
+  try {
+    const row = await pgQueryOne(
+      `INSERT INTO ${preVisitSummariesTable} (
+         user_id, chat_id, encrypted_text, text_iv
+       ) VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [userId, chatId, encryptedText, textIv]
+    );
 
-  if (error) {
+    if (!row) {
+      return {
+        success: false,
+        error: 'Failed to create Pre-Visit Summary',
+        code: 'PRE_VISIT_SUMMARY_INSERT_FAILED',
+      };
+    }
+
+    const formatted = formatPreVisitSummaryRow(row, masterKey, text);
+    if (!formatted.success) {
+      return {
+        success: false,
+        error: formatted.error || 'Failed to decrypt Pre-Visit Summary after insert',
+        code: 'PRE_VISIT_SUMMARY_DECRYPT_FAILED',
+      };
+    }
+
+    return { success: true, preVisitSummary: formatted.preVisitSummary };
+  } catch (error) {
     console.error('[createPreVisitSummary] insert failed:', error);
     return {
       success: false,
-      error: error.message || 'Failed to create Pre-Visit Summary',
+      error: pgErrorMessage(error) || 'Failed to create Pre-Visit Summary',
       code: 'PRE_VISIT_SUMMARY_INSERT_FAILED',
     };
   }
-
-  const formatted = formatPreVisitSummaryRow(row, masterKey, text);
-  if (!formatted.success) {
-    return {
-      success: false,
-      error: formatted.error || 'Failed to decrypt Pre-Visit Summary after insert',
-      code: 'PRE_VISIT_SUMMARY_DECRYPT_FAILED',
-    };
-  }
-
-  return { success: true, preVisitSummary: formatted.preVisitSummary };
 }
 
 /**
@@ -184,34 +201,37 @@ export async function listPreVisitSummaries(request, reply) {
   }
 
   const { limit, offset, sortBy, order } = request.query;
+  const orderClause = preVisitSummaryOrderClause(sortBy, order);
 
   const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, user.id);
   if (!keyResult.success) {
     return reply.status(500).send({ error: keyResult.error });
   }
 
-  const { data, error } = await supabase
-    .from(preVisitSummariesTable)
-    .select('*')
-    .eq('user_id', user.id)
-    .order(sortBy, { ascending: order === 'asc' })
-    .range(offset, offset + limit - 1);
+  try {
+    const data = await pgQueryRows(
+      `SELECT *
+         FROM ${preVisitSummariesTable}
+        WHERE user_id = $1
+        ORDER BY ${orderClause}
+        LIMIT $2 OFFSET $3`,
+      [user.id, limit, offset]
+    );
 
-  if (error) {
-    console.error('[listPreVisitSummaries] fetch failed:', error);
-    return reply.status(500).send({ error: error.message });
-  }
-
-  const preVisitSummaries = [];
-  for (const row of data) {
-    const formatted = formatPreVisitSummaryRow(row, keyResult.masterKey);
-    if (!formatted.success) {
-      return reply.status(400).send({ error: formatted.error });
+    const preVisitSummaries = [];
+    for (const row of data) {
+      const formatted = formatPreVisitSummaryRow(row, keyResult.masterKey);
+      if (!formatted.success) {
+        return reply.status(400).send({ error: formatted.error });
+      }
+      preVisitSummaries.push(formatted.preVisitSummary);
     }
-    preVisitSummaries.push(formatted.preVisitSummary);
-  }
 
-  return reply.status(200).send(preVisitSummaries);
+    return reply.status(200).send(preVisitSummaries);
+  } catch (error) {
+    console.error('[listPreVisitSummaries] fetch failed:', error);
+    return reply.status(500).send({ error: pgErrorMessage(error) });
+  }
 }
 
 /**
@@ -234,14 +254,14 @@ export async function getPreVisitSummary(request, reply) {
     return reply.status(500).send({ error: keyResult.error });
   }
 
-  const { data: row, error } = await supabase
-    .from(preVisitSummariesTable)
-    .select('*')
-    .eq('id', id)
-    .eq('user_id', user.id)
-    .maybeSingle();
+  const row = await pgQueryOne(
+    `SELECT *
+       FROM ${preVisitSummariesTable}
+      WHERE id = $1 AND user_id = $2`,
+    [id, user.id]
+  );
 
-  if (error || !row) {
+  if (!row) {
     return reply.status(404).send({ error: 'Pre-Visit Summary not found' });
   }
 
@@ -275,14 +295,14 @@ export async function updatePreVisitSummary(request, reply) {
     return reply.status(500).send({ error: keyResult.error });
   }
 
-  const { data: existing, error: fetchError } = await supabase
-    .from(preVisitSummariesTable)
-    .select('*')
-    .eq('id', id)
-    .eq('user_id', user.id)
-    .maybeSingle();
+  const existing = await pgQueryOne(
+    `SELECT *
+       FROM ${preVisitSummariesTable}
+      WHERE id = $1 AND user_id = $2`,
+    [id, user.id]
+  );
 
-  if (fetchError || !existing) {
+  if (!existing) {
     return reply.status(404).send({ error: 'Pre-Visit Summary not found' });
   }
 
@@ -291,34 +311,37 @@ export async function updatePreVisitSummary(request, reply) {
     return reply.status(500).send({ error: encryptResult.error });
   }
 
-  const { data: updated, error: updateError } = await supabase
-    .from(preVisitSummariesTable)
-    .update({
-      encrypted_text: encryptResult.value,
-      text_iv: encryptResult.iv,
-    })
-    .eq('id', id)
-    .select()
-    .single();
+  try {
+    const updated = await pgQueryOne(
+      `UPDATE ${preVisitSummariesTable}
+          SET encrypted_text = $1,
+              text_iv = $2,
+              updated_at = NOW()
+        WHERE id = $3 AND user_id = $4
+        RETURNING *`,
+      [encryptResult.value, encryptResult.iv, id, user.id]
+    );
 
-  if (updateError) {
+    if (!updated) {
+      return reply.status(404).send({ error: 'Pre-Visit Summary not found' });
+    }
+
+    const formatted = formatPreVisitSummaryRow(updated, keyResult.masterKey, text);
+    if (!formatted.success) {
+      return reply.status(400).send({ error: formatted.error });
+    }
+
+    return reply.status(200).send(formatted.preVisitSummary);
+  } catch (updateError) {
     console.error('[updatePreVisitSummary] update failed:', updateError);
-    return reply.status(500).send({ error: updateError.message });
+    return reply.status(500).send({ error: pgErrorMessage(updateError) });
   }
-
-  const formatted = formatPreVisitSummaryRow(updated, keyResult.masterKey, text);
-  if (!formatted.success) {
-    return reply.status(400).send({ error: formatted.error });
-  }
-
-  return reply.status(200).send(formatted.preVisitSummary);
 }
 
 /**
  * DELETE /api/pre-visit-summaries/:id
  */
 export async function deletePreVisitSummary(request, reply) {
-  const supabase = getSupabaseClient(request.headers.authorization);
   const user = request.user;
   if (!user) {
     return reply.status(401).send({ error: 'Unauthorized' });
@@ -329,41 +352,41 @@ export async function deletePreVisitSummary(request, reply) {
     return reply.status(400).send({ error: 'Invalid Pre-Visit Summary ID format' });
   }
 
-  const { data, error } = await supabase
-    .from(preVisitSummariesTable)
-    .delete()
-    .eq('id', id)
-    .eq('user_id', user.id)
-    .select()
-    .single();
+  try {
+    const data = await pgQueryOne(
+      `DELETE FROM ${preVisitSummariesTable}
+        WHERE id = $1 AND user_id = $2
+        RETURNING id`,
+      [id, user.id]
+    );
 
-  if (error) {
-    if (error.code === 'PGRST116') {
+    if (!data) {
       return reply.status(404).send({ error: 'Pre-Visit Summary not found' });
     }
-    console.error('[deletePreVisitSummary] delete failed:', error);
-    return reply.status(500).send({ error: error.message });
-  }
 
-  return reply.status(200).send({ success: true, id: data.id });
+    return reply.status(200).send({ success: true, id: data.id });
+  } catch (error) {
+    console.error('[deletePreVisitSummary] delete failed:', error);
+    return reply.status(500).send({ error: pgErrorMessage(error) });
+  }
 }
 
 /**
  * Load pre-visit summary for Nova completion poll (decrypted).
- * @param {import('@supabase/supabase-js').SupabaseClient} supabase
+ * @param {import('@supabase/supabase-js').SupabaseClient} _supabase
  * @param {string} userId
  * @param {string} preVisitSummaryId
  * @param {Buffer} masterKey
  */
-export async function loadPreVisitSummaryForPoll(supabase, userId, preVisitSummaryId, masterKey) {
-  const { data: row, error } = await supabase
-    .from(preVisitSummariesTable)
-    .select('*')
-    .eq('id', preVisitSummaryId)
-    .eq('user_id', userId)
-    .maybeSingle();
+export async function loadPreVisitSummaryForPoll(_supabase, userId, preVisitSummaryId, masterKey) {
+  const row = await pgQueryOne(
+    `SELECT *
+       FROM ${preVisitSummariesTable}
+      WHERE id = $1 AND user_id = $2`,
+    [preVisitSummaryId, userId]
+  );
 
-  if (error || !row) {
+  if (!row) {
     return null;
   }
 

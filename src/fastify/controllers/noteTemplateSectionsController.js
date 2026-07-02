@@ -1,5 +1,12 @@
-import { getSupabaseClient, createAuthClient } from '../../utils/supabase.js';
-import * as encryptionUtils from '../../utils/encryptionUtils.js';
+import { getSupabaseClient } from '../../utils/supabase.js';
+import {
+  pgQueryOne,
+  pgQueryRows,
+  pgErrorMessage,
+  isPgUniqueViolation,
+  pgCoerceBigIntFields,
+  pgCoerceBigIntFieldsRows,
+} from '../../utils/pgQueryHelpers.js';
 import {
   getSystemMasterKey,
   getOrCreateUserMasterKey,
@@ -9,7 +16,17 @@ import {
   decryptNoteTemplateSectionDetails,
 } from '../../utils/encryptionUtils.js';
 
-const noteTemplateSectionsTable = 'noteTemplateSections';
+const SECTION_BIGINT_FIELDS = ['id'];
+
+function normalizeSectionRow(row) {
+  return pgCoerceBigIntFields(row, SECTION_BIGINT_FIELDS);
+}
+
+function normalizeSectionRows(rows) {
+  return pgCoerceBigIntFieldsRows(rows, SECTION_BIGINT_FIELDS);
+}
+
+const noteTemplateSectionsTable = '"noteTemplateSections"';
 
 /**
  * Helper: Validates bigint ID format
@@ -39,21 +56,18 @@ export async function getAllNoteTemplateSections(request, reply) {
 
     const userId = user.id;
 
-    const { data, error } = await supabase
-      .from(noteTemplateSectionsTable)
-      .select('*')
-      .order('created_at', { ascending: false });
+    const data = await pgQueryRows(
+      `SELECT *
+         FROM ${noteTemplateSectionsTable}
+        WHERE user_id = $1 OR user_id IS NULL
+        ORDER BY created_at DESC`,
+      [userId]
+    );
 
-    if (error) {
-      console.error('Database error fetching sections:', error);
-      return reply.status(500).send({ error: 'Failed to fetch sections' });
-    }
-
-    if (!data || data.length === 0) {
+    if (data.length === 0) {
       return reply.status(200).send([]);
     }
 
-    // Fetch keys needed for decryption (once, not per-section)
     const hasSystemTemplates = data.some((s) => s.user_id === null || s.is_system);
     const hasUserTemplates = data.some((s) => s.user_id !== null);
 
@@ -74,14 +88,12 @@ export async function getAllNoteTemplateSections(request, reply) {
       }
     }
 
-    // Decrypt all sections in parallel
     const decryptedSections = await Promise.all(
       data.map(async (section) => {
         if (!section.encrypted_details) {
           return section;
         }
 
-        // Select the correct key based on template ownership
         const keyResult =
           section.user_id === null || section.is_system ? systemKeyResult : userKeyResult;
 
@@ -103,10 +115,10 @@ export async function getAllNoteTemplateSections(request, reply) {
       })
     );
 
-    return reply.status(200).send(decryptedSections);
+    return reply.status(200).send(decryptedSections.map(normalizeSectionRow));
   } catch (err) {
     console.error('Error fetching note template sections:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 
@@ -130,29 +142,23 @@ export async function getNoteTemplateSection(request, reply) {
       return reply.status(400).send({ error: 'Invalid section ID format' });
     }
 
-    const { data, error } = await supabase
-      .from(noteTemplateSectionsTable)
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (error) {
-      console.error('Database error fetching section:', error);
-      return reply.status(404).send({ error: 'Section not found' });
-    }
+    const data = await pgQueryOne(
+      `SELECT *
+         FROM ${noteTemplateSectionsTable}
+        WHERE id = $1
+          AND (user_id = $2 OR user_id IS NULL)`,
+      [id, userId]
+    );
 
     if (!data) {
       return reply.status(404).send({ error: 'Section not found' });
     }
 
     if (data.encrypted_details) {
-      // Determine which key to use: system key or user key
       let keyResult;
       if (data.user_id === null || data.is_system) {
-        // System / catalog section — use system master key
         keyResult = await getSystemMasterKey();
       } else {
-        // User template - use user key
         keyResult = await getOrCreateUserMasterKey(supabase, userId);
       }
 
@@ -166,10 +172,10 @@ export async function getNoteTemplateSection(request, reply) {
       }
     }
 
-    return reply.status(200).send(data);
+    return reply.status(200).send(normalizeSectionRow(data));
   } catch (err) {
     console.error('Error fetching note template section:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 
@@ -202,7 +208,6 @@ export async function createNoteTemplateSection(request, reply) {
 
     console.log('[createNoteTemplateSection] Creating section:', { name, layout, user_id: userId });
 
-    // Get or create user's master key (users can only create their own templates)
     const keyResult = await getOrCreateUserMasterKey(supabase, userId);
     if (!keyResult.success) {
       return reply.status(500).send({ error: keyResult.error });
@@ -213,17 +218,29 @@ export async function createNoteTemplateSection(request, reply) {
       return reply.status(400).send({ error: encryptionResult.error });
     }
 
-    const { data: insertData, error: insertError } = await supabase
-      .from(noteTemplateSectionsTable)
-      .insert([encryptionResult.section])
-      .select()
-      .single();
+    const enc = encryptionResult.section;
 
-    if (insertError) {
+    try {
+      const insertData = await pgQueryOne(
+        `INSERT INTO ${noteTemplateSectionsTable} (
+           name, layout, encrypted_details, details_iv, user_id
+         ) VALUES ($1, $2, $3, $4, $5)
+         RETURNING *`,
+        [enc.name, enc.layout, enc.encrypted_details ?? null, enc.details_iv ?? null, userId]
+      );
+
+      if (insertData.encrypted_details) {
+        const decryptResult = decryptNoteTemplateSectionDetails(insertData, keyResult.masterKey);
+        if (!decryptResult.success) {
+          console.error('Failed to decrypt newly created section:', decryptResult.error);
+        }
+      }
+
+      return reply.status(201).send(normalizeSectionRow(insertData));
+    } catch (insertError) {
       console.error('Database error creating section:', insertError);
 
-      // Check for unique constraint violation (duplicate name)
-      if (insertError.code === '23505') {
+      if (isPgUniqueViolation(insertError)) {
         return reply.status(409).send({
           code: 'DUPLICATE_NAME',
           message: 'A section with this name already exists for your account',
@@ -233,18 +250,9 @@ export async function createNoteTemplateSection(request, reply) {
 
       return reply.status(400).send({ error: 'Failed to create section' });
     }
-
-    if (insertData.encrypted_details) {
-      const decryptResult = decryptNoteTemplateSectionDetails(insertData, keyResult.masterKey);
-      if (!decryptResult.success) {
-        console.error('Failed to decrypt newly created section:', decryptResult.error);
-      }
-    }
-
-    return reply.status(201).send(insertData);
   } catch (err) {
     console.error('Error creating note template section:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 
@@ -269,15 +277,14 @@ export async function updateNoteTemplateSection(request, reply) {
       return reply.status(400).send({ error: 'Invalid section ID format' });
     }
 
-    const { data: existingSection, error: fetchError } = await supabase
-      .from(noteTemplateSectionsTable)
-      .select('*')
-      .eq('id', id)
-      .eq('user_id', userId)
-      .single();
+    const existingSection = await pgQueryOne(
+      `SELECT *
+         FROM ${noteTemplateSectionsTable}
+        WHERE id = $1 AND user_id = $2`,
+      [id, userId]
+    );
 
-    if (fetchError || !existingSection) {
-      console.error('Section not found or unauthorized:', fetchError);
+    if (!existingSection) {
       return reply.status(404).send({ error: 'Section not found' });
     }
 
@@ -290,40 +297,54 @@ export async function updateNoteTemplateSection(request, reply) {
 
     console.log('[updateNoteTemplateSection] Updating section:', { id, name: updateData.name });
 
-    // Get or create user's master key (needed if details are being updated)
     const keyResult = await getOrCreateUserMasterKey(supabase, userId);
     if (!keyResult.success) {
       return reply.status(500).send({ error: keyResult.error });
     }
 
-    if (updateData.details !== undefined) {
-      const encryptionResult = encryptNoteTemplateSectionDetails(section, keyResult.masterKey);
-      if (!encryptionResult.success) {
-        return reply.status(400).send({ error: encryptionResult.error });
-      }
+    try {
+      let updatedData;
 
-      const { id: _, ...sectionForUpdate } = encryptionResult.section;
-
-      const { data: updatedData, error: updateError } = await supabase
-        .from(noteTemplateSectionsTable)
-        .update(sectionForUpdate)
-        .eq('id', id)
-        .eq('user_id', userId)
-        .select()
-        .single();
-
-      if (updateError) {
-        console.error('Database error updating section:', updateError);
-
-        if (updateError.code === '23505') {
-          return reply.status(409).send({
-            code: 'DUPLICATE_NAME',
-            message: 'A section with this name already exists for your account',
-            field: 'name',
-          });
+      if (updateData.details !== undefined) {
+        const encryptionResult = encryptNoteTemplateSectionDetails(section, keyResult.masterKey);
+        if (!encryptionResult.success) {
+          return reply.status(400).send({ error: encryptionResult.error });
         }
 
-        return reply.status(400).send({ error: 'Failed to update section' });
+        const enc = encryptionResult.section;
+
+        updatedData = await pgQueryOne(
+          `UPDATE ${noteTemplateSectionsTable}
+              SET name = COALESCE($1, name),
+                  layout = COALESCE($2, layout),
+                  encrypted_details = $3,
+                  details_iv = $4,
+                  updated_at = NOW()
+            WHERE id = $5 AND user_id = $6
+            RETURNING *`,
+          [
+            updateData.name ?? null,
+            updateData.layout ?? null,
+            enc.encrypted_details ?? null,
+            enc.details_iv ?? null,
+            id,
+            userId,
+          ]
+        );
+      } else {
+        updatedData = await pgQueryOne(
+          `UPDATE ${noteTemplateSectionsTable}
+              SET name = COALESCE($1, name),
+                  layout = COALESCE($2, layout),
+                  updated_at = NOW()
+            WHERE id = $3 AND user_id = $4
+            RETURNING *`,
+          [updateData.name ?? null, updateData.layout ?? null, id, userId]
+        );
+      }
+
+      if (!updatedData) {
+        return reply.status(404).send({ error: 'Section not found' });
       }
 
       if (updatedData.encrypted_details) {
@@ -333,44 +354,23 @@ export async function updateNoteTemplateSection(request, reply) {
         }
       }
 
-      return reply.status(200).send(updatedData);
-    } else {
-      const { id: _, ...sectionForUpdate } = updateData;
+      return reply.status(200).send(normalizeSectionRow(updatedData));
+    } catch (updateError) {
+      console.error('Database error updating section:', updateError);
 
-      const { data: updatedData, error: updateError } = await supabase
-        .from(noteTemplateSectionsTable)
-        .update(sectionForUpdate)
-        .eq('id', id)
-        .eq('user_id', userId)
-        .select()
-        .single();
-
-      if (updateError) {
-        console.error('Database error updating section:', updateError);
-
-        if (updateError.code === '23505') {
-          return reply.status(409).send({
-            code: 'DUPLICATE_NAME',
-            message: 'A section with this name already exists for your account',
-            field: 'name',
-          });
-        }
-
-        return reply.status(400).send({ error: 'Failed to update section' });
+      if (isPgUniqueViolation(updateError)) {
+        return reply.status(409).send({
+          code: 'DUPLICATE_NAME',
+          message: 'A section with this name already exists for your account',
+          field: 'name',
+        });
       }
 
-      if (updatedData.encrypted_details) {
-        const decryptResult = decryptNoteTemplateSectionDetails(updatedData, keyResult.masterKey);
-        if (!decryptResult.success) {
-          console.error('Failed to decrypt updated section:', decryptResult.error);
-        }
-      }
-
-      return reply.status(200).send(updatedData);
+      return reply.status(400).send({ error: 'Failed to update section' });
     }
   } catch (err) {
     console.error('Error updating note template section:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 
@@ -380,7 +380,6 @@ export async function updateNoteTemplateSection(request, reply) {
  */
 export async function deleteNoteTemplateSection(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -394,16 +393,23 @@ export async function deleteNoteTemplateSection(request, reply) {
       return reply.status(400).send({ error: 'Invalid section ID format' });
     }
 
-    const { error: deleteError } = await supabase
-      .from(noteTemplateSectionsTable)
-      .delete()
-      .eq('id', id)
-      .eq('user_id', userId);
+    try {
+      const deleted = await pgQueryOne(
+        `DELETE FROM ${noteTemplateSectionsTable}
+          WHERE id = $1 AND user_id = $2
+          RETURNING id`,
+        [id, userId]
+      );
 
-    if (deleteError) {
+      if (!deleted) {
+        return reply.status(404).send({ error: 'Section not found' });
+      }
+
+      return reply.status(204).send();
+    } catch (deleteError) {
       console.error('Database error deleting section:', deleteError);
 
-      if (deleteError.code === '23503') {
+      if (deleteError && typeof deleteError === 'object' && 'code' in deleteError && deleteError.code === '23503') {
         return reply.status(409).send({
           code: 'RESOURCE_IN_USE',
           message: 'This section is still being used in one or more templates. Remove it from those templates first.',
@@ -412,10 +418,8 @@ export async function deleteNoteTemplateSection(request, reply) {
 
       return reply.status(400).send({ error: 'Failed to delete section' });
     }
-
-    return reply.status(204).send();
   } catch (err) {
     console.error('Error deleting note template section:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }

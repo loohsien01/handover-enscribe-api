@@ -2,6 +2,12 @@
  * Pre-Visit Summary Templates — encrypted default instruction blocks (user + system master keys).
  */
 import { getSupabaseClient } from '../../utils/supabase.js';
+import {
+  pgQueryOne,
+  pgQueryRows,
+  pgErrorMessage,
+  isPgUniqueViolation,
+} from '../../utils/pgQueryHelpers.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import {
   getOrCreateUserMasterKey,
@@ -10,11 +16,19 @@ import {
 
 const preVisitSummaryTemplatesTable = 'pre_visit_summary_templates';
 
+const PRE_VISIT_TEMPLATE_SORT_COLUMNS = new Set(['created_at', 'updated_at', 'name', 'id']);
+
 /**
  * @param {string} id
  */
 function isValidUuid(id) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
+}
+
+function preVisitTemplateOrderClause(sortBy, order) {
+  const column = PRE_VISIT_TEMPLATE_SORT_COLUMNS.has(sortBy) ? sortBy : 'created_at';
+  const direction = order === 'asc' ? 'ASC' : 'DESC';
+  return `${column} ${direction}`;
 }
 
 /**
@@ -60,22 +74,22 @@ function formatTemplateRow(row, masterKey, textOverride) {
 }
 
 /**
- * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
  */
-async function clearUserDefaultTemplate(supabase, userId) {
-  const { error } = await supabase
-    .from(preVisitSummaryTemplatesTable)
-    .update({ is_default: false })
-    .eq('user_id', userId)
-    .eq('is_default', true);
-
-  if (error) {
+async function clearUserDefaultTemplate(userId) {
+  try {
+    await pgQueryOne(
+      `UPDATE ${preVisitSummaryTemplatesTable}
+          SET is_default = false
+        WHERE user_id = $1 AND is_default = true
+        RETURNING id`,
+      [userId]
+    );
+    return { success: true };
+  } catch (error) {
     console.error('[preVisitSummaryTemplates] clear default failed:', error);
-    return { success: false, error: error.message || 'Failed to clear default template' };
+    return { success: false, error: pgErrorMessage(error) || 'Failed to clear default template' };
   }
-
-  return { success: true };
 }
 
 /**
@@ -99,10 +113,10 @@ async function resolveMasterKeyForRow(supabase, userId, row, keyCache = {}) {
 }
 
 /**
- * @param {object} dbError
+ * @param {unknown} dbError
  */
 function mapDuplicateNameError(dbError) {
-  if (dbError?.code === '23505') {
+  if (isPgUniqueViolation(dbError)) {
     return {
       status: 409,
       body: {
@@ -133,7 +147,7 @@ export async function createPreVisitSummaryTemplate(request, reply) {
   }
 
   if (isDefault) {
-    const clearResult = await clearUserDefaultTemplate(supabase, user.id);
+    const clearResult = await clearUserDefaultTemplate(user.id);
     if (!clearResult.success) {
       return reply.status(500).send({ error: clearResult.error });
     }
@@ -151,33 +165,29 @@ export async function createPreVisitSummaryTemplate(request, reply) {
     textIv = encryptResult.iv;
   }
 
-  const { data: row, error } = await supabase
-    .from(preVisitSummaryTemplatesTable)
-    .insert({
-      user_id: user.id,
-      name,
-      encrypted_text: encryptedText,
-      text_iv: textIv,
-      is_default: isDefault,
-    })
-    .select()
-    .single();
+  try {
+    const row = await pgQueryOne(
+      `INSERT INTO ${preVisitSummaryTemplatesTable} (
+         user_id, name, encrypted_text, text_iv, is_default
+       ) VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [user.id, name, encryptedText, textIv, isDefault]
+    );
 
-  if (error) {
+    const formatted = formatTemplateRow(row, keyResult.masterKey, text);
+    if (!formatted.success) {
+      return reply.status(400).send({ error: formatted.error });
+    }
+
+    return reply.status(201).send(formatted.template);
+  } catch (error) {
     console.error('[createPreVisitSummaryTemplate] insert failed:', error);
     const duplicate = mapDuplicateNameError(error);
     if (duplicate) {
       return reply.status(duplicate.status).send(duplicate.body);
     }
-    return reply.status(500).send({ error: error.message || 'Failed to create template' });
+    return reply.status(500).send({ error: pgErrorMessage(error) || 'Failed to create template' });
   }
-
-  const formatted = formatTemplateRow(row, keyResult.masterKey, text);
-  if (!formatted.success) {
-    return reply.status(400).send({ error: formatted.error });
-  }
-
-  return reply.status(201).send(formatted.template);
 }
 
 /**
@@ -191,40 +201,44 @@ export async function listPreVisitSummaryTemplates(request, reply) {
   }
 
   const { limit, offset, sortBy, order, decrypt_text: decryptText } = request.query;
+  const orderClause = preVisitTemplateOrderClause(sortBy, order);
 
-  const { data, error } = await supabase
-    .from(preVisitSummaryTemplatesTable)
-    .select('*')
-    .order(sortBy, { ascending: order === 'asc' })
-    .range(offset, offset + limit - 1);
+  try {
+    const data = await pgQueryRows(
+      `SELECT *
+         FROM ${preVisitSummaryTemplatesTable}
+        WHERE user_id = $1 OR user_id IS NULL
+        ORDER BY ${orderClause}
+        LIMIT $2 OFFSET $3`,
+      [user.id, limit, offset]
+    );
 
-  if (error) {
+    if (!decryptText) {
+      return reply.status(200).send(data.map(stripEncryptionFields));
+    }
+
+    const keyCache = {};
+    const templates = [];
+
+    for (const row of data) {
+      const keyResult = await resolveMasterKeyForRow(supabase, user.id, row, keyCache);
+      if (!keyResult.success) {
+        return reply.status(500).send({ error: keyResult.error });
+      }
+
+      const formatted = formatTemplateRow(row, keyResult.masterKey);
+      if (!formatted.success) {
+        return reply.status(400).send({ error: formatted.error });
+      }
+
+      templates.push(formatted.template);
+    }
+
+    return reply.status(200).send(templates);
+  } catch (error) {
     console.error('[listPreVisitSummaryTemplates] fetch failed:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
-
-  if (!decryptText) {
-    return reply.status(200).send((data ?? []).map(stripEncryptionFields));
-  }
-
-  const keyCache = {};
-  const templates = [];
-
-  for (const row of data ?? []) {
-    const keyResult = await resolveMasterKeyForRow(supabase, user.id, row, keyCache);
-    if (!keyResult.success) {
-      return reply.status(500).send({ error: keyResult.error });
-    }
-
-    const formatted = formatTemplateRow(row, keyResult.masterKey);
-    if (!formatted.success) {
-      return reply.status(400).send({ error: formatted.error });
-    }
-
-    templates.push(formatted.template);
-  }
-
-  return reply.status(200).send(templates);
 }
 
 /**
@@ -242,13 +256,15 @@ export async function getPreVisitSummaryTemplate(request, reply) {
     return reply.status(400).send({ error: 'Invalid Pre-Visit Summary Template ID format' });
   }
 
-  const { data: row, error } = await supabase
-    .from(preVisitSummaryTemplatesTable)
-    .select('*')
-    .eq('id', id)
-    .maybeSingle();
+  const row = await pgQueryOne(
+    `SELECT *
+       FROM ${preVisitSummaryTemplatesTable}
+      WHERE id = $1
+        AND (user_id = $2 OR user_id IS NULL)`,
+    [id, user.id]
+  );
 
-  if (error || !row) {
+  if (!row) {
     return reply.status(404).send({ error: 'Pre-Visit Summary Template not found' });
   }
 
@@ -287,29 +303,31 @@ export async function updatePreVisitSummaryTemplate(request, reply) {
     return reply.status(500).send({ error: keyResult.error });
   }
 
-  const { data: existing, error: fetchError } = await supabase
-    .from(preVisitSummaryTemplatesTable)
-    .select('*')
-    .eq('id', id)
-    .eq('user_id', user.id)
-    .maybeSingle();
+  const existing = await pgQueryOne(
+    `SELECT *
+       FROM ${preVisitSummaryTemplatesTable}
+      WHERE id = $1 AND user_id = $2`,
+    [id, user.id]
+  );
 
-  if (fetchError || !existing) {
+  if (!existing) {
     return reply.status(404).send({ error: 'Pre-Visit Summary Template not found' });
   }
 
   if (isDefault === true) {
-    const clearResult = await clearUserDefaultTemplate(supabase, user.id);
+    const clearResult = await clearUserDefaultTemplate(user.id);
     if (!clearResult.success) {
       return reply.status(500).send({ error: clearResult.error });
     }
   }
 
-  /** @type {Record<string, unknown>} */
-  const updatePayload = {};
+  const setClauses = [];
+  const params = [];
+  let paramIndex = 1;
 
   if (name !== undefined) {
-    updatePayload.name = name;
+    setClauses.push(`name = $${paramIndex++}`);
+    params.push(name);
   }
 
   if (text !== undefined) {
@@ -318,49 +336,68 @@ export async function updatePreVisitSummaryTemplate(request, reply) {
       if (!encryptResult.success) {
         return reply.status(500).send({ error: encryptResult.error || 'Failed to encrypt template text' });
       }
-      updatePayload.encrypted_text = encryptResult.value;
-      updatePayload.text_iv = encryptResult.iv;
+      setClauses.push(`encrypted_text = $${paramIndex++}`);
+      params.push(encryptResult.value);
+      setClauses.push(`text_iv = $${paramIndex++}`);
+      params.push(encryptResult.iv);
     } else {
-      updatePayload.encrypted_text = null;
-      updatePayload.text_iv = null;
+      setClauses.push(`encrypted_text = $${paramIndex++}`);
+      params.push(null);
+      setClauses.push(`text_iv = $${paramIndex++}`);
+      params.push(null);
     }
   }
 
   if (isDefault !== undefined) {
-    updatePayload.is_default = isDefault;
+    setClauses.push(`is_default = $${paramIndex++}`);
+    params.push(isDefault);
   }
 
-  const { data: updated, error: updateError } = await supabase
-    .from(preVisitSummaryTemplatesTable)
-    .update(updatePayload)
-    .eq('id', id)
-    .eq('user_id', user.id)
-    .select()
-    .single();
+  if (setClauses.length === 0) {
+    const formatted = formatTemplateRow(existing, keyResult.masterKey);
+    if (!formatted.success) {
+      return reply.status(400).send({ error: formatted.error });
+    }
+    return reply.status(200).send(formatted.template);
+  }
 
-  if (updateError) {
+  setClauses.push('updated_at = NOW()');
+  params.push(id, user.id);
+
+  try {
+    const updated = await pgQueryOne(
+      `UPDATE ${preVisitSummaryTemplatesTable}
+          SET ${setClauses.join(', ')}
+        WHERE id = $${paramIndex++} AND user_id = $${paramIndex}
+        RETURNING *`,
+      params
+    );
+
+    if (!updated) {
+      return reply.status(404).send({ error: 'Pre-Visit Summary Template not found' });
+    }
+
+    const textOverride = text !== undefined ? text : undefined;
+    const formatted = formatTemplateRow(updated, keyResult.masterKey, textOverride);
+    if (!formatted.success) {
+      return reply.status(400).send({ error: formatted.error });
+    }
+
+    return reply.status(200).send(formatted.template);
+  } catch (updateError) {
     console.error('[updatePreVisitSummaryTemplate] update failed:', updateError);
     const duplicate = mapDuplicateNameError(updateError);
     if (duplicate) {
       return reply.status(duplicate.status).send(duplicate.body);
     }
-    return reply.status(500).send({ error: updateError.message });
+    return reply.status(500).send({ error: pgErrorMessage(updateError) });
   }
-
-  const textOverride = text !== undefined ? text : undefined;
-  const formatted = formatTemplateRow(updated, keyResult.masterKey, textOverride);
-  if (!formatted.success) {
-    return reply.status(400).send({ error: formatted.error });
-  }
-
-  return reply.status(200).send(formatted.template);
 }
 
 /**
  * DELETE /api/pre-visit-summary-templates/:id
  */
 export async function deletePreVisitSummaryTemplate(request, reply) {
-  const supabase = getSupabaseClient(request.headers.authorization);
   const user = request.user;
   if (!user) {
     return reply.status(401).send({ error: 'Unauthorized' });
@@ -371,21 +408,21 @@ export async function deletePreVisitSummaryTemplate(request, reply) {
     return reply.status(400).send({ error: 'Invalid Pre-Visit Summary Template ID format' });
   }
 
-  const { data, error } = await supabase
-    .from(preVisitSummaryTemplatesTable)
-    .delete()
-    .eq('id', id)
-    .eq('user_id', user.id)
-    .select()
-    .single();
+  try {
+    const data = await pgQueryOne(
+      `DELETE FROM ${preVisitSummaryTemplatesTable}
+        WHERE id = $1 AND user_id = $2
+        RETURNING id`,
+      [id, user.id]
+    );
 
-  if (error) {
-    if (error.code === 'PGRST116') {
+    if (!data) {
       return reply.status(404).send({ error: 'Pre-Visit Summary Template not found' });
     }
-    console.error('[deletePreVisitSummaryTemplate] delete failed:', error);
-    return reply.status(500).send({ error: error.message });
-  }
 
-  return reply.status(200).send({ success: true, id: data.id });
+    return reply.status(200).send({ success: true, id: data.id });
+  } catch (error) {
+    console.error('[deletePreVisitSummaryTemplate] delete failed:', error);
+    return reply.status(500).send({ error: pgErrorMessage(error) });
+  }
 }

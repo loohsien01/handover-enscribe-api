@@ -7,9 +7,18 @@
  * PATCH /api/note-templates/complete/:id - update template + sections + ordering (atomic via RPC)
  */
 
-import { getSupabaseClient, createAuthClient } from '../../utils/supabase.js';
+import { getSupabaseClient } from '../../utils/supabase.js';
 import { querySupabasePostgres } from '../../utils/supabasePostgresPool.js';
-import { isPgUniqueViolation, pgErrorMessage, toPgJsonbParam, pgIdToNumber } from '../../utils/pgQueryHelpers.js';
+import {
+  isPgUniqueViolation,
+  pgErrorMessage,
+  pgQueryOne,
+  pgQueryRows,
+  pgCoerceBigIntFields,
+  pgCoerceBigIntFieldsRows,
+  toPgJsonbParam,
+  pgIdToNumber,
+} from '../../utils/pgQueryHelpers.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import {
   getSystemMasterKey,
@@ -20,9 +29,25 @@ import {
   decryptNoteTemplateSectionDetails,
 } from '../../utils/encryptionUtils.js';
 
-const noteTemplatesTable = 'noteTemplates';
-const noteTemplateSectionsTable = 'noteTemplateSections';
-const noteTemplateSectionOrdersTable = 'noteTemplateSectionOrders';
+const noteTemplatesTable = '"noteTemplates"';
+const noteTemplateSectionsTable = '"noteTemplateSections"';
+const noteTemplateSectionOrdersTable = '"noteTemplateSectionOrders"';
+
+const TEMPLATE_BIGINT_FIELDS = ['id'];
+const ORDER_FETCH_FIELDS = ['noteTemplateSection_id', 'order'];
+const SECTION_BIGINT_FIELDS = ['id'];
+
+function normalizeTemplateRow(row) {
+  return pgCoerceBigIntFields(row, TEMPLATE_BIGINT_FIELDS);
+}
+
+function normalizeOrderFetchRow(row) {
+  return pgCoerceBigIntFields(row, ORDER_FETCH_FIELDS);
+}
+
+function normalizeSectionRow(row) {
+  return pgCoerceBigIntFields(row, SECTION_BIGINT_FIELDS);
+}
 
 
 
@@ -79,35 +104,33 @@ function convertBigIntsToStrings(obj) {
  */
 export async function getCompleteTemplate(supabase, templateId, userId) {
   try {
-    // Fetch template
-    const { data: template, error: templateError } = await supabase
-      .from(noteTemplatesTable)
-      .select('*')
-      .eq('id', templateId)
-      .single();
+    const template = normalizeTemplateRow(
+      await pgQueryOne(
+        `SELECT * FROM ${noteTemplatesTable} WHERE id = $1`,
+        [templateId]
+      )
+    );
 
-    if (templateError || !template) {
+    if (!template) {
       return { success: false, error: 'Template not found', template: null, sections: null };
     }
 
-    // Authorization: user owns it or it's system (user_id = null)
     if (template.user_id !== null && template.user_id !== userId) {
       return { success: false, error: 'Unauthorized', template: null, sections: null };
     }
 
-    // Fetch sections in order
-    const { data: orders, error: ordersError } = await supabase
-      .from(noteTemplateSectionOrdersTable)
-      .select('noteTemplateSection_id, order')
-      .eq('noteTemplate_id', templateId)
-      .order('order', { ascending: true });
+    const orders = pgCoerceBigIntFieldsRows(
+      await pgQueryRows(
+        `SELECT "noteTemplateSection_id", "order"
+           FROM ${noteTemplateSectionOrdersTable}
+          WHERE "noteTemplate_id" = $1
+          ORDER BY "order" ASC`,
+        [templateId]
+      ),
+      ORDER_FETCH_FIELDS
+    );
 
-    if (ordersError) {
-      console.error('[getCompleteTemplate] Error fetching orders:', ordersError);
-      return { success: false, error: 'Failed to fetch section ordering', template: null, sections: null };
-    }
-
-    if (!orders || orders.length === 0) {
+    if (orders.length === 0) {
       return {
         success: true,
         error: null,
@@ -116,19 +139,16 @@ export async function getCompleteTemplate(supabase, templateId, userId) {
       };
     }
 
-    // Fetch all sections
-    const sectionIds = orders.map(o => o.noteTemplateSection_id);
-    const { data: allSections, error: sectionsError } = await supabase
-      .from(noteTemplateSectionsTable)
-      .select('*')
-      .in('id', sectionIds);
+    const sectionIds = orders.map((o) => o.noteTemplateSection_id);
+    const allSections = pgCoerceBigIntFieldsRows(
+      await pgQueryRows(
+        `SELECT * FROM ${noteTemplateSectionsTable} WHERE id = ANY($1::bigint[])`,
+        [sectionIds]
+      ),
+      SECTION_BIGINT_FIELDS
+    );
 
-    if (sectionsError) {
-      console.error('[getCompleteTemplate] Error fetching sections:', sectionsError);
-      return { success: false, error: 'Failed to fetch sections', template: null, sections: null };
-    }
-
-    if (!allSections || allSections.length === 0) {
+    if (allSections.length === 0) {
       return { success: true, error: null, template, sections: [] };
     }
 
@@ -224,53 +244,45 @@ export async function getAllNoteTemplatesComplete(request, reply) {
     const { limit = 20, offset = 0, include_details = 'false' } = request.query;
     const includeDetails = include_details === 'true';
 
-    // Fetch templates with pagination
-    const { data: templates, error: templatesError } = await supabase
-      .from(noteTemplatesTable)
-      .select('*')
-      .or(`user_id.eq.${userId},user_id.is.null`)
-      .order('updated_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+    const templates = pgCoerceBigIntFieldsRows(
+      await pgQueryRows(
+        `SELECT *
+           FROM ${noteTemplatesTable}
+          WHERE user_id = $1 OR user_id IS NULL
+          ORDER BY updated_at DESC
+          LIMIT $2 OFFSET $3`,
+        [userId, limit, offset]
+      ),
+      TEMPLATE_BIGINT_FIELDS
+    );
 
-    if (templatesError) {
-      console.error('[getAllNoteTemplatesComplete] Error fetching templates:', templatesError);
-      return reply.status(500).send({ error: 'Failed to fetch templates' });
-    }
-
-    if (!templates || templates.length === 0) {
+    if (templates.length === 0) {
       return reply.status(200).send({ templates: [], total: 0 });
     }
 
-    // Fetch sections and ordering for all templates
-    const templateIds = templates.map(t => t.id);
-    const { data: allOrders, error: ordersError } = await supabase
-      .from(noteTemplateSectionOrdersTable)
-      .select('noteTemplate_id, noteTemplateSection_id, order')
-      .in('noteTemplate_id', templateIds)
-      .order('noteTemplate_id', { ascending: true })
-      .order('order', { ascending: true });
+    const templateIds = templates.map((t) => t.id);
+    const allOrders = pgCoerceBigIntFieldsRows(
+      await pgQueryRows(
+        `SELECT "noteTemplate_id", "noteTemplateSection_id", "order"
+           FROM ${noteTemplateSectionOrdersTable}
+          WHERE "noteTemplate_id" = ANY($1::bigint[])
+          ORDER BY "noteTemplate_id" ASC, "order" ASC`,
+        [templateIds]
+      ),
+      ['noteTemplate_id', 'noteTemplateSection_id', 'order']
+    );
 
-    if (ordersError) {
-      console.error('[getAllNoteTemplatesComplete] Error fetching orders:', ordersError);
-      return reply.status(500).send({ error: 'Failed to fetch section ordering' });
-    }
-
-    // Fetch all sections needed
-    const sectionIds = [...new Set(allOrders?.map(o => o.noteTemplateSection_id) || [])];
+    const sectionIds = [...new Set(allOrders.map((o) => o.noteTemplateSection_id))];
     let allSections = [];
 
     if (sectionIds.length > 0) {
-      const { data: sectionsData, error: sectionsError } = await supabase
-        .from(noteTemplateSectionsTable)
-        .select('*')
-        .in('id', sectionIds);
-
-      if (sectionsError) {
-        console.error('[getAllNoteTemplatesComplete] Error fetching sections:', sectionsError);
-        return reply.status(500).send({ error: 'Failed to fetch sections' });
-      }
-
-      allSections = sectionsData || [];
+      allSections = pgCoerceBigIntFieldsRows(
+        await pgQueryRows(
+          `SELECT * FROM ${noteTemplateSectionsTable} WHERE id = ANY($1::bigint[])`,
+          [sectionIds]
+        ),
+        SECTION_BIGINT_FIELDS
+      );
     }
 
     // If we need to decrypt, get the keys
@@ -559,14 +571,14 @@ export async function updateNoteTemplateComplete(request, reply) {
 
     console.log('[updateNoteTemplateComplete] Updating template:', { id, name, sectionsCount: sections?.length || 0 });
 
-    // Verify template exists and user owns it
-    const { data: existing, error: fetchError } = await supabase
-      .from(noteTemplatesTable)
-      .select('*')
-      .eq('id', parseInt(id, 10))
-      .single();
+    const existing = normalizeTemplateRow(
+      await pgQueryOne(
+        `SELECT * FROM ${noteTemplatesTable} WHERE id = $1`,
+        [parseInt(id, 10)]
+      )
+    );
 
-    if (fetchError || !existing) {
+    if (!existing) {
       return reply.status(404).send({ error: 'Template not found' });
     }
 

@@ -1,12 +1,42 @@
 /**
- * Note Template Section Orders Controller. Filename: noteTemplateSectionOrdersController.js 
+ * Note Template Section Orders Controller. Filename: noteTemplateSectionOrdersController.js
  * Handles all section ordering operations for templates
  * Maintains atomic operations for reordering and batch updates
  */
-import { getSupabaseClient } from '../../utils/supabase.js';
+import {
+  pgQueryOne,
+  pgQueryRows,
+  pgErrorMessage,
+  isPgUniqueViolation,
+  pgCoerceBigIntFields,
+  pgCoerceBigIntFieldsRows,
+} from '../../utils/pgQueryHelpers.js';
+import { getSupabasePostgresPool } from '../../utils/supabasePostgresPool.js';
 
-const noteTemplateSectionOrdersTable = 'noteTemplateSectionOrders';
-const noteTemplatesTable = 'noteTemplates';
+const ORDER_BIGINT_FIELDS = ['id', 'noteTemplate_id', 'noteTemplateSection_id'];
+
+function normalizeOrderRow(row) {
+  if (!row) return row;
+  const normalized = pgCoerceBigIntFields(row, ORDER_BIGINT_FIELDS);
+  if (normalized.noteTemplate && typeof normalized.noteTemplate === 'object') {
+    normalized.noteTemplate = pgCoerceBigIntFields(normalized.noteTemplate, ['id']);
+  }
+  return normalized;
+}
+
+function normalizeOrderRows(rows) {
+  return rows.map(normalizeOrderRow);
+}
+
+const noteTemplateSectionOrdersTable = '"noteTemplateSectionOrders"';
+const noteTemplatesTable = '"noteTemplates"';
+
+const SECTION_ORDERS_WITH_TEMPLATE = `
+  SELECT o.*,
+         json_build_object('id', t.id, 'user_id', t.user_id) AS "noteTemplate"
+    FROM ${noteTemplateSectionOrdersTable} o
+    JOIN ${noteTemplatesTable} t ON t.id = o."noteTemplate_id"
+`;
 
 /**
  * Helper: Validates bigint ID format
@@ -28,41 +58,23 @@ function isValidBigInt(id) {
  */
 export async function getAllNoteTemplateSectionOrders(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    const userId = user.id;
+    const data = await pgQueryRows(
+      `${SECTION_ORDERS_WITH_TEMPLATE}
+       WHERE o.user_id = $1 OR o.user_id IS NULL
+       ORDER BY o."noteTemplate_id" ASC, o."order" ASC`,
+      [user.id]
+    );
 
-    // Get all orders for templates the user has access to (RLS policies handle authorization)
-    const { data, error } = await supabase
-      .from(noteTemplateSectionOrdersTable)
-      .select(`
-        *,
-        noteTemplate:noteTemplate_id (
-          id,
-          user_id
-        )
-      `)
-      .order('noteTemplate_id', { ascending: true })
-      .order('order', { ascending: true });
-
-    if (error) {
-      console.error('[getAllNoteTemplateSectionOrders] Database error:', error);
-      return reply.status(500).send({ error: 'Failed to fetch section orders' });
-    }
-
-    if (!data || data.length === 0) {
-      return reply.status(200).send([]);
-    }
-
-    return reply.status(200).send(data);
+    return reply.status(200).send(normalizeOrderRows(data));
   } catch (err) {
     console.error('[getAllNoteTemplateSectionOrders] Error:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 
@@ -72,45 +84,33 @@ export async function getAllNoteTemplateSectionOrders(request, reply) {
  */
 export async function getNoteTemplateSectionOrder(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    const userId = user.id;
     const { id } = request.params;
 
     if (!isValidBigInt(id)) {
       return reply.status(400).send({ error: 'Invalid order ID format' });
     }
 
-    const { data, error } = await supabase
-      .from(noteTemplateSectionOrdersTable)
-      .select(`
-        *,
-        noteTemplate:noteTemplate_id (
-          id,
-          user_id
-        )
-      `)
-      .eq('id', id)
-      .single();
-
-    if (error) {
-      console.error('[getNoteTemplateSectionOrder] Database error:', error);
-      return reply.status(404).send({ error: 'Order not found' });
-    }
+    const data = await pgQueryOne(
+      `${SECTION_ORDERS_WITH_TEMPLATE}
+       WHERE o.id = $1
+         AND (o.user_id = $2 OR o.user_id IS NULL)`,
+      [id, user.id]
+    );
 
     if (!data) {
       return reply.status(404).send({ error: 'Order not found' });
     }
 
-    return reply.status(200).send(data);
+    return reply.status(200).send(normalizeOrderRow(data));
   } catch (err) {
     console.error('[getNoteTemplateSectionOrder] Error:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 
@@ -121,7 +121,6 @@ export async function getNoteTemplateSectionOrder(request, reply) {
  */
 export async function createNoteTemplateSectionOrder(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -130,32 +129,28 @@ export async function createNoteTemplateSectionOrder(request, reply) {
 
     const { noteTemplate_id, section_id, order } = request.body;
 
-    // Verify template exists (RLS enforces user authorization)
-    const { data: template, error: templateError } = await supabase
-      .from(noteTemplatesTable)
-      .select('id')
-      .eq('id', noteTemplate_id)
-      .single();
+    const template = await pgQueryOne(
+      `SELECT id
+         FROM ${noteTemplatesTable}
+        WHERE id = $1
+          AND (user_id = $2 OR user_id IS NULL)`,
+      [noteTemplate_id, user.id]
+    );
 
-    if (templateError || !template) {
-      console.error('[createNoteTemplateSectionOrder] Template not found:', templateError);
+    if (!template) {
       return reply.status(404).send({ error: 'Template not found' });
     }
 
-    // Get max order for this template to validate consecutive
-    const { data: maxOrderData, error: maxOrderError } = await supabase
-      .from(noteTemplateSectionOrdersTable)
-      .select('order')
-      .eq('noteTemplate_id', noteTemplate_id)
-      .order('order', { ascending: false })
-      .limit(1);
+    const maxOrderRow = await pgQueryOne(
+      `SELECT "order"
+         FROM ${noteTemplateSectionOrdersTable}
+        WHERE "noteTemplate_id" = $1
+        ORDER BY "order" DESC
+        LIMIT 1`,
+      [noteTemplate_id]
+    );
 
-    if (maxOrderError) {
-      console.error('[createNoteTemplateSectionOrder] Error fetching max order:', maxOrderError);
-      return reply.status(500).send({ error: 'Failed to validate order' });
-    }
-
-    const maxOrder = maxOrderData && maxOrderData.length > 0 ? maxOrderData[0].order : 0;
+    const maxOrder = maxOrderRow ? maxOrderRow.order : 0;
     const expectedOrder = maxOrder + 1;
 
     if (order !== expectedOrder) {
@@ -166,33 +161,27 @@ export async function createNoteTemplateSectionOrder(request, reply) {
       });
     }
 
-    // Create the order record
-    const { data: insertData, error: insertError } = await supabase
-      .from(noteTemplateSectionOrdersTable)
-      .insert([
-        {
-          noteTemplate_id,
-          noteTemplateSection_id: section_id,
-          order,
-          user_id: request.user.id,
-        },
-      ])
-      .select()
-      .single();
+    try {
+      const insertData = await pgQueryOne(
+        `INSERT INTO ${noteTemplateSectionOrdersTable} (
+           "noteTemplate_id", "noteTemplateSection_id", "order", user_id
+         ) VALUES ($1, $2, $3, $4)
+         RETURNING *`,
+        [noteTemplate_id, section_id, order, user.id]
+      );
 
-    if (insertError) {
+      return reply.status(201).send(normalizeOrderRow(insertData));
+    } catch (insertError) {
       console.error('[createNoteTemplateSectionOrder] Insert error:', insertError);
 
-      // Check for foreign key constraint (section doesn't exist)
-      if (insertError.code === '23503') {
+      if (insertError && typeof insertError === 'object' && 'code' in insertError && insertError.code === '23503') {
         return reply.status(400).send({
           error: 'Section not found',
           field: 'section_id',
         });
       }
 
-      // Check for unique constraint (duplicate section in template)
-      if (insertError.code === '23505') {
+      if (isPgUniqueViolation(insertError)) {
         return reply.status(409).send({
           error: 'Section already exists in this template',
           field: 'section_id',
@@ -201,11 +190,9 @@ export async function createNoteTemplateSectionOrder(request, reply) {
 
       return reply.status(400).send({ error: 'Failed to create order' });
     }
-
-    return reply.status(201).send(insertData);
   } catch (err) {
     console.error('[createNoteTemplateSectionOrder] Error:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 
@@ -217,7 +204,6 @@ export async function createNoteTemplateSectionOrder(request, reply) {
  */
 export async function updateNoteTemplateSectionOrders(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -226,15 +212,15 @@ export async function updateNoteTemplateSectionOrders(request, reply) {
 
     const { noteTemplate_id, sections } = request.body;
 
-    // Verify template exists (RLS enforces user authorization)
-    const { data: template, error: templateError } = await supabase
-      .from(noteTemplatesTable)
-      .select('id')
-      .eq('id', noteTemplate_id)
-      .single();
+    const template = await pgQueryOne(
+      `SELECT id
+         FROM ${noteTemplatesTable}
+        WHERE id = $1
+          AND (user_id = $2 OR user_id IS NULL)`,
+      [noteTemplate_id, user.id]
+    );
 
-    if (templateError || !template) {
-      console.error('[updateNoteTemplateSectionOrders] Template not found:', templateError);
+    if (!template) {
       return reply.status(404).send({ error: 'Template not found' });
     }
 
@@ -243,44 +229,54 @@ export async function updateNoteTemplateSectionOrders(request, reply) {
       count: sections.length,
     });
 
-    // Delete all existing orders for this template
-    const { error: deleteError } = await supabase
-      .from(noteTemplateSectionOrdersTable)
-      .delete()
-      .eq('noteTemplate_id', noteTemplate_id);
+    const pool = getSupabasePostgresPool();
+    const client = await pool.connect();
 
-    if (deleteError) {
-      console.error('[updateNoteTemplateSectionOrders] Delete error:', deleteError);
-      return reply.status(500).send({ error: 'Failed to delete existing orders' });
+    try {
+    await client.query('BEGIN');
+
+    await client.query(
+      `DELETE FROM ${noteTemplateSectionOrdersTable}
+        WHERE "noteTemplate_id" = $1`,
+      [noteTemplate_id]
+    );
+
+    for (const section of sections) {
+      await client.query(
+        `INSERT INTO ${noteTemplateSectionOrdersTable} (
+           "noteTemplate_id", "noteTemplateSection_id", "order", user_id
+         ) VALUES ($1, $2, $3, $4)`,
+        [noteTemplate_id, section.id, section.order, user.id]
+      );
     }
 
-    // Insert all new orders
-    const ordersToInsert = sections.map((section) => ({
-      noteTemplate_id,
-      noteTemplateSection_id: section.id,
-      order: section.order,
-      user_id: request.user.id,
-    }));
+    const { rows: insertData } = await client.query(
+      `SELECT *
+         FROM ${noteTemplateSectionOrdersTable}
+        WHERE "noteTemplate_id" = $1
+        ORDER BY "order" ASC`,
+      [noteTemplate_id]
+    );
 
-    const { data: insertData, error: insertError } = await supabase
-      .from(noteTemplateSectionOrdersTable)
-      .insert(ordersToInsert)
-      .select()
-      .order('order', { ascending: true });
+    await client.query('COMMIT');
 
-    if (insertError) {
-      console.error('[updateNoteTemplateSectionOrders] Insert error:', insertError);
+    return reply.status(200).send({
+      noteTemplate_id: pgCoerceBigIntFields({ noteTemplate_id }, ['noteTemplate_id']).noteTemplate_id,
+      sections: normalizeOrderRows(insertData),
+    });
+    } catch (err) {
+      await client.query('ROLLBACK');
 
-      // Check for foreign key constraint (section doesn't exist)
-      if (insertError.code === '23503') {
+      console.error('[updateNoteTemplateSectionOrders] Error:', err);
+
+      if (err && typeof err === 'object' && 'code' in err && err.code === '23503') {
         return reply.status(400).send({
           error: 'One or more sections not found. Reordering was not applied (atomic failure).',
           field: 'sections',
         });
       }
 
-      // Check for unique constraint
-      if (insertError.code === '23505') {
+      if (isPgUniqueViolation(err)) {
         return reply.status(400).send({
           error: 'Duplicate section IDs in request. Reordering was not applied (atomic failure).',
           field: 'sections',
@@ -290,14 +286,11 @@ export async function updateNoteTemplateSectionOrders(request, reply) {
       return reply.status(400).send({
         error: 'Failed to apply reordering. Reordering was not applied (atomic failure).',
       });
+    } finally {
+      client.release();
     }
-
-    return reply.status(200).send({
-      noteTemplate_id,
-      sections: insertData,
-    });
   } catch (err) {
     console.error('[updateNoteTemplateSectionOrders] Error:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }

@@ -7,6 +7,7 @@ import {
   isPgUniqueViolation,
   toPgJsonbParam,
   pgIdToNumber,
+  pgCoerceBigIntFields,
 } from '../src/utils/pgQueryHelpers.js';
 
 function testPgErrorMessage() {
@@ -35,9 +36,17 @@ function testPgIdToNumber() {
   console.log('  pgIdToNumber — ok');
 }
 
+function testPgCoerceBigIntFields() {
+  const row = pgCoerceBigIntFields({ id: '99', name: 'x' }, ['id']);
+  assert.equal(row.id, 99);
+  assert.equal(row.name, 'x');
+  console.log('  pgCoerceBigIntFields — ok');
+}
+
 console.log('pgQueryHelpers unit tests');
 testPgErrorMessage();
 testIsPgUniqueViolation();
 testToPgJsonbParam();
 testPgIdToNumber();
+testPgCoerceBigIntFields();
 console.log('All pgQueryHelpers unit tests passed.');

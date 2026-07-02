@@ -1,8 +1,15 @@
-import { getSupabaseClient } from '../../utils/supabase.js';
 import { claudeAPIReq } from '../../utils/bedrockClient.js';
 import { getExtractNoteTemplateSectionsRequestBody } from '../../utils/claudeRequestBody.js';
+import {
+  pgQueryOne,
+  pgQueryRows,
+  pgErrorMessage,
+  isPgUniqueViolation,
+  pgCoerceBigIntFields,
+  pgCoerceBigIntFieldsRows,
+} from '../../utils/pgQueryHelpers.js';
 
-const noteTemplatesTable = 'noteTemplates';
+const noteTemplatesTable = '"noteTemplates"';
 
 /**
  * Helper: Validates bigint ID format
@@ -23,31 +30,24 @@ function isValidBigInt(id) {
  */
 export async function getAllNoteTemplates(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
       return reply.status(401).send({ error: 'Unauthorized' });
     }
 
-    const { data, error } = await supabase
-      .from(noteTemplatesTable)
-      .select('*')
-      .order('created_at', { ascending: false });
+    const data = await pgQueryRows(
+      `SELECT *
+         FROM ${noteTemplatesTable}
+        WHERE user_id = $1 OR user_id IS NULL
+        ORDER BY created_at DESC`,
+      [user.id]
+    );
 
-    if (error) {
-      console.error('Database error fetching note templates:', error);
-      return reply.status(500).send({ error: 'Failed to fetch note templates' });
-    }
-
-    if (!data || data.length === 0) {
-      return reply.status(200).send([]);
-    }
-
-    return reply.status(200).send(data);
+    return reply.status(200).send(pgCoerceBigIntFieldsRows(data, ['id']));
   } catch (err) {
     console.error('Error fetching note templates:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 
@@ -57,7 +57,6 @@ export async function getAllNoteTemplates(request, reply) {
  */
 export async function getNoteTemplate(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -70,25 +69,22 @@ export async function getNoteTemplate(request, reply) {
       return reply.status(400).send({ error: 'Invalid template ID format' });
     }
 
-    const { data, error } = await supabase
-      .from(noteTemplatesTable)
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (error) {
-      console.error('Database error fetching note template:', error);
-      return reply.status(404).send({ error: 'Template not found' });
-    }
+    const data = await pgQueryOne(
+      `SELECT *
+         FROM ${noteTemplatesTable}
+        WHERE id = $1
+          AND (user_id = $2 OR user_id IS NULL)`,
+      [id, user.id]
+    );
 
     if (!data) {
       return reply.status(404).send({ error: 'Template not found' });
     }
 
-    return reply.status(200).send(data);
+    return reply.status(200).send(pgCoerceBigIntFields(data, ['id']));
   } catch (err) {
     console.error('Error fetching note template:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 
@@ -98,7 +94,6 @@ export async function getNoteTemplate(request, reply) {
  */
 export async function createNoteTemplate(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -112,24 +107,21 @@ export async function createNoteTemplate(request, reply) {
       return reply.status(400).send({ error: 'Name is required' });
     }
 
-    const template = {
-      name,
-      user_id: userId,
-    };
-
     console.log('[createNoteTemplate] Creating template:', { name, user_id: userId });
 
-    const { data: insertData, error: insertError } = await supabase
-      .from(noteTemplatesTable)
-      .insert([template])
-      .select()
-      .single();
+    try {
+      const insertData = await pgQueryOne(
+        `INSERT INTO ${noteTemplatesTable} (name, user_id)
+         VALUES ($1, $2)
+         RETURNING *`,
+        [name, userId]
+      );
 
-    if (insertError) {
+      return reply.status(201).send(pgCoerceBigIntFields(insertData, ['id']));
+    } catch (insertError) {
       console.error('Database error creating note template:', insertError);
 
-      // Check for unique constraint violation (duplicate name for user)
-      if (insertError.code === '23505') {
+      if (isPgUniqueViolation(insertError)) {
         return reply.status(409).send({
           code: 'DUPLICATE_NAME',
           message: 'A template with this name already exists for your account',
@@ -139,11 +131,9 @@ export async function createNoteTemplate(request, reply) {
 
       return reply.status(400).send({ error: 'Failed to create template' });
     }
-
-    return reply.status(201).send(insertData);
   } catch (err) {
     console.error('Error creating note template:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 
@@ -153,7 +143,6 @@ export async function createNoteTemplate(request, reply) {
  */
 export async function updateNoteTemplate(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -168,34 +157,34 @@ export async function updateNoteTemplate(request, reply) {
       return reply.status(400).send({ error: 'Invalid template ID format' });
     }
 
-    const { data: existingTemplate, error: fetchError } = await supabase
-      .from(noteTemplatesTable)
-      .select('*')
-      .eq('id', id)
-      .eq('user_id', userId)
-      .single();
+    const existingTemplate = await pgQueryOne(
+      `SELECT *
+         FROM ${noteTemplatesTable}
+        WHERE id = $1 AND user_id = $2`,
+      [id, userId]
+    );
 
-    if (fetchError || !existingTemplate) {
-      console.error('Template not found or unauthorized:', fetchError);
+    if (!existingTemplate) {
       return reply.status(404).send({ error: 'Template not found' });
     }
 
     console.log('[updateNoteTemplate] Updating template:', { id, name: updateData.name });
 
-    const { id: _, ...templateForUpdate } = updateData;
+    try {
+      const updatedData = await pgQueryOne(
+        `UPDATE ${noteTemplatesTable}
+            SET name = $1,
+                updated_at = NOW()
+          WHERE id = $2 AND user_id = $3
+          RETURNING *`,
+        [updateData.name, id, userId]
+      );
 
-    const { data: updatedData, error: updateError } = await supabase
-      .from(noteTemplatesTable)
-      .update(templateForUpdate)
-      .eq('id', id)
-      .eq('user_id', userId)
-      .select()
-      .single();
-
-    if (updateError) {
+      return reply.status(200).send(pgCoerceBigIntFields(updatedData, ['id']));
+    } catch (updateError) {
       console.error('Database error updating note template:', updateError);
 
-      if (updateError.code === '23505') {
+      if (isPgUniqueViolation(updateError)) {
         return reply.status(409).send({
           code: 'DUPLICATE_NAME',
           message: 'A template with this name already exists for your account',
@@ -205,11 +194,9 @@ export async function updateNoteTemplate(request, reply) {
 
       return reply.status(400).send({ error: 'Failed to update template' });
     }
-
-    return reply.status(200).send(updatedData);
   } catch (err) {
     console.error('Error updating note template:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 
@@ -219,7 +206,6 @@ export async function updateNoteTemplate(request, reply) {
  */
 export async function deleteNoteTemplate(request, reply) {
   try {
-    const supabase = getSupabaseClient(request.headers.authorization);
     const user = request.user;
 
     if (!user) {
@@ -233,16 +219,23 @@ export async function deleteNoteTemplate(request, reply) {
       return reply.status(400).send({ error: 'Invalid template ID format' });
     }
 
-    const { error: deleteError } = await supabase
-      .from(noteTemplatesTable)
-      .delete()
-      .eq('id', id)
-      .eq('user_id', userId);
+    try {
+      const deleted = await pgQueryOne(
+        `DELETE FROM ${noteTemplatesTable}
+          WHERE id = $1 AND user_id = $2
+          RETURNING id`,
+        [id, userId]
+      );
 
-    if (deleteError) {
+      if (!deleted) {
+        return reply.status(404).send({ error: 'Template not found' });
+      }
+
+      return reply.status(204).send();
+    } catch (deleteError) {
       console.error('Database error deleting note template:', deleteError);
 
-      if (deleteError.code === '23503') {
+      if (deleteError && typeof deleteError === 'object' && 'code' in deleteError && deleteError.code === '23503') {
         return reply.status(409).send({
           code: 'RESOURCE_IN_USE',
           message: 'This template is still being used. Remove all references first.',
@@ -251,11 +244,9 @@ export async function deleteNoteTemplate(request, reply) {
 
       return reply.status(400).send({ error: 'Failed to delete template' });
     }
-
-    return reply.status(204).send();
   } catch (err) {
     console.error('Error deleting note template:', err);
-    return reply.status(500).send({ error: 'Internal server error' });
+    return reply.status(500).send({ error: pgErrorMessage(err) });
   }
 }
 

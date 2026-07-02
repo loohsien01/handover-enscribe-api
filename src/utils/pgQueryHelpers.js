@@ -46,6 +46,35 @@ export function pgIdToNumber(id) {
   return Number(id);
 }
 
+/** Bigint columns node-pg returns as strings — coerce to Number for supabase-js-compatible API responses. */
+const DEFAULT_BIGINT_FIELDS = ['id'];
+
+/**
+ * @param {Record<string, unknown> | null | undefined} row
+ * @param {string[]} [fields]
+ * @returns {Record<string, unknown> | null | undefined}
+ */
+export function pgCoerceBigIntFields(row, fields = DEFAULT_BIGINT_FIELDS) {
+  if (!row) return row;
+  const out = { ...row };
+  for (const field of fields) {
+    const val = out[field];
+    if (val != null && typeof val !== 'number') {
+      out[field] = pgIdToNumber(val);
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {Record<string, unknown>[]} rows
+ * @param {string[]} [fields]
+ * @returns {Record<string, unknown>[]}
+ */
+export function pgCoerceBigIntFieldsRows(rows, fields = DEFAULT_BIGINT_FIELDS) {
+  return rows.map((row) => pgCoerceBigIntFields(row, fields));
+}
+
 /**
  * @param {unknown} err
  * @returns {string}

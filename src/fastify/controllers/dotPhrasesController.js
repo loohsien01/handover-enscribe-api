@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import { dotPhraseSchema } from '../schemas/dotPhrase.js';
+import { pgQueryOne, pgQueryRows, pgErrorMessage, pgCoerceBigIntFields } from '../../utils/pgQueryHelpers.js';
 
-const dotPhrasesTable = 'dotPhrases';
+const dotPhrasesTable = '"dotPhrases"';
 
 /**
  * Helper: Validates bigint ID format
@@ -23,9 +24,7 @@ function isValidBigInt(id) {
  */
 function generateEncryptedAESKey() {
   try {
-    // Use shared utility to generate AES key
     const { aesKey } = encryptionUtils.generateAESKeyAndIV();
-    // Use shared utility to encrypt it with RSA public key
     const encryptedAESKey = encryptionUtils.encryptAESKey(aesKey);
     return encryptedAESKey;
   } catch (err) {
@@ -42,34 +41,29 @@ function generateEncryptedAESKey() {
  */
 async function encryptDotPhraseFields(dotPhrase) {
   try {
-    // Generate a fresh encrypted AES key for this dot phrase
     const encryptedAESKey = generateEncryptedAESKey();
     dotPhrase.encrypted_aes_key = encryptedAESKey;
 
-    // Generate a single IV for both fields using shared utility
     const ivBase64 = encryptionUtils.generateRandomIVBase64();
     dotPhrase.iv = ivBase64;
 
-    // Decrypt the AES key for encryption operations
     const aesKey = encryptionUtils.decryptAESKey(encryptedAESKey);
     const aesKeyBase64 = Buffer.isBuffer(aesKey) ? aesKey.toString('base64') : aesKey;
 
-    // Encrypt trigger field using the same IV
     if (dotPhrase.trigger) {
       try {
         dotPhrase.encrypted_trigger = encryptionUtils.encryptText(dotPhrase.trigger, aesKeyBase64, ivBase64);
-        delete dotPhrase.trigger; // Remove plain text
+        delete dotPhrase.trigger;
       } catch (err) {
         console.error('Failed to encrypt trigger:', err);
         return { success: false, error: 'Failed to encrypt trigger', dotPhrase: null };
       }
     }
 
-    // Encrypt expansion field using the same IV
     if (dotPhrase.expansion) {
       try {
         dotPhrase.encrypted_expansion = encryptionUtils.encryptText(dotPhrase.expansion, aesKeyBase64, ivBase64);
-        delete dotPhrase.expansion; // Remove plain text
+        delete dotPhrase.expansion;
       } catch (err) {
         console.error('Failed to encrypt expansion:', err);
         return { success: false, error: 'Failed to encrypt expansion', dotPhrase: null };
@@ -94,10 +88,8 @@ async function decryptDotPhraseFields(dotPhrase) {
       return { success: false, error: 'Missing encryption key or IV for dot phrase', dotPhrase: null };
     }
 
-    // Decrypt the AES key for decryption operations
     const aesKey = encryptionUtils.decryptAESKey(dotPhrase.encrypted_aes_key);
 
-    // Decrypt trigger field using the stored IV
     if (dotPhrase.encrypted_trigger) {
       try {
         dotPhrase.trigger = encryptionUtils.decryptText(dotPhrase.encrypted_trigger, aesKey, dotPhrase.iv);
@@ -107,7 +99,6 @@ async function decryptDotPhraseFields(dotPhrase) {
       }
     }
 
-    // Decrypt expansion field using the same stored IV
     if (dotPhrase.encrypted_expansion) {
       try {
         dotPhrase.expansion = encryptionUtils.decryptText(dotPhrase.encrypted_expansion, aesKey, dotPhrase.iv);
@@ -117,7 +108,6 @@ async function decryptDotPhraseFields(dotPhrase) {
       }
     }
 
-    // Clean up encrypted fields from response
     delete dotPhrase.encrypted_trigger;
     delete dotPhrase.encrypted_expansion;
     delete dotPhrase.encrypted_aes_key;
@@ -134,39 +124,28 @@ async function decryptDotPhraseFields(dotPhrase) {
  * Gets all dot phrases for a specific user with decryption.
  * This function can be called from other modules (like prompt-llm).
  * @param {string} userId - The user ID to get dot phrases for.
- * @param {object} supabaseClient - Optional Supabase client instance.
+ * @param {object} [_supabaseClient] - Deprecated; kept for call-site compatibility.
  * @returns {Promise<{success: boolean, data: Array, error: string|null}>}
  */
-export async function getAllDotPhrasesForUser(userId, supabaseClient = null) {
+export async function getAllDotPhrasesForUser(userId, _supabaseClient = null) {
   try {
-    // Require supabase client
-    if (!supabaseClient) {
-      console.error('[getAllDotPhrasesForUser] No supabase client provided');
-      return { success: false, data: [], error: 'Supabase client is required' };
-    }
-
     console.log(`[getAllDotPhrasesForUser] Fetching dot phrases for user: ${userId}`);
 
-    // Get all dot phrases for the user
-    const { data, error } = await supabaseClient
-      .from(dotPhrasesTable)
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+    const data = await pgQueryRows(
+      `SELECT *
+         FROM ${dotPhrasesTable}
+        WHERE user_id = $1
+        ORDER BY created_at DESC`,
+      [userId]
+    );
 
-    if (error) {
-      console.error('[getAllDotPhrasesForUser] Database error:', error);
-      return { success: false, data: [], error: error.message };
-    }
-
-    if (!data || data.length === 0) {
+    if (data.length === 0) {
       console.log('[getAllDotPhrasesForUser] No dot phrases found for user');
       return { success: true, data: [], error: null };
     }
 
     console.log(`[getAllDotPhrasesForUser] Found ${data.length} dot phrases, decrypting...`);
 
-    // Decrypt all dot phrases
     const decryptedDotPhrases = [];
     for (const dotPhrase of data) {
       if (dotPhrase.encrypted_trigger || dotPhrase.encrypted_expansion) {
@@ -175,48 +154,41 @@ export async function getAllDotPhrasesForUser(userId, supabaseClient = null) {
           decryptedDotPhrases.push(dotPhrase);
         } else {
           console.error(`[getAllDotPhrasesForUser] Failed to decrypt dot phrase ${dotPhrase.id}:`, decryptResult.error);
-          // Still include the record but without decrypted fields
           decryptedDotPhrases.push(dotPhrase);
         }
       } else {
-        // No encryption, add as-is
         decryptedDotPhrases.push(dotPhrase);
       }
     }
 
     console.log(`[getAllDotPhrasesForUser] Successfully processed ${decryptedDotPhrases.length} dot phrases`);
-    return { success: true, data: decryptedDotPhrases, error: null };
+    return { success: true, data: decryptedDotPhrases.map((row) => pgCoerceBigIntFields(row, ['id'])), error: null };
   } catch (err) {
     console.error('[getAllDotPhrasesForUser] Unexpected error:', err);
-    return { success: false, data: [], error: 'Failed to fetch dot phrases' };
+    return { success: false, data: [], error: pgErrorMessage(err) };
   }
 }
 
 /**
  * Gets a single dot phrase by ID for the authenticated user
  */
-export async function getOneDotPhrase(userId, dotPhraseId, supabase) {
+export async function getOneDotPhrase(userId, dotPhraseId, _supabase) {
   try {
     if (!isValidBigInt(dotPhraseId)) {
       return { success: false, error: 'Invalid dot phrase ID format', data: null };
     }
 
-    const { data, error } = await supabase
-      .from(dotPhrasesTable)
-      .select('*')
-      .eq('id', dotPhraseId)
-      .eq('user_id', userId)
-      .single();
-
-    if (error) {
-      return { success: false, error: error.message, data: null };
-    }
+    const data = await pgQueryOne(
+      `SELECT *
+         FROM ${dotPhrasesTable}
+        WHERE id = $1 AND user_id = $2`,
+      [dotPhraseId, userId]
+    );
 
     if (!data) {
       return { success: false, error: 'Dot phrase not found', data: null };
     }
 
-    // Decrypt fields before returning
     if (data.encrypted_trigger || data.encrypted_expansion) {
       const decryptResult = await decryptDotPhraseFields(data);
       if (!decryptResult.success) {
@@ -224,17 +196,17 @@ export async function getOneDotPhrase(userId, dotPhraseId, supabase) {
       }
     }
 
-    return { success: true, error: null, data };
+    return { success: true, error: null, data: pgCoerceBigIntFields(data, ['id']) };
   } catch (err) {
     console.error('Error fetching single dot phrase:', err);
-    return { success: false, error: err.message, data: null };
+    return { success: false, error: pgErrorMessage(err), data: null };
   }
 }
 
 /**
  * Creates a new dot phrase for the authenticated user
  */
-export async function createDotPhrase(userId, trigger, expansion, supabase) {
+export async function createDotPhrase(userId, trigger, expansion, _supabase) {
   try {
     if (!trigger || !expansion) {
       return { success: false, error: 'trigger and expansion are required', data: null };
@@ -248,49 +220,53 @@ export async function createDotPhrase(userId, trigger, expansion, supabase) {
 
     console.log('[createDotPhrase] Creating dotPhrase:', dotPhrase);
 
-    // Encrypt the fields
     const encryptionResult = await encryptDotPhraseFields(dotPhrase);
     if (!encryptionResult.success) {
       return { success: false, error: encryptionResult.error, data: null };
     }
 
-    const { data: insertData, error: insertError } = await supabase
-      .from(dotPhrasesTable)
-      .insert([dotPhrase])
-      .select()
-      .single();
+    const enc = encryptionResult.dotPhrase;
 
-    if (insertError) {
-      return { success: false, error: insertError.message, data: null };
-    }
+    const insertData = await pgQueryOne(
+      `INSERT INTO ${dotPhrasesTable} (
+         user_id, encrypted_aes_key, iv, encrypted_trigger, encrypted_expansion
+       ) VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [
+        userId,
+        enc.encrypted_aes_key,
+        enc.iv,
+        enc.encrypted_trigger ?? null,
+        enc.encrypted_expansion ?? null,
+      ]
+    );
 
-    return { success: true, error: null, data: insertData };
+    return { success: true, error: null, data: pgCoerceBigIntFields(insertData, ['id']) };
   } catch (err) {
     console.error('Error creating dot phrase:', err);
-    return { success: false, error: err.message, data: null };
+    return { success: false, error: pgErrorMessage(err), data: null };
   }
 }
 
 /**
  * Updates an existing dot phrase for the authenticated user
  */
-export async function updateDotPhrase(userId, dotPhraseId, updateData, supabase) {
+export async function updateDotPhrase(userId, dotPhraseId, updateData, _supabase) {
   try {
     if (!isValidBigInt(dotPhraseId)) {
       return { success: false, error: 'Invalid dot phrase ID format', data: null };
     }
 
-    // updateData is already validated by route, no need to validate again
-    const dotPhrase = updateData;
+    const dotPhrase = { ...updateData };
     dotPhrase.id = dotPhraseId;
-    dotPhrase.user_id = userId; // Ensure user_id is set to the authenticated user's ID
+    dotPhrase.user_id = userId;
 
     console.log('[updateDotPhrase] Received body:', updateData);
     console.log('[updateDotPhrase] Parsed dotPhrase:', dotPhrase);
 
-    // Check if trigger or expansion are being updated
+    let encryptedFields = null;
+
     if (updateData.trigger !== undefined || updateData.expansion !== undefined) {
-      // Set the raw values from request body directly
       if (updateData.trigger !== undefined) dotPhrase.trigger = updateData.trigger;
       if (updateData.expansion !== undefined) dotPhrase.expansion = updateData.expansion;
 
@@ -304,22 +280,38 @@ export async function updateDotPhrase(userId, dotPhraseId, updateData, supabase)
         return { success: false, error: encryptionResult.error, data: null };
       }
 
+      encryptedFields = encryptionResult.dotPhrase;
       console.log('[updateDotPhrase] Encryption successful, encrypted fields added');
     }
 
     console.log('[updateDotPhrase] Final dotPhrase before update:', dotPhrase);
 
-    const { data: updatedData, error: updateError } = await supabase
-      .from(dotPhrasesTable)
-      .update(dotPhrase)
-      .eq('id', dotPhraseId)
-      .eq('user_id', userId) // Ensure only the owner can update
-      .select()
-      .single();
+    let updatedData;
 
-    if (updateError) {
-      console.error('[updateDotPhrase] Update error:', updateError);
-      return { success: false, error: updateError.message, data: null };
+    if (encryptedFields) {
+      updatedData = await pgQueryOne(
+        `UPDATE ${dotPhrasesTable}
+            SET encrypted_aes_key = $1,
+                iv = $2,
+                encrypted_trigger = $3,
+                encrypted_expansion = $4,
+                updated_at = NOW()
+          WHERE id = $5 AND user_id = $6
+          RETURNING *`,
+        [
+          encryptedFields.encrypted_aes_key,
+          encryptedFields.iv,
+          encryptedFields.encrypted_trigger ?? null,
+          encryptedFields.encrypted_expansion ?? null,
+          dotPhraseId,
+          userId,
+        ]
+      );
+    } else {
+      updatedData = await pgQueryOne(
+        `SELECT * FROM ${dotPhrasesTable} WHERE id = $1 AND user_id = $2`,
+        [dotPhraseId, userId]
+      );
     }
 
     if (!updatedData) {
@@ -327,41 +319,36 @@ export async function updateDotPhrase(userId, dotPhraseId, updateData, supabase)
     }
 
     console.log('[updateDotPhrase] Update successful:', updatedData);
-    return { success: true, error: null, data: updatedData };
+    return { success: true, error: null, data: pgCoerceBigIntFields(updatedData, ['id']) };
   } catch (err) {
     console.error('Error updating dot phrase:', err);
-    return { success: false, error: err.message, data: null };
+    return { success: false, error: pgErrorMessage(err), data: null };
   }
 }
 
 /**
  * Deletes a dot phrase for the authenticated user
  */
-export async function deleteDotPhrase(userId, dotPhraseId, supabase) {
+export async function deleteDotPhrase(userId, dotPhraseId, _supabase) {
   try {
     if (!isValidBigInt(dotPhraseId)) {
       return { success: false, error: 'Invalid dot phrase ID format', data: null };
     }
 
-    const { data, error } = await supabase
-      .from(dotPhrasesTable)
-      .delete()
-      .eq('id', dotPhraseId)
-      .eq('user_id', userId) // Ensure only the owner can delete
-      .select()
-      .single();
-
-    if (error) {
-      return { success: false, error: error.message, data: null };
-    }
+    const data = await pgQueryOne(
+      `DELETE FROM ${dotPhrasesTable}
+        WHERE id = $1 AND user_id = $2
+        RETURNING *`,
+      [dotPhraseId, userId]
+    );
 
     if (!data) {
       return { success: false, error: 'Dot phrase not found or not authorized to delete', data: null };
     }
 
-    return { success: true, error: null, data };
+    return { success: true, error: null, data: pgCoerceBigIntFields(data, ['id']) };
   } catch (err) {
     console.error('Error deleting dot phrase:', err);
-    return { success: false, error: err.message, data: null };
+    return { success: false, error: pgErrorMessage(err), data: null };
   }
 }
