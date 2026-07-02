@@ -30,6 +30,7 @@ function assertNoObviousSupabaseUrlPlaceholders(url) {
  * 2. `DATABASE_URL`
  * 3. `SUPABASE_DB_URL`
  * 4. Composed from `SUPABASE_DB_HOST` + `SUPABASE_DB_PASSWORD` (+ optional port/user/db/sslmode).
+ *    Dev/local only — skipped when `NODE_ENV=production` (prod uses `DATABASE_URL` on RDS).
  *    For the pooler, set `SUPABASE_DB_USER=postgres.<project_ref>` and `SUPABASE_DB_PORT=6543`.
  *
  * TLS for `pg`: see `SUPABASE_DB_SSL_REJECT_UNAUTHORIZED` in `supabasePostgresPool.js`.
@@ -52,6 +53,10 @@ export function getSupabasePostgresUrl() {
   if (urlFallback) {
     assertNoObviousSupabaseUrlPlaceholders(urlFallback);
     return urlFallback;
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return null;
   }
 
   const host = fromEnv('SUPABASE_DB_HOST');
