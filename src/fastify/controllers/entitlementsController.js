@@ -1,25 +1,12 @@
-import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
-import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
+import {
+  ensurePersonalOrganization,
+  loadPersonalOrganizationForUser,
+} from '../../services/personalOrganization.js';
 import {
   computeEntitlements,
   loadInternalAccess,
 } from '../../utils/billingEntitlements.js';
 import { loadUsageForUserContext } from '../../utils/billingUsage.js';
-
-/**
- * Read the caller's personal organization (or null when missing).
- * Service-role read, so RLS does not apply.
- */
-async function loadPersonalOrgForEntitlements(admin, userId) {
-  const { data, error } = await admin
-    .from('organizations')
-    .select('plan_key, subscription_status')
-    .eq('personal_owner_user_id', userId)
-    .eq('type', 'personal')
-    .maybeSingle();
-  if (error) throw error;
-  return data || null;
-}
 
 /**
  * GET /api/me/entitlements
@@ -38,16 +25,15 @@ export async function getMyEntitlements(request, reply) {
     return reply.status(401).send({ error: 'Unauthenticated' });
   }
 
-  const admin = supabaseAdmin();
   let org = null;
   try {
-    org = await loadPersonalOrgForEntitlements(admin, userId);
+    org = await loadPersonalOrganizationForUser(userId);
     if (!org) {
       try {
         await ensurePersonalOrganization(userId, {
           name: request.user?.email || 'Personal',
         });
-        org = await loadPersonalOrgForEntitlements(admin, userId);
+        org = await loadPersonalOrganizationForUser(userId);
       } catch (err) {
         request.log?.error({ err }, '[entitlements] ensurePersonalOrganization');
       }

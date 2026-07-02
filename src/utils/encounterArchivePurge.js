@@ -11,6 +11,7 @@
  */
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { querySupabasePostgres } from './supabasePostgresPool.js';
+import { pgQueryOne, pgQueryRows } from './pgQueryHelpers.js';
 import { getArchiveS3Client } from './archiveS3Client.js';
 import {
   normalizeRecordingStorageKey,
@@ -841,28 +842,41 @@ async function processOneQueueRow(supabase, s3, archiveBucket, row, rowOpts = {}
     );
 
     if (typeof recordingFilePath === 'string' && recordingFilePath.length > 0) {
-      await supabase.from('jobs').delete().eq('recording_file_path', recordingFilePath).eq('user_id', userId);
+      await querySupabasePostgres(
+        `DELETE FROM public.jobs WHERE recording_file_path = $1 AND user_id = $2`,
+        [recordingFilePath, userId]
+      );
     }
 
-    const { data: recs, error: recErr } = await supabase
-      .from('recordings')
-      .select('id')
-      .eq('patientEncounter_id', encounterId);
-    if (recErr) return failRow(supabaseClientErrorMessage(recErr, 'recordings select failed'));
-    const recIds = (recs || []).map((r) => r.id).filter(Boolean);
+    const recs = await pgQueryRows(
+      `SELECT id FROM public.recordings WHERE "patientEncounter_id" = $1`,
+      [encounterId]
+    );
+    const recIds = recs.map((r) => r.id).filter(Boolean);
     if (recIds.length > 0) {
-      const { error: tErr } = await supabase.from('transcripts').delete().in('recording_id', recIds);
-      if (tErr) return failRow(supabaseClientErrorMessage(tErr, 'transcripts delete failed'));
+      await querySupabasePostgres(
+        `DELETE FROM public.transcripts WHERE recording_id = ANY($1::bigint[])`,
+        [recIds]
+      );
     }
 
-    const { error: rDelErr } = await supabase.from('recordings').delete().eq('patientEncounter_id', encounterId);
-    if (rDelErr) return failRow(supabaseClientErrorMessage(rDelErr, 'recordings delete failed'));
+    await querySupabasePostgres(
+      `DELETE FROM public.recordings WHERE "patientEncounter_id" = $1`,
+      [encounterId]
+    );
 
-    const { error: nDelErr } = await supabase.from('notes').delete().eq('patientEncounter_id', encounterId);
-    if (nDelErr) return failRow(supabaseClientErrorMessage(nDelErr, 'notes delete failed'));
+    await querySupabasePostgres(
+      `DELETE FROM public.notes WHERE "patientEncounter_id" = $1`,
+      [encounterId]
+    );
 
-    const { error: eDelErr } = await supabase.from('patientEncounters').delete().eq('id', encounterId);
-    if (eDelErr) return failRow(supabaseClientErrorMessage(eDelErr, 'patientEncounters delete failed'));
+    const eDel = await querySupabasePostgres(
+      `DELETE FROM public."patientEncounters" WHERE id = $1`,
+      [encounterId]
+    );
+    if (eDel.rowCount === 0) {
+      return failRow('patientEncounters delete affected 0 rows');
+    }
 
     const now = new Date().toISOString();
     let finQ;
@@ -895,50 +909,46 @@ async function processOneQueueRow(supabase, s3, archiveBucket, row, rowOpts = {}
  * @param {number|string} encounterId
  * @param {string} userId
  */
-async function buildBundleJsonlLines(supabase, encounterId, userId) {
+async function buildBundleJsonlLines(_supabase, encounterId, userId) {
   const lines = /** @type {string[]} */ ([]);
 
-  const { data: pe, error: peErr } = await supabase
-    .from('patientEncounters')
-    .select('*')
-    .eq('id', encounterId)
-    .maybeSingle();
-  if (peErr) throw new Error(peErr.message);
+  const pe = await pgQueryOne(
+    `SELECT * FROM public."patientEncounters" WHERE id = $1 LIMIT 1`,
+    [encounterId]
+  );
   if (pe) lines.push(JSON.stringify({ table: 'patientEncounters', row: pe }));
 
-  const { data: notes, error: nErr } = await supabase
-    .from('notes')
-    .select('*')
-    .eq('patientEncounter_id', encounterId);
-  if (nErr) throw new Error(nErr.message);
-  for (const n of notes || []) lines.push(JSON.stringify({ table: 'notes', row: n }));
+  const notes = await pgQueryRows(
+    `SELECT * FROM public.notes WHERE "patientEncounter_id" = $1`,
+    [encounterId]
+  );
+  for (const n of notes) lines.push(JSON.stringify({ table: 'notes', row: n }));
 
-  const { data: recs, error: rErr } = await supabase
-    .from('recordings')
-    .select('*')
-    .eq('patientEncounter_id', encounterId);
-  if (rErr) throw new Error(rErr.message);
-  for (const r of recs || []) lines.push(JSON.stringify({ table: 'recordings', row: r }));
+  const recs = await pgQueryRows(
+    `SELECT * FROM public.recordings WHERE "patientEncounter_id" = $1`,
+    [encounterId]
+  );
+  for (const r of recs) lines.push(JSON.stringify({ table: 'recordings', row: r }));
 
-  const recIds = (recs || []).map((r) => r.id).filter(Boolean);
+  const recIds = recs.map((r) => r.id).filter(Boolean);
   if (recIds.length > 0) {
-    const { data: tr, error: tErr } = await supabase.from('transcripts').select('*').in('recording_id', recIds);
-    if (tErr) throw new Error(tErr.message);
-    for (const t of tr || []) {
+    const tr = await pgQueryRows(
+      `SELECT * FROM public.transcripts WHERE recording_id = ANY($1::bigint[])`,
+      [recIds]
+    );
+    for (const t of tr) {
       const row = { ...t, encryption_version: TRANSCRIPT_ARCHIVE_ENCRYPTION_VERSION };
       lines.push(JSON.stringify({ table: 'transcripts', row }));
     }
   }
 
-  if (recs && recs[0]?.recording_file_path) {
+  if (recs[0]?.recording_file_path) {
     const path = recs[0].recording_file_path;
-    const { data: jobs, error: jErr } = await supabase
-      .from('jobs')
-      .select('*')
-      .eq('recording_file_path', path)
-      .eq('user_id', userId);
-    if (jErr) throw new Error(jErr.message);
-    for (const j of jobs || []) lines.push(JSON.stringify({ table: 'jobs', row: j }));
+    const jobs = await pgQueryRows(
+      `SELECT * FROM public.jobs WHERE recording_file_path = $1 AND user_id = $2`,
+      [path, userId]
+    );
+    for (const j of jobs) lines.push(JSON.stringify({ table: 'jobs', row: j }));
   }
 
   return lines;

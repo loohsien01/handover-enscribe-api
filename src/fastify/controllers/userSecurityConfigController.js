@@ -5,9 +5,10 @@
  */
 
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
-import { createClient } from '@supabase/supabase-js';
+import { pgQueryOne, pgQueryRows } from '../../utils/pgQueryHelpers.js';
+import { querySupabasePostgres } from '../../utils/supabasePostgresPool.js';
 
-const userSecurityConfigTable = 'userSecurityConfigs';
+const userSecurityConfigTable = '"userSecurityConfigs"';
 
 /**
  * Gets the system master key using service role credentials
@@ -16,30 +17,20 @@ const userSecurityConfigTable = 'userSecurityConfigs';
  */
 export async function getSystemMasterKey() {
   try {
-    const supabaseAdmin = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY,
-      { auth: { persistSession: false } }
+    const row = await pgQueryOne(
+      `SELECT wrapped_master_key
+         FROM public.${userSecurityConfigTable}
+        WHERE user_id IS NULL
+        LIMIT 1`
     );
 
-    const { data, error } = await supabaseAdmin
-      .from(userSecurityConfigTable)
-      .select('wrapped_master_key')
-      .is('user_id', null)
-      .single();
-
-    if (error) {
-      console.error('[getSystemMasterKey] Database error:', error);
-      return { success: false, error: 'Failed to fetch system key', masterKey: null };
-    }
-
-    if (!data) {
+    if (!row) {
       console.error('[getSystemMasterKey] System key not found');
       return { success: false, error: 'System key not found', masterKey: null };
     }
 
     try {
-      const masterKeyBuffer = encryptionUtils.decryptAESKey(data.wrapped_master_key);
+      const masterKeyBuffer = encryptionUtils.decryptAESKey(row.wrapped_master_key);
       return { success: true, error: null, masterKey: masterKeyBuffer };
     } catch (err) {
       console.error('[getSystemMasterKey] Failed to decrypt system key:', err);
@@ -53,30 +44,27 @@ export async function getSystemMasterKey() {
 
 /**
  * Gets or creates the user's master encryption key from userSecurityConfigs
- * @param {object} supabase - Supabase client
+ * @param {object} _supabase - kept for call-site compat; DB uses pg pool
  * @param {string} userId - User ID (UUID)
  * @returns {object} { success, error, masterKey: Buffer }
  */
-export async function getOrCreateUserMasterKey(supabase, userId) {
+export async function getOrCreateUserMasterKey(_supabase, userId) {
   try {
-    const { data, error } = await supabase
-      .from(userSecurityConfigTable)
-      .select('wrapped_master_key')
-      .eq('user_id', userId);
+    const rows = await pgQueryRows(
+      `SELECT wrapped_master_key
+         FROM public.${userSecurityConfigTable}
+        WHERE user_id = $1`,
+      [userId]
+    );
 
-    if (error) {
-      console.error('[getOrCreateUserMasterKey] Database error:', error);
-      return { success: false, error: 'Failed to fetch security config', masterKey: null };
-    }
-
-    if (data && data.length > 1) {
+    if (rows.length > 1) {
       console.error('[getOrCreateUserMasterKey] Data integrity error: multiple configs found');
       return { success: false, error: 'Data integrity error', masterKey: null };
     }
 
-    if (data && data.length === 1) {
+    if (rows.length === 1) {
       try {
-        const masterKeyBuffer = encryptionUtils.decryptAESKey(data[0].wrapped_master_key);
+        const masterKeyBuffer = encryptionUtils.decryptAESKey(rows[0].wrapped_master_key);
         return { success: true, error: null, masterKey: masterKeyBuffer };
       } catch (err) {
         console.error('[getOrCreateUserMasterKey] Failed to decrypt master key:', err);
@@ -84,19 +72,15 @@ export async function getOrCreateUserMasterKey(supabase, userId) {
       }
     }
 
-    // Create new master key
     try {
       const { aesKey: newAesKeyBase64 } = encryptionUtils.generateAESKeyAndIV();
       const wrappedMasterKey = encryptionUtils.encryptAESKey(newAesKeyBase64);
 
-      const { error: insertError } = await supabase
-        .from(userSecurityConfigTable)
-        .insert([{ user_id: userId, wrapped_master_key: wrappedMasterKey }]);
-
-      if (insertError) {
-        console.error('[getOrCreateUserMasterKey] Failed to insert security config:', insertError);
-        return { success: false, error: 'Failed to create security config', masterKey: null };
-      }
+      await querySupabasePostgres(
+        `INSERT INTO public.${userSecurityConfigTable} (user_id, wrapped_master_key)
+         VALUES ($1, $2)`,
+        [userId, wrappedMasterKey]
+      );
 
       const masterKeyBuffer = encryptionUtils.decryptAESKey(wrappedMasterKey);
       return { success: true, error: null, masterKey: masterKeyBuffer };

@@ -6,6 +6,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { loadCleanupExcludedUserIdSet } from './cleanupExcludedUserIds.js';
 import { querySupabasePostgres } from './supabasePostgresPool.js';
+import { pgQueryRows } from './pgQueryHelpers.js';
 import {
   AUDIO_BUCKET,
   listRecordingRootUserPrefixes,
@@ -23,8 +24,6 @@ const RESULT_PREVIEW = 50;
 /** UUID directory names at bucket root (user folders). */
 const USER_DIR_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-const recordingTableName = 'recordings';
 
 /**
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
@@ -74,7 +73,7 @@ export async function runUnattachedStorageCleanup(supabase, opts = {}) {
 
   try {
     const fromRoot = await listRootUserPrefixes(supabase);
-    const fromRecordings = await listDistinctRecordingUserIds(supabase);
+    const fromRecordings = await listDistinctRecordingUserIds();
     const userPrefixes = [...new Set([...fromRoot, ...fromRecordings])].sort((a, b) =>
       a.localeCompare(b)
     );
@@ -100,16 +99,14 @@ export async function runUnattachedStorageCleanup(supabase, opts = {}) {
         continue;
       }
 
-      const { data: rows, error: recErr } = await supabase
-        .from(recordingTableName)
-        .select('recording_file_path')
-        .eq('user_id', userId);
+      const rows = await pgQueryRows(
+        `SELECT recording_file_path
+           FROM public.recordings
+          WHERE user_id = $1`,
+        [userId]
+      );
 
-      if (recErr) {
-        throw new Error(`recordings query failed for ${userId}: ${recErr.message}`);
-      }
-
-      const attachedPaths = new Set((rows || []).map((r) => r.recording_file_path).filter(Boolean));
+      const attachedPaths = new Set(rows.map((r) => r.recording_file_path).filter(Boolean));
 
       const storageFiles = await listAllFilesInUserFolder(supabase, userId);
 
@@ -235,35 +232,33 @@ export async function listAllFilesInUserFolder(supabase, userId) {
 
 /**
  * Users who have at least one recording row (covers edge cases where root list is incomplete).
- * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  */
-export async function listDistinctRecordingUserIds(supabase) {
+export async function listDistinctRecordingUserIds() {
   const ids = new Set();
   const page = 1000;
-  let from = 0;
+  let offset = 0;
 
   while (true) {
-    const { data, error } = await supabase
-      .from(recordingTableName)
-      .select('user_id')
-      .not('user_id', 'is', null)
-      .range(from, from + page - 1);
+    const rows = await pgQueryRows(
+      `SELECT user_id
+         FROM public.recordings
+        WHERE user_id IS NOT NULL
+        ORDER BY user_id
+        LIMIT $1 OFFSET $2`,
+      [page, offset]
+    );
 
-    if (error) {
-      throw new Error(`recordings user_id list failed: ${error.message}`);
-    }
+    if (!rows.length) break;
 
-    if (!data?.length) break;
-
-    for (const row of data) {
+    for (const row of rows) {
       const id = row.user_id;
       if (id && USER_DIR_UUID.test(String(id))) {
         ids.add(String(id));
       }
     }
 
-    if (data.length < page) break;
-    from += page;
+    if (rows.length < page) break;
+    offset += page;
   }
 
   return [...ids];

@@ -1,5 +1,7 @@
-import { supabaseAdmin } from '../../utils/supabaseAdmin.js';
-import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
+import {
+  ensurePersonalOrganization,
+  loadPersonalOrgAndMembership,
+} from '../../services/personalOrganization.js';
 import {
   computeBaaStatus,
   insertBaaAcceptance,
@@ -7,40 +9,9 @@ import {
   loadBaaAcceptanceForVersion,
 } from '../../utils/baaStatus.js';
 
-async function getPersonalOrgAndMembership(admin, userId) {
-  const { data: org, error: orgErr } = await admin
-    .from('organizations')
-    .select('id, type')
-    .eq('personal_owner_user_id', userId)
-    .eq('type', 'personal')
-    .maybeSingle();
-
-  if (orgErr) {
-    console.error('[baa] load org:', orgErr);
-    return { error: orgErr };
-  }
-  if (!org) {
-    return { org: null, member: null };
-  }
-
-  const { data: member, error: memErr } = await admin
-    .from('organization_members')
-    .select('role')
-    .eq('organization_id', org.id)
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  if (memErr) {
-    console.error('[baa] load member:', memErr);
-    return { error: memErr };
-  }
-
-  return { org, member };
-}
-
-async function getOrCreatePersonalOrgAndMembership(admin, user) {
+async function getOrCreatePersonalOrgAndMembership(user) {
   const userId = user.id;
-  const first = await getPersonalOrgAndMembership(admin, userId);
+  const first = await loadPersonalOrgAndMembership(userId);
   if (first.error || first.org) return first;
 
   try {
@@ -50,7 +21,7 @@ async function getOrCreatePersonalOrgAndMembership(admin, user) {
     return { error: err };
   }
 
-  return getPersonalOrgAndMembership(admin, userId);
+  return loadPersonalOrgAndMembership(userId);
 }
 
 function formatAcceptanceResponse(acceptance) {
@@ -67,10 +38,8 @@ function formatAcceptanceResponse(acceptance) {
  * GET /api/baa/active
  */
 export async function getActiveBaa(request, reply) {
-  const admin = supabaseAdmin();
-
   try {
-    const activeVersion = await loadActiveBaaVersion(admin);
+    const activeVersion = await loadActiveBaaVersion();
     if (!activeVersion) {
       return reply.status(404).send({
         error: 'No active BAA version',
@@ -99,8 +68,7 @@ export async function getMyBaaStatus(request, reply) {
     return reply.status(401).send({ error: 'Unauthenticated' });
   }
 
-  const admin = supabaseAdmin();
-  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(admin, request.user);
+  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(request.user);
   if (error) {
     return reply.status(500).send({ error: 'Failed to load organization' });
   }
@@ -115,10 +83,10 @@ export async function getMyBaaStatus(request, reply) {
   }
 
   try {
-    const activeVersion = await loadActiveBaaVersion(admin);
+    const activeVersion = await loadActiveBaaVersion();
     const acceptance =
       activeVersion != null
-        ? await loadBaaAcceptanceForVersion(admin, org.id, activeVersion.id)
+        ? await loadBaaAcceptanceForVersion(String(org.id), activeVersion.id)
         : null;
 
     const status = computeBaaStatus({
@@ -147,8 +115,7 @@ export async function acceptMyBaa(request, reply) {
     return reply.status(401).send({ error: 'Unauthenticated' });
   }
 
-  const admin = supabaseAdmin();
-  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(admin, request.user);
+  const { org, member, error } = await getOrCreatePersonalOrgAndMembership(request.user);
   if (error) {
     return reply.status(500).send({ error: 'Failed to load organization' });
   }
@@ -168,7 +135,7 @@ export async function acceptMyBaa(request, reply) {
   const requestedVersion = request.body?.version_number;
 
   try {
-    const activeVersion = await loadActiveBaaVersion(admin);
+    const activeVersion = await loadActiveBaaVersion();
     if (!activeVersion) {
       return reply.status(404).send({
         error: 'No active BAA version',
@@ -184,15 +151,15 @@ export async function acceptMyBaa(request, reply) {
       });
     }
 
-    const existing = await loadBaaAcceptanceForVersion(admin, org.id, activeVersion.id);
+    const existing = await loadBaaAcceptanceForVersion(String(org.id), activeVersion.id);
     if (existing) {
       return reply.status(200).send({
         acceptance: formatAcceptanceResponse(existing),
       });
     }
 
-    const inserted = await insertBaaAcceptance(admin, {
-      organization_id: org.id,
+    const inserted = await insertBaaAcceptance({
+      organization_id: String(org.id),
       baa_version_id: activeVersion.id,
       accepted_by_user_id: userId,
     });

@@ -6,9 +6,10 @@
  */
 import { loadCleanupExcludedUserIdSet } from './cleanupExcludedUserIds.js';
 import { querySupabasePostgres } from './supabasePostgresPool.js';
+import { pgQueryRows } from './pgQueryHelpers.js';
 
-const sectionsTable = 'noteTemplateSections';
-const ordersTable = 'noteTemplateSectionOrders';
+const sectionsTable = '"noteTemplateSections"';
+const ordersTable = '"noteTemplateSectionOrders"';
 
 const JOB_NAME = 'unattached_note_template_sections';
 const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -76,21 +77,18 @@ export async function runUnattachedNoteTemplateSectionsCleanup(supabase, opts = 
 
     const cleanupExcludedUserIds = await loadCleanupExcludedUserIdSet();
 
-    /** PostgREST `or`: first branch must not be split as multiple OR operands. */
-    const eligibilityOr = `and(updated_at.is.null,created_at.lte.${cutoffIso}),updated_at.lte.${cutoffIso}`;
+    /** PostgREST `or` equivalent for age gate. */
+    const eligibilitySql = `(updated_at IS NULL AND created_at <= $1::timestamptz) OR updated_at <= $1::timestamptz`;
 
     while (deletedIds.length < maxDeletesPerRun) {
-      const { data: sections, error: secErr } = await supabase
-        .from(sectionsTable)
-        .select('id, user_id, updated_at, created_at, is_system')
-        .or(eligibilityOr)
-        .order('updated_at', { ascending: true, nullsFirst: true })
-        .order('id', { ascending: true })
-        .range(offset, offset + PAGE_SIZE - 1);
-
-      if (secErr) {
-        throw new Error(`noteTemplateSections query failed: ${secErr.message}`);
-      }
+      const sections = await pgQueryRows(
+        `SELECT id, user_id, updated_at, created_at, is_system
+           FROM public.${sectionsTable}
+          WHERE ${eligibilitySql}
+          ORDER BY updated_at ASC NULLS FIRST, id ASC
+          LIMIT $2 OFFSET $3`,
+        [cutoffTimestamptz, PAGE_SIZE, offset]
+      );
 
       if (!sections?.length) {
         break;
@@ -99,7 +97,7 @@ export async function runUnattachedNoteTemplateSectionsCleanup(supabase, opts = 
       pagesScanned += 1;
       candidatesSeen += sections.length;
 
-      const attached = await loadAttachedSectionIds(supabase, sections.map((s) => s.id));
+      const attached = await loadAttachedSectionIds(sections.map((s) => s.id));
       let unattached = sections.filter((s) => !attached.has(String(s.id)));
       unattached = unattached.filter((s) => !s.is_system);
       const exemptBefore = unattached.length;
@@ -116,13 +114,17 @@ export async function runUnattachedNoteTemplateSectionsCleanup(supabase, opts = 
       }
 
       const ids = toDelete.map((s) => s.id);
-      const { error: delErr } = await supabase.from(sectionsTable).delete().in('id', ids);
-
-      if (delErr) {
+      try {
+        await querySupabasePostgres(
+          `DELETE FROM public.${sectionsTable} WHERE id = ANY($1::bigint[])`,
+          [ids]
+        );
+      } catch (delErr) {
+        const message = delErr instanceof Error ? delErr.message : String(delErr);
         for (const row of toDelete) {
           failed.push({
             id: String(row.id),
-            message: delErr.message || 'delete failed',
+            message: message || 'delete failed',
           });
         }
         offset += sections.length;
@@ -197,23 +199,20 @@ export async function runUnattachedNoteTemplateSectionsCleanup(supabase, opts = 
 }
 
 /**
- * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {(string|number|bigint)[]} sectionIds
  */
-async function loadAttachedSectionIds(supabase, sectionIds) {
+async function loadAttachedSectionIds(sectionIds) {
   const attached = new Set();
   const CHUNK = 200;
   for (let i = 0; i < sectionIds.length; i += CHUNK) {
     const chunk = sectionIds.slice(i, i + CHUNK);
-    const { data, error } = await supabase
-      .from(ordersTable)
-      .select('noteTemplateSection_id')
-      .in('noteTemplateSection_id', chunk);
-
-    if (error) {
-      throw new Error(`noteTemplateSectionOrders query failed: ${error.message}`);
-    }
-    for (const row of data || []) {
+    const rows = await pgQueryRows(
+      `SELECT "noteTemplateSection_id"
+         FROM public.${ordersTable}
+        WHERE "noteTemplateSection_id" = ANY($1::bigint[])`,
+      [chunk]
+    );
+    for (const row of rows) {
       if (row.noteTemplateSection_id != null) {
         attached.add(String(row.noteTemplateSection_id));
       }

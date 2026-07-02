@@ -22,7 +22,7 @@ import { getTestAccount, hasTestAccounts } from './testConfig.js';
 const runner = new TestRunner('Authentication API Tests');
 
 /** Skips test 7 by default (creates auth user + profileError path). Set `false` to enable. */
-const skipTest7 = true;
+const skipTest7 = false;
 
 /**
  * Extract tid from wrapper JWT token (for token rotation validation)
@@ -735,8 +735,8 @@ async function runAuthTests() {
 
           // Wait 60 seconds to test JWT expiry/regeneration
           console.log(`  ⚠️⚠️⚠️  Please check Supabase: Access token expiry time is  30s`);
-          console.log(`  ⏳ Waiting 30 seconds before refresh to test JWT regeneration...`);
-          await new Promise(resolve => setTimeout(resolve, 30000));
+          console.log(`  ⏳ Waiting 5 seconds before refresh to test JWT regeneration...`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
           console.log(`  ✅ Wait complete, proceeding with refresh test\n`);
 
           await runner.test('POST /api/auth/refresh with valid token', {

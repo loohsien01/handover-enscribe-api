@@ -2,6 +2,8 @@
  * BAA status helpers — load active version / acceptance and compute UX flags.
  * Strict re-sign: needs_acceptance when org has not accepted the currently active version.
  */
+import { pgQueryOne } from './pgQueryHelpers.js';
+import { querySupabasePostgres } from './supabasePostgresPool.js';
 
 /**
  * @param {{
@@ -38,7 +40,6 @@ export function computeBaaStatus({ activeVersion, acceptance, memberRole }) {
 }
 
 /**
- * @param {import('@supabase/supabase-js').SupabaseClient} admin
  * @returns {Promise<{
  *   id: string,
  *   version_number: string,
@@ -47,87 +48,77 @@ export function computeBaaStatus({ activeVersion, acceptance, memberRole }) {
  *   effective_date: string,
  * } | null>}
  */
-export async function loadActiveBaaVersion(admin) {
-  const { data, error } = await admin
-    .from('baa_versions')
-    .select('id, version_number, title, content_markdown, effective_date')
-    .eq('is_active', true)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data || null;
+export async function loadActiveBaaVersion() {
+  const row = await pgQueryOne(
+    `SELECT id, version_number, title, content_markdown, effective_date
+       FROM public.baa_versions
+      WHERE is_active = true
+      LIMIT 1`
+  );
+  return row || null;
 }
 
 /**
  * Acceptance row for a specific org + version (strict re-sign uses active version id).
  *
- * @param {import('@supabase/supabase-js').SupabaseClient} admin
  * @param {string} organizationId
  * @param {string} baaVersionId
  */
-export async function loadBaaAcceptanceForVersion(admin, organizationId, baaVersionId) {
-  const { data, error } = await admin
-    .from('baa_acceptances')
-    .select(
-      `
-      id,
-      organization_id,
-      baa_version_id,
-      accepted_by_user_id,
-      accepted_at,
-      baa_versions ( version_number )
-    `
-    )
-    .eq('organization_id', organizationId)
-    .eq('baa_version_id', baaVersionId)
-    .maybeSingle();
+export async function loadBaaAcceptanceForVersion(organizationId, baaVersionId) {
+  const row = await pgQueryOne(
+    `SELECT a.id,
+            a.organization_id,
+            a.baa_version_id,
+            a.accepted_by_user_id,
+            a.accepted_at,
+            v.version_number
+       FROM public.baa_acceptances a
+       LEFT JOIN public.baa_versions v ON v.id = a.baa_version_id
+      WHERE a.organization_id = $1
+        AND a.baa_version_id = $2
+      LIMIT 1`,
+    [organizationId, baaVersionId]
+  );
+  if (!row) return null;
 
-  if (error) throw error;
-  if (!data) return null;
-
-  const versionNumber = data.baa_versions?.version_number ?? null;
   return {
-    id: data.id,
-    organization_id: data.organization_id,
-    baa_version_id: data.baa_version_id,
-    accepted_by_user_id: data.accepted_by_user_id,
-    accepted_at: data.accepted_at,
-    version_number: versionNumber,
+    id: row.id,
+    organization_id: row.organization_id,
+    baa_version_id: row.baa_version_id,
+    accepted_by_user_id: row.accepted_by_user_id,
+    accepted_at: row.accepted_at,
+    version_number: row.version_number ?? null,
   };
 }
 
 /**
- * @param {import('@supabase/supabase-js').SupabaseClient} admin
  * @param {{
  *   organization_id: string,
  *   baa_version_id: string,
  *   accepted_by_user_id: string,
  * }} row
  */
-export async function insertBaaAcceptance(admin, row) {
-  const { data, error } = await admin
-    .from('baa_acceptances')
-    .insert(row)
-    .select(
-      `
-      id,
-      organization_id,
-      baa_version_id,
-      accepted_by_user_id,
-      accepted_at,
-      baa_versions ( version_number )
-    `
-    )
-    .single();
+export async function insertBaaAcceptance(row) {
+  const inserted = await pgQueryOne(
+    `INSERT INTO public.baa_acceptances (
+       organization_id, baa_version_id, accepted_by_user_id
+     ) VALUES ($1, $2, $3)
+     RETURNING id, organization_id, baa_version_id, accepted_by_user_id, accepted_at`,
+    [row.organization_id, row.baa_version_id, row.accepted_by_user_id]
+  );
+  if (!inserted) throw new Error('baa_acceptances insert returned no row');
 
-  if (error) throw error;
+  const version = await pgQueryOne(
+    `SELECT version_number FROM public.baa_versions WHERE id = $1 LIMIT 1`,
+    [row.baa_version_id]
+  );
 
   return {
-    id: data.id,
-    organization_id: data.organization_id,
-    baa_version_id: data.baa_version_id,
-    accepted_by_user_id: data.accepted_by_user_id,
-    accepted_at: data.accepted_at,
-    version_number: data.baa_versions?.version_number ?? null,
+    id: inserted.id,
+    organization_id: inserted.organization_id,
+    baa_version_id: inserted.baa_version_id,
+    accepted_by_user_id: inserted.accepted_by_user_id,
+    accepted_at: inserted.accepted_at,
+    version_number: version?.version_number ?? null,
   };
 }

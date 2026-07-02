@@ -2,7 +2,7 @@
 
 Walkthrough for moving the **application database** off Supabase Postgres onto **Amazon RDS PostgreSQL** (or Aurora PostgreSQL). Auth and PostgREST stay on Supabase during early parts; storage is already on S3.
 
-**Status (2026-07-02):** **Phase A + B complete.** **Phase C PR 0–4 complete** (RDS TLS, signup stub, RPCs + encounters/recordings + notes pipeline + templates/pre-visit/dot phrases + Nova/jobs on `pg`). **Data still on Supabase Postgres** until Phase D cutover — code uses `pg` pool only; host unchanged. **Next:** PR 5, then Phase D cutover. Active Step 2 of [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md).
+**Status (2026-07-02):** **Phase A + B complete.** **Phase C PR 0–5 complete** (all app Postgres data paths on `pg`; `supabase-js` retained for auth + storage only). **Data still on Supabase Postgres** until Phase D cutover — pool host unchanged. **Next:** Phase D cutover (restore + flip `DATABASE_URL`). Active Step 2 of [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md).
 
 **Prerequisites:** [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) cutover complete (`RECORDINGS_STORAGE_BACKEND=s3` on prod).
 
@@ -22,7 +22,7 @@ Walkthrough for moving the **application database** off Supabase Postgres onto *
 | **6** | Schema export / assessment | Ops | **Done** — `supabase-schema.sql` exported; migrate `public` + `archive`; skip `storage`, `realtime`, `graphql*`, `vault` |
 | **7** | `auth.users` + FK strategy | Design + SQL | **Done** — **Option A through Cognito**; map `cognito_sub`; B-heavy only if canonical id changes |
 | **8** | RLS strategy on RDS | Design + SQL | **Done** — **disable RLS** on app tables post-restore; API enforces `user_id` |
-| **9** | Code: expand `pg`, replace `supabase-js` | **Code PR(s)** | **In progress** — **PR 0–4 done**; PR 5 pending (see Part 9) |
+| **9** | Code: expand `pg`, replace `supabase-js` | **Code PR(s)** | **Done** — PR 0–5 merged (see Part 9) |
 | **10** | Data migration + cutover | Ops | Not started |
 | **11** | Decommission Supabase Postgres | Ops + cleanup PR | After confidence window |
 
@@ -31,7 +31,7 @@ Walkthrough for moving the **application database** off Supabase Postgres onto *
 ```text
 Phase A — Infra (Parts 1–5)     ✅ Done — RDS reachable from EC2, empty `enscribe` DB ready
 Phase B — Schema (Parts 6–8)    ✅ Done — dump reviewed, Option A + disable RLS locked
-Phase C — Code (Part 9)         🔄 PR 0–4 ✅ — PR 5 pending; prod stays on Supabase until Phase D
+Phase C — Code (Part 9)         ✅ PR 0–5 done; prod stays on Supabase until Phase D
 Phase D — Data + cutover (10)   logical dump/restore or DMS; flip DATABASE_URL
 Phase E — Cleanup (11)          drop Supabase DB dependency after stable period
 ```
@@ -84,7 +84,7 @@ See **Part 9** for full PR breakdown. Summary:
 | **2** | Notes pipeline (`notes`, `soapNotes`, `transcripts`) — **Done** (31 + 26 + 22 integration tests verified) |
 | **3** | Templates + pre-visit + dot phrases — **Done** (16 + 19 + 19 + 12 + 10 + 6 + 14 integration tests verified) |
 | **4** | Nova + jobs + workers — **Done** (see PR 4 log) |
-| **5** | Remaining controllers / utils |
+| **5** | Remaining controllers / utils — **Done** (see PR 5 log) |
 | **Deploy** | `DATABASE_URL` GitHub secret exists; **deploy.yml + prod flip deferred to Phase D** |
 | **Tests** | Supabase until Phase D; RDS smoke from EC2 after restore |
 
@@ -119,7 +119,16 @@ These modules use `querySupabasePostgres` / `supabasePostgresPool.js` (connectio
 | Nova chat sessions + completions | `novaChatSessionsController.js`, `novaChatCompletionProcessor.js` | 4 |
 | Nova title / pre-visit title services | `novaChatTitleService.js`, `novaPreVisitSummaryTitleDetailsService.js` | 4 |
 | Prompt-LLM jobs | `jobController.js`, `promptLlmProcessor.js` — `jobs` table on `pg` | 4 |
-| Notes (full) | `notesController.js` — CRUD on `pg`; master key still via `userSecurityConfigController` (still supabase until PR 5) | 2 |
+| User profiles | `userProfileController.js` | 5 |
+| User security configs (master keys) | `userSecurityConfigController.js` | 5 |
+| Billing + orgs | `billingController.js`, `billingStripeSync.js`, `personalOrganization.js`, `billingUsage.js` (org read) | 5 |
+| BAA | `baaController.js`, `baaStatus.js` | 5 |
+| Entitlements | `entitlementsController.js` | 5 |
+| Stripe webhooks | `stripeWebhookController.js` | 5 |
+| Refresh tokens | `authController.js`, `refreshTokenPersistence.js` | 5 |
+| Encounter utils | `patientEncounterUtils.js` | 5 |
+| Cleanup / archive DB paths | `encounterArchivePurge.js`, `unattachedStorageCleanup.js`, `unattachedNoteTemplateSectionsCleanup.js` | 5 |
+| Notes (full) | `notesController.js` — CRUD on `pg`; master key via `userSecurityConfigController` on `pg` | 2, 5 |
 | SOAP notes (full) | `soapNotesController.js` — CRUD + `patientEncounters` join on `pg` | 2 |
 | Transcripts (full) | `transcriptsController.js` — CRUD on `pg`; explicit `user_id` + recording ownership checks | 2 |
 | Billing entitlements / usage | `billingEntitlements.js`, `billingUsage.js` | pre-9 |
@@ -127,7 +136,7 @@ These modules use `querySupabasePostgres` / `supabasePostgresPool.js` (connectio
 | Cleanup jobs | `unattachedStorageCleanup.js`, `unattachedNoteTemplateSectionsCleanup.js`, `cleanupExcludedUserIds.js` | pre-9 |
 | Migrations tooling | `sql/scripts/apply-psql-migration.mjs` | pre-9 |
 
-**Still on `supabase-js`** (~32 controller/service files): CRUD via `.from()` for Postgres data. All **3 RPC** call sites migrated in PR 1 (see above).
+**Still on `supabase-js`:** Auth (`signUp`, `signIn`, `getUser`, admin auth helpers) and **Storage** (`recordingsStorage.js`, archive S3 purge download paths). No Postgres `.from()` remain in `src/` (PR 5 audit ✅).
 
 RPC SQL definitions: `sql/functions/create_encounter_complete.sql`, `sql/functions/note_templates_complete.sql`.
 
@@ -366,7 +375,26 @@ Supabase RLS policies use `auth.uid()` and the `authenticated` role (example: `s
 
 **Goal:** All data paths use `querySupabasePostgres` (or renamed pool). Supabase client remains only for **auth** until Step 3 (Cognito) / Part 11. Storage is already S3-only.
 
-**Phase C status:** **PR 0–4 complete (2026-07-02).** Ship PR 5 next; **prod and app data stay on Supabase Postgres URI until Phase D.**
+**Phase C status:** **PR 0–5 complete (2026-07-02).** Phase C code gate satisfied; **prod and app data stay on Supabase Postgres URI until Phase D.**
+
+### Phase C PR 5 completion log (2026-07-02)
+
+| Item | Detail |
+|------|--------|
+| [userProfileController.js](../src/fastify/controllers/userProfileController.js) | `userProfiles` CRUD on `pg`; explicit `user_id` filters |
+| [userSecurityConfigController.js](../src/fastify/controllers/userSecurityConfigController.js) | System + user master keys on `pg`; `supabase` param kept at call sites for compat |
+| [billingController.js](../src/fastify/controllers/billingController.js), [billingStripeSync.js](../src/utils/billingStripeSync.js), [personalOrganization.js](../src/services/personalOrganization.js) | Organizations + members on `pg` |
+| [baaController.js](../src/fastify/controllers/baaController.js), [baaStatus.js](../src/utils/baaStatus.js) | BAA versions/acceptances on `pg` |
+| [entitlementsController.js](../src/fastify/controllers/entitlementsController.js) | Personal org reads on `pg` |
+| [stripeWebhookController.js](../src/fastify/controllers/stripeWebhookController.js) | Org updates + webhook idempotency on `pg` |
+| [authController.js](../src/fastify/controllers/authController.js), [refreshTokenPersistence.js](../src/utils/refreshTokenPersistence.js) | `refreshTokens` table on `pg`; Supabase auth unchanged |
+| [billingUsage.js](../src/utils/billingUsage.js) | `resolveBillingContext` org read on `pg` |
+| [patientEncounterUtils.js](../src/utils/patientEncounterUtils.js) | Encounter/recording/transcript reads on `pg` |
+| Cleanup jobs | [encounterArchivePurge.js](../src/utils/encounterArchivePurge.js), [unattachedStorageCleanup.js](../src/utils/unattachedStorageCleanup.js), [unattachedNoteTemplateSectionsCleanup.js](../src/utils/unattachedNoteTemplateSectionsCleanup.js) — remaining public-table `.from()` → `pg` |
+| Audit | No Postgres `.from()` in `src/` except `supabase.storage` (S3) |
+| Unit (verified) | `billingEntitlements` **6/6**, `billingStripeSync` **4/4**, `billingUsage` **5/5**, `baaStatus` **5/5** |
+| Integration | Run `test:billing-org`, `test:billing-usage-limits`, `test:auth`, `test:user-profile`, `test:baa` against Supabase before merge |
+| Prod / data | No env flip; pool still uses `SUPABASE_DB_DIRECT_URL` → Supabase; **no data on RDS yet** |
 
 ### Phase C PR 4 completion log (2026-07-02)
 
@@ -506,13 +534,16 @@ Supabase RLS policies use `auth.uid()` and the `authenticated` role (example: `s
 | Unit tests | nova title / summarize / pgQueryHelpers | Done — 10 + 10 + 13 + 5 |
 | Integration tests | `test:nova-chat-sessions`, completions, `test:prompt-llm` | Run before merge |
 
-### PR 5 — Remainder
+### PR 5 — Remainder — Done
 
-| Task | File(s) |
-|------|---------|
-| Controller migration | `userProfileController`, `billingController`, `baaController`, `authController` (refresh token table), `entitlementsController`, `userSecurityConfigController`, `stripeWebhookController`, remaining utils |
-| Audit | No remaining `.from()` for Postgres data (except auth-only Supabase paths) |
-| Tests | `npm run test:billing-org`, `npm run test:billing-usage-limits`, `npm run test:auth`, full `npm test` against Supabase |
+| Task | File(s) | Status |
+|------|---------|--------|
+| User profile + security config | `userProfileController`, `userSecurityConfigController` | Done |
+| Billing + BAA + entitlements + Stripe | `billingController`, `baaController`, `entitlementsController`, `stripeWebhookController`, `billingStripeSync`, `personalOrganization`, `baaStatus` | Done |
+| Refresh tokens | `authController`, `refreshTokenPersistence` | Done |
+| Remaining utils / jobs | `patientEncounterUtils`, `billingUsage`, archive/cleanup jobs | Done |
+| Audit | No Postgres `.from()` in `src/` (auth + storage only) | Done |
+| Integration tests | `test:billing-org`, `test:billing-usage-limits`, `test:auth`, `test:user-profile`, `test:baa` | Run before merge |
 
 ### Phase C completion checklist (gate for Phase D)
 
@@ -521,10 +552,10 @@ Supabase RLS policies use `auth.uid()` and the `authenticated` role (example: `s
 - [x] **PR 2** — `notesController`, `soapNotesController`, `transcriptsController` on `pg`; PR 2 integration tests verified (31 + 26 + 22)
 - [x] **PR 3** — `noteTemplates*`, `preVisitSummaries*`, `preVisitSummaryTemplates*`, `dotPhrasesController` on `pg`; PR 3 integration tests verified (16 + 19 + 19 + 12 + 10 + 6 + 14)
 - [x] **PR 4** — Nova + jobs on `pg` (`novaChatPersistence`, `novaChatSessionsController`, processors, `jobController`); unit tests verified (10 + 10 + 13 + 5)
-- [ ] **PR 5** merged — remaining controllers on `pg`
+- [x] **PR 5** merged — remaining controllers on `pg`; audit: no Postgres `.from()` in `src/`
 - [x] No prod env flip — EC2 still on Supabase URI; app data remains on Supabase until Phase D
-- [ ] Test suites pass against **Supabase** with migrated code (after PR 1–5; PR 1 slice ✅)
-- [ ] `supabase-js` retained only for **auth** (`getUser`, `signUp`, `signIn`, admin auth helpers) — after PR 1–5
+- [ ] Test suites pass against **Supabase** with migrated code (integration before merge)
+- [x] `supabase-js` retained only for **auth** + **storage** — Postgres data paths on `pg`
 
 ### 9.1 — Foundation (detail)
 
@@ -562,7 +593,7 @@ Functions already exist in Postgres — no Supabase-specific magic. **Done in PR
 | **PR 2** | `notesController`, `soapNotesController`, `transcriptsController` |
 | **PR 3** | `noteTemplates*`, `preVisitSummaries*`, `dotPhrases` routes | Done |
 | **PR 4** | `novaChatSessionsController`, `jobController`, workers | Done |
-| **PR 5** | `userProfileController`, `billingController`, `baaController`, remainder |
+| **PR 5** | `userProfileController`, `billingController`, `baaController`, remainder | Done |
 
 Each PR: swap `.from()` for parameterized SQL; preserve `user_id` checks; run existing test suites.
 
@@ -584,8 +615,7 @@ Each PR: swap `.from()` for parameterized SQL; preserve `user_id` checks; run ex
 | PR 2 integration | `npm run test:notes`, `npm run test:soap-notes`, `npm run test:transcripts` |
 | PR 3 integration | `npm run test:note-templates`, `test:note-template-sections`, `test:note-templates-complete`, `test:note-template-section-orders`, `test:dot-phrases`, `test:pre-visit-summaries`, `test:pre-visit-summary-templates` |
 | PR 4 integration | `npm run test:nova-chat-sessions`, `test:nova-chat-sessions-completions`, `test:prompt-llm` |
-| Billing | `npm run test:billing-org`, `npm run test:billing-usage-limits` |
-| Auth (unchanged) | `npm run test:auth` |
+| PR 5 integration | `npm run test:billing-org`, `test:billing-usage-limits`, `test:auth`, `test:user-profile`, `test:baa` |
 
 **Not during Phase C:** pointing local `.env.local` `DATABASE_URL` at prod RDS (VPC-private). Optional: SSM port-forward for ad-hoc debugging only.
 
@@ -615,8 +645,8 @@ Each PR: swap `.from()` for parameterized SQL; preserve `user_id` checks; run ex
 - [x] PR 2 — notes pipeline on `pg` (`notesController`, `soapNotesController`, `transcriptsController`); PR 2 tests verified (31 + 26 + 22)
 - [x] PR 3 — templates + pre-visit + dot phrases on `pg`; PR 3 tests verified (16 + 19 + 19 + 12 + 10 + 6 + 14)
 - [x] PR 4 — Nova + jobs on `pg`; unit tests verified (10 + 10 + 13 + 5); integration tests before merge
-- [ ] PR 5 merged — remaining controllers on `pg`
-- [ ] Test suites pass against **Supabase** with migrated code (after PR 1–5; PR 1 slice ✅)
+- [x] PR 5 — remaining controllers on `pg`; audit complete; unit tests verified (6 + 4 + 5 + 5)
+- [ ] Test suites pass against **Supabase** with migrated code (integration before merge)
 - [ ] Post-restore: smoke from **EC2** against RDS (Phase D)
 
 ### Cutover steps

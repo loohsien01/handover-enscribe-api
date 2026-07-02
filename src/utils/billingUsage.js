@@ -1,5 +1,5 @@
-import { supabaseAdmin } from './supabaseAdmin.js';
 import { querySupabasePostgres } from './supabasePostgresPool.js';
+import { pgQueryOne } from './pgQueryHelpers.js';
 import { ensurePersonalOrganization } from '../services/personalOrganization.js';
 import {
   loadInternalAccess,
@@ -98,16 +98,13 @@ export function effectivePlanKeyForLimits(org) {
  */
 export async function resolveBillingContext(userId) {
   const { organizationId } = await ensurePersonalOrganization(userId);
-  const admin = supabaseAdmin();
-  const { data: org, error } = await admin
-    .from('organizations')
-    .select('plan_key, subscription_status')
-    .eq('id', organizationId)
-    .maybeSingle();
-
-  if (error) {
-    throw error;
-  }
+  const org = await pgQueryOne(
+    `SELECT plan_key, subscription_status
+       FROM public.organizations
+      WHERE id = $1
+      LIMIT 1`,
+    [organizationId]
+  );
 
   const internalAccess = await loadInternalAccess(userId);
   const bypassUsageLimits =
