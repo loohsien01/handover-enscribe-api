@@ -49,7 +49,7 @@ test('resolveSslAndConnectionString: RDS host uses strict TLS with bundled CA', 
     const { ssl, connectionString } = resolveSslAndConnectionString(rdsUrl);
     assert.equal(ssl?.rejectUnauthorized, true);
     assert.ok(typeof ssl?.ca === 'string' && ssl.ca.includes('BEGIN CERTIFICATE'));
-    assert.equal(connectionString, rdsUrl);
+    assert.equal(connectionString.includes('sslmode='), false);
     assert.ok(fs.existsSync(RDS_CA_PATH), 'bundled RDS CA file should exist');
   } finally {
     if (prev === undefined) delete process.env.SUPABASE_DB_SSL_REJECT_UNAUTHORIZED;

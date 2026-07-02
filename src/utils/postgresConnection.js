@@ -117,9 +117,11 @@ export function resolveSslAndConnectionString(connectionString) {
   }
 
   if (isRdsPostgresHost(host)) {
+    // Strip `sslmode` from the URI so Node `pg` uses our bundled RDS CA instead of
+    // treating sslmode=require as verify-full against the system trust store (pg v8+).
     return {
       ssl: { rejectUnauthorized: true, ca: loadRdsCaBundle() },
-      connectionString,
+      connectionString: stripSslQueryParams(connectionString),
     };
   }
 
