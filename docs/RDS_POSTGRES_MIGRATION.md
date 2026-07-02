@@ -2,11 +2,11 @@
 
 Walkthrough for moving the **application database** off Supabase Postgres onto **Amazon RDS PostgreSQL** (or Aurora PostgreSQL). Auth and PostgREST stay on Supabase during early parts; storage is already on S3.
 
-**Status (2026-07-02):** **Phase A + B + C complete.** **Phase D dry run complete** (dump/restore verified on EC2 → `enscribe_dryrun`; row counts match Supabase). **Prod still on Supabase Postgres** — pool host unchanged until cutover window. **Next:** schedule cutover night (Part 10 cheat sheet), flip `DATABASE_URL` / `SUPABASE_DB_DIRECT_URL`, post-restore API smoke. Active Step 2 of [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md).
+**Status (2026-07-02):** **Phase A + B + C + D complete (tentative).** Cutover executed — prod on RDS; monitoring for user-reported errors during confidence window. **Next:** Phase E cleanup (Part 11) after stable period; **Step 3 Cognito** can begin in parallel (infra + dev pool) — [COGNITO_AUTH_MIGRATION.md](./COGNITO_AUTH_MIGRATION.md). Active Step 2 of [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md).
 
 **Prerequisites:** [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) cutover complete (`RECORDINGS_STORAGE_BACKEND=s3` on prod).
 
-**Related:** [COGNITO_SETUP.md](./COGNITO_SETUP.md) (Step 3 — auth; plan `user_id` / `auth.users` mapping before RDS cutover if possible).
+**Related:** [COGNITO_AUTH_MIGRATION.md](./COGNITO_AUTH_MIGRATION.md) (Step 3 — auth; plan `user_id` / `auth.users` mapping before RDS cutover if possible).
 
 ---
 
@@ -23,7 +23,7 @@ Walkthrough for moving the **application database** off Supabase Postgres onto *
 | **7** | `auth.users` + FK strategy | Design + SQL | **Done** — **Option A through Cognito**; map `cognito_sub`; B-heavy only if canonical id changes |
 | **8** | RLS strategy on RDS | Design + SQL | **Done** — **disable RLS** on app tables post-restore; API enforces `user_id` |
 | **9** | Code: expand `pg`, replace `supabase-js` | **Code PR(s)** | **Done** — PR 0–5 merged (see Part 9) |
-| **10** | Data migration + cutover | Ops | **Dry run done** — cutover window pending |
+| **10** | Data migration + cutover | Ops | **Done (tentative)** — monitoring confidence window |
 | **11** | Decommission Supabase Postgres | Ops + cleanup PR | After confidence window |
 
 ### Recommended order
@@ -32,7 +32,7 @@ Walkthrough for moving the **application database** off Supabase Postgres onto *
 Phase A — Infra (Parts 1–5)     ✅ Done — RDS reachable from EC2, empty `enscribe` DB ready
 Phase B — Schema (Parts 6–8)    ✅ Done — dump reviewed, Option A + disable RLS locked
 Phase C — Code (Part 9)         ✅ PR 0–5 done; prod stays on Supabase until Phase D
-Phase D — Data + cutover (10)   dry run ✅; cutover window + flip DATABASE_URL
+Phase D — Data + cutover (10)   ✅ tentative — confidence window
 Phase E — Cleanup (11)          drop Supabase DB dependency after stable period
 ```
 
@@ -328,7 +328,7 @@ ALTER TABLE public.users ADD COLUMN cognito_sub text UNIQUE;
 |----------|-------------------------|---------|--------|
 | **Mapping (recommended)** | **`auth.users.id`** (Supabase UUID, unchanged) | **None** | Store Cognito `sub` in `auth.users.cognito_sub`; API resolves JWT → app UUID |
 | **Replace all IDs with Cognito `sub`** | Cognito `sub` | **Heavy** — update every `user_id` column in every row **or** B-heavy FK repoint | Possible but same cost as B-heavy; avoid |
-| **Force password reset + import** | Either, depending on choice above | Depends | Password hashes are not portable from Supabase anyway ([COGNITO_SETUP.md](./COGNITO_SETUP.md) §9) |
+| **Force password reset + import** | Either, depending on choice above | Depends | Password hashes are not portable from Supabase anyway ([COGNITO_AUTH_MIGRATION.md](./COGNITO_AUTH_MIGRATION.md) Part 8) |
 
 **Practical Cognito migration (26 users):**
 
@@ -359,7 +359,7 @@ Do **not** copy Supabase auth machinery (`auth.sessions`, MFA tables, etc.) — 
 
 These become RDS queries or Cognito API in Step 3.
 
-**See also:** [COGNITO_SETUP.md](./COGNITO_SETUP.md) §9 (user migration, `legacy_supabase_id` custom attribute).
+**See also:** [COGNITO_AUTH_MIGRATION.md](./COGNITO_AUTH_MIGRATION.md) Part 8 (user migration, `legacy_supabase_id` custom attribute).
 
 ---
 

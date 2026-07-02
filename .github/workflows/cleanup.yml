@@ -1,8 +1,10 @@
 # Daily internal cleanup — POST /api/internal/cleanup/run on the API host.
-# Config: API_BASE_URL (Actions variable or env), INTERNAL_CLEANUP_SECRET (Actions secret).
-# Tasks: encounter_archive (needs Supabase archive migrations + AWS_ARCHIVE_S3_BUCKET on API),
-#   unattached_storage (audio-files), unattached_note_template_sections.
-# Per-run caps at 10 (raise later if throughput is too low).
+# Config: API_BASE_URL (Actions variable), INTERNAL_CLEANUP_SECRET (Actions secret).
+# EC2 API env: DATABASE_URL → RDS, RECORDINGS_STORAGE_BACKEND=s3, AWS_RECORDINGS_S3_BUCKET,
+#   AWS_ARCHIVE_S3_BUCKET, archive SQL migrations applied.
+# EC2 IAM (enscribe-api-ec2-instance-role): s3:ListBucket + object CRUD on recordings bucket;
+#   archive bucket per docs/S3_AUDIO_FILES_MIGRATION.md Part 3.
+# Tasks: encounter_archive, unattached_storage (S3 recordings), unattached_note_template_sections.
 name: Internal cleanup (encounter + unattached)
 
 on:

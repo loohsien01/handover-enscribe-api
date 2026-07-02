@@ -100,6 +100,82 @@ The application uses Supabase (PostgreSQL) with:
 
 See `/sql/` for database schema and policies.
 
+Production app data lives on **Amazon RDS** (VPC-private). See [docs/RDS_POSTGRES_MIGRATION.md](docs/RDS_POSTGRES_MIGRATION.md) for the cutover walkthrough.
+
+### Browsing production RDS (TablePlus on your Mac)
+
+RDS is not reachable from your laptop directly. Use an **SSH tunnel** through the prod EC2 instance, then point TablePlus at `127.0.0.1`.
+
+#### Prerequisites (`.env.local` on your Mac — never commit)
+
+| Variable | Purpose |
+|----------|---------|
+| `DATABASE_URL` | RDS URI (`*.rds.amazonaws.com`) — password must be **URL-encoded** here (`!` → `%21`, etc.) |
+| `EC2_DEPLOY_HOST` | `ec2-user@<EC2_PUBLIC_IP>` — check AWS console; updates when instance gets a new public IP |
+| `EC2_DEPLOY_SSH_PRIVATE_KEY` | Multiline PEM (same as deploy) — script reads full block from `.env.local` |
+| `DB_TUNNEL_MODE=ssh` | Optional; recommended (SSM needs extra IAM) |
+
+#### First-time setup (once per machine)
+
+1. **AWS security group (EC2 instance, not RDS):** inbound **SSH (22)** from your public IP (`/32`). Console → EC2 → instance → Security → edit inbound rules → **My IP**.
+2. **TablePlus** — save a connection:
+   - Host `127.0.0.1`, port `15432`, user/database from `DATABASE_URL`
+   - Password = **raw** password (decode `%21` → `!`, etc. — not the encoded URI form)
+   - SSL **Require**, root cert `certs/rds-global-bundle.crt` only — **no** client cert/key
+3. Verify EC2 IP: `nc -zv <EC2_PUBLIC_IP> 22` should succeed before tunneling.
+
+#### Every session (same network)
+
+```bash
+npm run db:tunnel          # or: DB_TUNNEL_MODE=ssh npm run db:tunnel
+```
+
+Wait for **`✓ Tunnel ready on 127.0.0.1:15432`**, then connect in TablePlus. Keep the tunnel terminal open. Your saved TablePlus profile does not need to change.
+
+#### New WiFi or network (most common issue)
+
+**Symptom:** `Operation timed out` on SSH, or tunnel never shows “Tunnel ready”, or TablePlus `connection refused` on `127.0.0.1:15432`.
+
+**Cause:** Your **public IP changed**. The EC2 security group still allows your old IP. TablePlus config is fine — the tunnel never starts.
+
+**Fix (2 minutes):**
+
+1. `curl -s ifconfig.me` — note your new IP.
+2. AWS Console → EC2 → instance → **Security** → security group (e.g. `launch-wizard-1`, **not** `rds-ec2-1`) → edit inbound SSH rule → update to new IP or click **My IP** → save.
+3. `nc -zv <EC2_PUBLIC_IP> 22` — must succeed.
+4. `npm run db:tunnel` again → connect TablePlus.
+
+You do **not** need to redo TablePlus setup, change `DATABASE_URL`, or delete the saved connection — only the security group rule (and `EC2_DEPLOY_HOST` if the **EC2** public IP changed, which is separate from your WiFi IP).
+
+| IP type | What breaks | What to update |
+|---------|-------------|----------------|
+| **Your IP** (WiFi, hotspot, office) | SSH timeout | EC2 security group SSH rule |
+| **EC2 public IP** (after stop/start without Elastic IP) | SSH timeout | `EC2_DEPLOY_HOST` in `.env.local` + security group unchanged if rule is still your IP |
+
+#### Terminal-only (no TablePlus, no SSH from Mac)
+
+On **EC2 Instance Connect** (browser):
+
+```bash
+cd /opt/enscribe-api
+npm run db:inspect              # summary
+npm run db:inspect -- counts    # row estimates
+```
+
+Uses `DATABASE_URL` on the server; no tunnel or security group change on your laptop.
+
+#### Troubleshooting
+
+| Error | Likely fix |
+|-------|------------|
+| `Operation timed out` (SSH) | Wrong/stale EC2 IP, or security group SSH rule not your current IP |
+| `403 Forbidden` (SSM) | Use `DB_TUNNEL_MODE=ssh` instead, or get IAM `ssm:StartSession` |
+| `connection refused` on `127.0.0.1:15432` | Tunnel not running — wait for “Tunnel ready” or fix SSH first |
+| `password authentication failed` | Use **raw** password in TablePlus, not URL-encoded `%21`/`%23`/`%24` |
+| `postgresql.key` / client cert error | SSL: root CA only; leave client cert/key empty in TablePlus |
+
+Scripts: `sql/scripts/rds-local-tunnel.mjs` (`npm run db:tunnel`), `sql/scripts/rds-inspect.mjs` (`npm run db:inspect`).
+
 ## Environment Variables
 
 Create a `.env.local` file with:
@@ -149,12 +225,14 @@ Nova (Redis hot cache + Supabase persistence + async Bedrock chat turns, Bearer 
 
 ### Internal cleanup (cron / ops)
 
-Header: `Authorization: Bearer INTERNAL_CLEANUP_SECRET`.
+Header: `Authorization: Bearer INTERNAL_CLEANUP_SECRET`. Scheduled via [.github/workflows/cleanup.yml](.github/workflows/cleanup.yml) (daily).
 
-- **POST** `/api/internal/cleanup/run` — Body `tasks`: `storage_manifest`, `storage_archive`, `encounter_archive`, `unattached_storage`, and/or `unattached_note_template_sections` (sections with no `noteTemplateSectionOrders`, `updated_at` or `created_at` older than 7 days). Optional `maxObjectsPerRun`, `maxEnqueue`, `maxProcessPerJob`, `maxDeletesPerRunUnattachedStorage` (only `unattached_storage`), `maxDeletesPerRunUnattachedNoteTemplateSections` (only `unattached_note_template_sections`). Encounter sync: `{ "tasks": ["encounter_archive"] }`. Async + polling: `{ "tasks": ["encounter_archive"], "async": true }` returns **202** with `jobRunId` and `pollPath` (canonical poll URL under `/api/internal/cleanup/jobs/…`).
+**Prod prerequisites:** Postgres on RDS (`DATABASE_URL`), `RECORDINGS_STORAGE_BACKEND=s3`, `AWS_RECORDINGS_S3_BUCKET`, `AWS_ARCHIVE_S3_BUCKET`, archive SQL migrations applied, EC2 IAM on **both** buckets ([S3_AUDIO_FILES_MIGRATION.md](docs/S3_AUDIO_FILES_MIGRATION.md) Part 3 — `ListBucket` on recordings is required for `unattached_storage`).
+
+- **POST** `/api/internal/cleanup/run` — Body `tasks`: `storage_manifest`, `storage_archive` (legacy Supabase Storage track), `encounter_archive`, `unattached_storage` (orphan blobs in **S3** recordings bucket), and/or `unattached_note_template_sections`. Optional caps: `maxObjectsPerRun`, `maxEnqueue`, `maxProcessPerJob`, `maxDeletesPerRunUnattachedStorage`, `maxDeletesPerRunUnattachedNoteTemplateSections`. Encounter sync: `{ "tasks": ["encounter_archive"] }`. Async: `{ "tasks": ["encounter_archive"], "async": true }` → **202** + `jobRunId` / `pollPath`.
 - **GET** `/api/internal/cleanup/jobs/:jobRunId` — Poll `job.status` until `success` or `failed`.
 
-Apply `sql/migrations` for `archive` (including `enqueue_patient_encounter_archive_candidates`) before using `encounter_archive`.
+Apply `sql/migrations` for `archive` (including `enqueue_patient_encounter_archive_candidates`) before using `encounter_archive`. Zero deletes is often normal (7-day retention, no orphans); verify `archive.job_runs` on RDS.
 
 ## Architecture Migration: Next.js → Fastify Backend
 

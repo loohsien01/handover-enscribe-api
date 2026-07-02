@@ -216,6 +216,48 @@ Your API already uses `getAwsSdkBaseClientConfig()` — EC2 **instance profile**
 
 Replace bucket name with yours. Keep existing archive bucket permissions on the same role.
 
+**Prod combined policy (archive + recordings on `enscribe-api-ec2-instance-role`):** merge with your existing `AWS_ARCHIVE_S3_BUCKET` statements — cleanup jobs need **both** buckets. Example when archive bucket is `enscribe-supabase-archive` and recordings is `enscribe-recordings-prod`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ArchiveListBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::enscribe-supabase-archive"
+    },
+    {
+      "Sid": "ArchiveObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::enscribe-supabase-archive/archive/*"
+    },
+    {
+      "Sid": "RecordingsListBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::enscribe-recordings-prod"
+    },
+    {
+      "Sid": "RecordingsObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": "arn:aws:s3:::enscribe-recordings-prod/*"
+    }
+  ]
+}
+```
+
+**Common prod gap:** presigned URL upload/download can work while **server-side** cleanup fails with `not authorized to perform: s3:ListBucket` on the recordings bucket — presigns use different credential paths; daily [cleanup.yml](../.github/workflows/cleanup.yml) uses the EC2 instance role directly.
+
 **Note:** IAM has no `s3:HeadObject` action — the S3 `HeadObject` API is authorized by **`s3:GetObject`** on the object ARN.
 
 ### Local dev IAM user
@@ -460,7 +502,7 @@ You can extend `sql/scripts/inventory-audio-files-storage.mjs` or archive toolin
 - [x] Block public access: all on
 - [x] Encryption enabled (SSE-S3 or KMS) — verified in console
 - [x] CORS configured for FE origins
-- [x] IAM on EC2 instance role (`enscribe-api-ec2-instance-role`) + dev IAM user
+- [x] IAM on EC2 instance role (`enscribe-api-ec2-instance-role`) — **recordings + archive** buckets (see combined policy in Part 3) + dev IAM user
 - [x] `AWS_RECORDINGS_S3_BUCKET` in GitHub secrets + EC2 env (via [deploy.yml](../.github/workflows/deploy.yml))
 - [x] EC2 smoke test passing (`sql/scripts/smoke-recordings-s3.mjs`)
 

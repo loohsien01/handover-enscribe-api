@@ -4,15 +4,16 @@ Assessment of moving Enscribe off Supabase onto AWS (RDS, S3, auth). Includes a 
 
 **Scope:** `enscribe-api` (Fastify API). Frontend (`enscribe-web`) is referenced where the API contract implies client changes, but was not audited in this repo.
 
-**Status (June 2026):** **Step 1 (Storage → S3) complete.** Active work: **Step 2 (Postgres → RDS)** — Phase A–B + **PR 0** done; PR 1–5 + cutover remain — see [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md). Step 3 (Auth → Cognito) planned after stable `user_id` on RDS.
+**Status (July 2026):** **Step 1 (Storage → S3) complete.** **Step 2 (Postgres → RDS) tentative** — cutover done; monitoring for user-reported errors — see [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md). **Step 3 (Auth → Cognito) is next** — begin infra + dev-pool code while RDS stabilizes; prod auth cutover after RDS confidence window — see [COGNITO_AUTH_MIGRATION.md](./COGNITO_AUTH_MIGRATION.md).
 
 **Related walkthroughs:**
 
 | Step | Doc | Status |
 |------|-----|--------|
 | 1. Live recordings storage | [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) | **Done** — prod `RECORDINGS_STORAGE_BACKEND=s3` |
-| 2. Application Postgres | [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md) | **In progress** — infra + PR 0 done |
-| 3. Authentication | [COGNITO_SETUP.md](./COGNITO_SETUP.md) | Planned |
+| 2. Application Postgres | [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md) | **Tentative** — cutover done; confidence window |
+| 3. Authentication | [COGNITO_AUTH_MIGRATION.md](./COGNITO_AUTH_MIGRATION.md) | **In progress** — Phase A+B done; Phase C next |
+| 4. Decommission Supabase | — | After Steps 2–3 stable |
 
 ---
 
@@ -85,9 +86,9 @@ flowchart LR
 | Step | Work | Status | Doc |
 |------|------|--------|-----|
 | **1. Storage → S3** | Presigned URLs, bulk copy, flag cutover | **Done** | [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) |
-| **2. Postgres → RDS** | RDS infra, schema/FK/RLS, expand `pg`, cutover `DATABASE_URL` | **Active** | [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md) |
-| **3. Auth → Cognito** | Replace `authController`, JWT verify, user import | Planned | [COGNITO_SETUP.md](./COGNITO_SETUP.md) |
-| **4. Decommission Supabase** | Remove remaining Supabase deps | After 2–3 | — |
+| **2. Postgres → RDS** | RDS infra, schema/FK/RLS, expand `pg`, cutover `DATABASE_URL` | **Tentative** | [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md) |
+| **3. Auth → Cognito** | Replace `authController`, JWT verify, user import | **Next** | [COGNITO_AUTH_MIGRATION.md](./COGNITO_AUTH_MIGRATION.md) |
+| **4. Decommission Supabase** | Remove remaining Supabase deps (`supabase-js`, env, subscription) | After 2–3 | [COGNITO_AUTH_MIGRATION.md](./COGNITO_AUTH_MIGRATION.md) Part 11 |
 
 ### Effort (remaining)
 
@@ -355,7 +356,7 @@ Confirm whether the SPA uses `@supabase/supabase-js` directly or only Bearer tok
 
 - [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) — Step 1 storage (done)
 - [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md) — Step 2 Postgres (active)
-- [COGNITO_SETUP.md](./COGNITO_SETUP.md) — Step 3 auth
+- [COGNITO_AUTH_MIGRATION.md](./COGNITO_AUTH_MIGRATION.md) — Step 3 auth migration (infra, code, cutover)
 - [AUTH_SIGN_UP_API.md](./AUTH_SIGN_UP_API.md) — sign-up contract and anti-enumeration
 - [retention_archival (Supabase_to_S3).md](./retention_archival%20(Supabase_to_S3).md) — cold archive pipeline
 - [BAA_ARCHITECTURE.md](./BAA_ARCHITECTURE.md) — HIPAA acceptance (Bearer JWT contract)
