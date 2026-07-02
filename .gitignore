@@ -54,3 +54,5 @@ API_COMMIT_MSG.txt
 
 # Supabase audio-files inventory outputs (large / path metadata); keep sql/scripts/reports/audio-files-inventory/.gitkeep
 /sql/scripts/reports/
+
+supabase-schema.sql

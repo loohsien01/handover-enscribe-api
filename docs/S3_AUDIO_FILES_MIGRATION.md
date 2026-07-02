@@ -2,32 +2,34 @@
 
 Walkthrough for moving **live** recording blobs off Supabase Storage bucket `audio-files` onto S3. Auth stays on Supabase during this step; only the blob layer changes.
 
-**Related:** [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md) (recommended **first** migration step), [retention_archival (Supabase_to_S3).md](./retention_archival%20(Supabase_to_S3).md) (cold archive track).
+**Status (2026-06):** Parts **1–3, 6, 6.6, 7, 8, 9** complete. Prod `RECORDINGS_STORAGE_BACKEND=s3` (via [deploy.yml](../.github/workflows/deploy.yml)). **Next:** Part **11** after confidence window; optional Parts **4** and **10**.
+
+**Related:** [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md) (Step 1 — done; **Step 2 RDS** next), [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md), [retention_archival (Supabase_to_S3).md](./retention_archival%20(Supabase_to_S3).md) (cold archive track).
 
 ---
 
 ## Migration roadmap (all parts)
 
-| Part | Name | Type | Ship when | User impact |
-|------|------|------|-----------|-------------|
-| **1** | Create recordings bucket | AWS infra | Before code | None |
-| **2** | CORS | AWS infra | Before browser upload to S3 | None until cutover |
-| **3** | IAM (EC2 instance role + dev user) | AWS infra | Before code / smoke | None |
-| **4** | Lifecycle rules (optional) | AWS infra | Anytime | None |
-| **5** | Object key layout | Design | N/A (doc only) | None |
-| **6** | Code changes (API + jobs) | **Code PR(s)** | **Before cutover** — default `RECORDINGS_STORAGE_BACKEND=supabase` | **None** until flag flipped |
-| **6.6** | Testing (within Part 6) | Verify locally/staging | With Part 6 PRs | None |
-| **7** | Data migration (Supabase → S3) | Script + ops | **At cutover** | None if dual-read on |
-| **8** | Cutover (flip env flag) | **Ops / env only** | When ready | **Yes** — traffic moves to S3 |
-| **9** | Smoke test | Verify infra | After Parts 1–3 (before or with Part 6) | None |
-| **10** | HIPAA / BAA notes | Compliance | Anytime | None |
-| **11** | Deprecate Supabase storage | **Code cleanup PR** | After confidence window on `s3` only | None |
+| Part | Name | Type | Status |
+|------|------|------|--------|
+| **1** | Create recordings bucket | AWS infra | Done |
+| **2** | CORS | AWS infra | Done |
+| **3** | IAM (EC2 instance role + dev user) | AWS infra | Done |
+| **4** | Lifecycle rules (optional) | AWS infra | Optional — not required |
+| **5** | Object key layout | Design | Done (doc) |
+| **6** | Code changes (API + jobs) | Code PR(s) | Done |
+| **6.6** | Testing | Verify locally/staging | Done |
+| **7** | Data migration (Supabase → S3) | Script + ops | Done (bulk copy) |
+| **8** | Cutover (flip env flag) | Ops / env | Done — prod `s3` |
+| **9** | Smoke test | Verify infra | Done |
+| **10** | HIPAA / BAA notes | Compliance | Reference (optional hardening) |
+| **11** | Deprecate Supabase storage | Code cleanup PR | **Next** (after confidence window) |
 
 ### Push strategy (summary)
 
-1. **Ship through cutover − 1** — Parts 1–3 (infra), Part 6 code + tests, default flag `supabase`. Prod behavior unchanged.
-2. **Cutover (Part 7 + 8)** — bulk/lazy copy, then flip `RECORDINGS_STORAGE_BACKEND` (`dual-read` → `s3`). Mostly env + migration script; no large code deploy required if Part 6 is already merged.
-3. **Part 11 later** — remove flag and all Supabase `audio-files` code paths once S3-only is stable.
+1. ~~**Ship through cutover − 1**~~ — Done.
+2. ~~**Cutover (Part 7 + 8)**~~ — Done. Bulk copy + `RECORDINGS_STORAGE_BACKEND=s3` on prod.
+3. **Part 11 later** — remove flag and all Supabase `audio-files` code paths once S3-only is stable (target: 2–4 weeks on `s3` with no issues).
 
 ### Auth + per-user layout (unchanged by S3)
 
@@ -353,7 +355,7 @@ Can ship in the same PR as 6.2 or a follow-up PR (still default `supabase`).
 | Variable | Default | Where |
 |----------|---------|-------|
 | `AWS_RECORDINGS_S3_BUCKET` | `enscribe-recordings-prod` | `.env.local`, GitHub secret, EC2 `.env.local` ([deploy.yml](../.github/workflows/deploy.yml)) |
-| `RECORDINGS_STORAGE_BACKEND` | `supabase` | `.env.local`, EC2 `.env.local` (add to deploy template when Part 6 ships) |
+| `RECORDINGS_STORAGE_BACKEND` | `s3` (prod) | `.env.local`, EC2 via [deploy.yml](../.github/workflows/deploy.yml) |
 
 No GitHub secret required for the backend flag if deploy template hardcodes `supabase` until cutover.
 
@@ -473,18 +475,18 @@ You can extend `sql/scripts/inventory-audio-files-storage.mjs` or archive toolin
 **Part 7 (ready, run at cutover)**
 
 - [x] Migration script: `npm run migrate:audio-files-to-recordings-s3`
-- [ ] Execute bulk copy before flipping flag
+- [x] Execute bulk copy before flipping flag
 
-### Cutover steps (staging → prod)
+### Cutover steps (staging → prod) — Done
 
-1. **Part 7** — Run bulk copy Supabase → S3 (Option A) or enable lazy migration (Option B).
-2. Staging: set `RECORDINGS_STORAGE_BACKEND=dual-read` → smoke all flows.
-3. Prod: new uploads to S3 first (`s3` for writes or full `s3`), reads on `dual-read`.
-4. Confirm cleanup/archive jobs target S3 (Part 6 Phase D).
-5. Prod: switch reads to `s3` only when inventory is fully copied.
-6. Disable Supabase `audio-files` writes; keep bucket read-only for a confidence window (see Part 11).
+- [x] **Part 7** — Bulk copy Supabase → S3 (Option A).
+- [x] Staging/local: `dual-read` and `s3` — smoke all flows (FE).
+- [x] Prod: `RECORDINGS_STORAGE_BACKEND=s3` in [deploy.yml](../.github/workflows/deploy.yml) (reads + writes on S3).
+- [x] Cleanup/archive jobs target S3 (Part 6 Phase D).
+- [x] Inventory fully copied before `s3`-only reads.
+- [ ] Supabase `audio-files` read-only confidence window — keep until Part 11 (do not delete bucket yet).
 
-**Env-only changes** — update EC2 `.env.local` / GitHub deploy secret or manual EC2 env; restart PM2. No Part 6 code changes required if already merged.
+**Env:** `RECORDINGS_STORAGE_BACKEND=s3` set in deploy template; redeploy applies to EC2 `.env.local`. PM2 restart on deploy.
 
 ---
 
@@ -590,5 +592,5 @@ AWS_ACTIONS_SECRET_ACCESS_KEY=...  # dev only
 
 # New
 AWS_RECORDINGS_S3_BUCKET=enscribe-recordings-prod
-RECORDINGS_STORAGE_BACKEND=supabase   # → s3 when ready
+RECORDINGS_STORAGE_BACKEND=s3   # prod (deploy.yml)
 ```

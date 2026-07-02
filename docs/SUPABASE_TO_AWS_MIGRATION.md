@@ -4,7 +4,15 @@ Assessment of moving Enscribe off Supabase onto AWS (RDS, S3, auth). Includes a 
 
 **Scope:** `enscribe-api` (Fastify API). Frontend (`enscribe-web`) is referenced where the API contract implies client changes, but was not audited in this repo.
 
-**Status:** Planning / architecture reference (June 2026).
+**Status (June 2026):** **Step 1 (Storage → S3) complete.** Active work: **Step 2 (Postgres → RDS)** — Phase A–B + **PR 0** done; PR 1–5 + cutover remain — see [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md). Step 3 (Auth → Cognito) planned after stable `user_id` on RDS.
+
+**Related walkthroughs:**
+
+| Step | Doc | Status |
+|------|-----|--------|
+| 1. Live recordings storage | [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) | **Done** — prod `RECORDINGS_STORAGE_BACKEND=s3` |
+| 2. Application Postgres | [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md) | **In progress** — infra + PR 0 done |
+| 3. Authentication | [COGNITO_SETUP.md](./COGNITO_SETUP.md) | Planned |
 
 ---
 
@@ -17,7 +25,7 @@ Migration is **feasible** and aligns with existing direction: the API already ru
 | **Auth** | High | Cognito User Pools **or** custom JWT on EC2 |
 | **Postgres** | Medium–high | RDS / Aurora PostgreSQL |
 | **PostgREST** (`supabase-js`) | Medium | Expand existing `pg` usage |
-| **Storage** (`audio-files`) | Medium | S3 + presigned URLs |
+| **Storage** (`audio-files`) | Medium | S3 + presigned URLs | **Done** — [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) |
 
 **Auth is the gating decision.** Database and storage migrations are largely independent once `user_id` identity is stable.
 
@@ -60,31 +68,38 @@ Env secrets in production: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVIC
 
 ### 4. Storage
 
-Bucket `audio-files`: signed upload/download URLs, listing, cleanup. Archive pipeline copies objects to `AWS_ARCHIVE_S3_BUCKET` then deletes from Supabase Storage (`docs/retention_archival (Supabase_to_S3).md`, `archiveStoragePurge.js`, `encounterArchivePurge.js`).
+**Done (June 2026).** Bucket `audio-files` replaced by `AWS_RECORDINGS_S3_BUCKET` with presigned URLs. Prod on `RECORDINGS_STORAGE_BACKEND=s3`. See [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md). Archive pipeline unchanged (`AWS_ARCHIVE_S3_BUCKET`). Optional Part 11: remove Supabase storage code paths after confidence window.
 
 ---
 
-## Migration phases (suggested order)
+## Migration steps (suggested order)
 
 ```mermaid
 flowchart LR
-  A[1. Auth strategy] --> B[2. Stable user_id]
-  B --> C[3. RDS + data migration]
-  C --> D[4. Replace supabase-js with pg]
-  D --> E[5. S3 primary for audio]
-  E --> F[6. Decommission Supabase]
+  S1[1. S3 audio-files] --> S2[2. RDS Postgres]
+  S2 --> S3[3. Cognito auth]
+  S3 --> S4[4. Decommission Supabase]
+  S2 -.-> S2a[Expand pg / drop PostgREST]
 ```
 
-| Phase | Work | Rough effort |
-|-------|------|--------------|
-| Auth (Cognito or custom) + API routes | Replace `authController`, JWT verify plugin | 2–4 weeks |
-| RDS + schema / FK / RLS | Dump/restore, repoint FKs off `auth.users` | 1–2 weeks |
-| Replace `supabase-js` data access | Controllers → `pg` | 2–3 weeks |
-| Storage → S3 | Presigned URLs, object migration | 1–2 weeks |
-| User migration + cutover | Import users or password reset campaign | ~1 week |
-| **Total** | | **~7–12 weeks** (one experienced dev) |
+| Step | Work | Status | Doc |
+|------|------|--------|-----|
+| **1. Storage → S3** | Presigned URLs, bulk copy, flag cutover | **Done** | [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) |
+| **2. Postgres → RDS** | RDS infra, schema/FK/RLS, expand `pg`, cutover `DATABASE_URL` | **Active** | [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md) |
+| **3. Auth → Cognito** | Replace `authController`, JWT verify, user import | Planned | [COGNITO_SETUP.md](./COGNITO_SETUP.md) |
+| **4. Decommission Supabase** | Remove remaining Supabase deps | After 2–3 | — |
 
-Phases 4–5 can start in parallel once auth issues stable JWTs and `user_id` is defined.
+### Effort (remaining)
+
+| Step | Rough effort |
+|------|--------------|
+| RDS + schema / FK / RLS | 1–2 weeks |
+| Replace `supabase-js` data access | 2–3 weeks |
+| Cognito + API auth routes | 2–4 weeks |
+| User migration + cutover | ~1 week |
+| **Remaining total** | **~5–10 weeks** (one experienced dev) |
+
+Step 2 code (Part 9) can proceed in parallel with RDS infra once schema/FK strategy is decided. Auth (Step 3) can overlap late Step 2 if `auth.users` UUIDs are preserved on RDS.
 
 ---
 
@@ -313,20 +328,22 @@ Redirect to `{FRONTEND_URL}/reset-password`. Cognito: configure app client callb
 
 ## Non-auth migration notes (brief)
 
-### RDS
+### RDS — **Step 2 (active)**
 
-- `supabasePostgresPool.js` → rename env to `DATABASE_URL`; tune SSL for RDS (stricter than Supabase defaults).
-- Use **RDS Proxy** if connection count from EC2 + workers grows.
+Full walkthrough: [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md).
+
+- `supabasePostgresPool.js` already accepts `DATABASE_URL`; tune SSL for RDS (stricter than Supabase pooler).
+- Incremental: controller-by-controller from `supabase-js` → `querySupabasePostgres`.
+- RPCs: `SELECT create_patient_encounter_complete(...)` via `pg` (3 call sites today).
+- RLS / `auth.uid()` does not port to plain RDS — enforce ownership in API (`request.user.id`).
 
 ### Replace `supabase-js`
 
-- Incremental: controller-by-controller to `querySupabasePostgres`.
-- RPCs: `SELECT create_patient_encounter_complete(...)` via `pg`.
+See Part 9 in [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md).
 
-### S3 for `audio-files`
+### S3 for `audio-files` — **Step 1 (done)**
 
-- `@aws-sdk/client-s3` presigned URLs replace Storage signed URLs.
-- Retention jobs simplify when source of truth is already S3.
+See [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md). Optional Part 11: remove Supabase storage branches after confidence window on `s3`.
 
 ### Frontend (`enscribe-web`)
 
@@ -336,8 +353,11 @@ Confirm whether the SPA uses `@supabase/supabase-js` directly or only Bearer tok
 
 ## Related docs
 
+- [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) — Step 1 storage (done)
+- [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md) — Step 2 Postgres (active)
+- [COGNITO_SETUP.md](./COGNITO_SETUP.md) — Step 3 auth
 - [AUTH_SIGN_UP_API.md](./AUTH_SIGN_UP_API.md) — sign-up contract and anti-enumeration
-- [retention_archival (Supabase_to_S3).md](./retention_archival%20(Supabase_to_S3).md) — storage archive pipeline
+- [retention_archival (Supabase_to_S3).md](./retention_archival%20(Supabase_to_S3).md) — cold archive pipeline
 - [BAA_ARCHITECTURE.md](./BAA_ARCHITECTURE.md) — HIPAA acceptance (Bearer JWT contract)
 - [BILLING_ARCHITECTURE.md](./BILLING_ARCHITECTURE.md) — `internal_access` + `auth.users`
 

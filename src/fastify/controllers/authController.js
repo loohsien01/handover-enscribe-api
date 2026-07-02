@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import { upsertUserProfileForUser } from './userProfileController.js';
 import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
+import { ensureAuthUsersStubAfterSignup } from '../../utils/authUsersStub.js';
 
 // Refresh token storage settings
 const REFRESH_MAX_AGE_SECONDS = Number(process.env.REFRESH_MAX_AGE_SECONDS || 3 * 24 * 3600);
@@ -88,6 +89,13 @@ export async function signUp(email, password, opts = {}) {
     }
 
     console.log('[signUp] sign-up result', { hasSession: !!data?.session, hasUser: !!data?.user });
+
+    if (data?.user?.id && data?.user?.email) {
+      const stubResult = await ensureAuthUsersStubAfterSignup(data.user.id, data.user.email);
+      if (!stubResult.ok) {
+        console.error('[signUp] auth.users stub insert failed (signup continues):', stubResult.error);
+      }
+    }
 
     /** Optional profile row (service role); only set when client sent `userProfile`. */
     const signupProfileExtras = {};
