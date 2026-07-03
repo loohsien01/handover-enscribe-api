@@ -204,6 +204,8 @@ const NOVA_CHAT_SYSTEM_PREAMBLE =
   'Provide accurate medical information and clear documentation help; you are not a substitute for professional judgment or in-person care. ' +
   'Respect privacy: treat user content as sensitive. Give a well-formed response, using professional language unless the user asks otherwise.';
 
+import { NOVA_PRE_VISIT_SUMMARY_TURN1_LENGTH_SYSTEM } from './novaPreVisitSummaryLimits.js';
+
 const NOVA_PRE_VISIT_SUMMARY_OUTPUT_FORMAT_SYSTEM =
   'Pre-Visit Summary responses are shown directly to clinicians, so use human-readable formatting — plain, compact text instead of markdown styling, markdown headers, bold, tables, horizontal rules, or excess blank lines between sections. ' +
   'If the user\'s message explicitly requests markdown or another formatted style, follow their instructions instead.';
@@ -241,6 +243,7 @@ function novaBedrockMaxPriorMessages() {
  * @param {Array<{ role: string, content: string }>} opts.priorMessages - Dialog since `summary_covered_message_count` (`novaPriorDialogMessagesForBedrock`); older turns should appear only in `summary`.
  * @param {string} opts.userMessage - New user message for this turn
  * @param {boolean} [opts.forPreVisitSummary] - Inject plain-text output guidance for pre-visit summary documents
+ * @param {boolean} [opts.forPreVisitSummaryTurn1] - Turn 1 only: length budget system block (`completions-and-save-pre-visit-summary`)
  * @param {number} [opts.max_tokens]
  * @returns {object} Claude Bedrock request body
  */
@@ -250,6 +253,7 @@ export function getNovaChatCompletionRequestBody({
   priorMessages,
   userMessage,
   forPreVisitSummary = false,
+  forPreVisitSummaryTurn1 = false,
   max_tokens = 8192,
 }) {
   const { extraSystem, dialog } = splitNovaSystemAndDialog(priorMessages);
@@ -269,6 +273,14 @@ export function getNovaChatCompletionRequestBody({
     system.push({
       type: 'text',
       text: NOVA_PRE_VISIT_SUMMARY_OUTPUT_FORMAT_SYSTEM,
+      cache_control: { type: 'ephemeral' },
+    });
+  }
+
+  if (forPreVisitSummaryTurn1) {
+    system.push({
+      type: 'text',
+      text: NOVA_PRE_VISIT_SUMMARY_TURN1_LENGTH_SYSTEM,
       cache_control: { type: 'ephemeral' },
     });
   }

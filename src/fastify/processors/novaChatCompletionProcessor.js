@@ -28,6 +28,7 @@ import {
 import { pgQueryOne } from '../../utils/pgQueryHelpers.js';
 import * as userSecurityConfigController from '../controllers/userSecurityConfigController.js';
 import { getNovaChatCompletionRequestBody } from '../../utils/claudeRequestBody.js';
+import { novaPreVisitSummaryTurn1MaxTokens } from '../../utils/novaPreVisitSummaryLimits.js';
 import { claudeInvokeModel, claudeStreamModel } from '../../utils/bedrockClient.js';
 import {
   createNovaCompletionPartialWriter,
@@ -199,6 +200,8 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
     priorMessages: priorForBedrock,
     userMessage: userMessageForBedrock,
     forPreVisitSummary,
+    forPreVisitSummaryTurn1: savePreVisitSummary,
+    ...(savePreVisitSummary ? { max_tokens: novaPreVisitSummaryTurn1MaxTokens() } : {}),
   });
 
   let inv;

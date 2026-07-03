@@ -63,6 +63,22 @@ test('getNovaChatCompletionRequestBody adds pre-visit summary plain-text guidanc
   assert.ok(systemText.includes('Pre-Visit Summary responses'));
   assert.ok(systemText.includes('plain, compact text instead of markdown'));
   assert.ok(systemText.includes('follow their instructions instead'));
+  assert.ok(!systemText.includes('never more than 1500 characters'));
+});
+
+test('getNovaChatCompletionRequestBody adds Turn 1 length guidance when forPreVisitSummaryTurn1', () => {
+  const body = getNovaChatCompletionRequestBody({
+    modelId: 'm',
+    summary: '',
+    priorMessages: [],
+    userMessage: 'Create pre-visit summary',
+    forPreVisitSummary: true,
+    forPreVisitSummaryTurn1: true,
+  });
+
+  const systemText = body.system.map((b) => b.text).join('\n');
+  assert.ok(systemText.includes('never more than 1500 characters'));
+  assert.ok(systemText.includes('about 350 words'));
 });
 
 test('getNovaChatCompletionRequestBody omits pre-visit summary guidance by default', () => {

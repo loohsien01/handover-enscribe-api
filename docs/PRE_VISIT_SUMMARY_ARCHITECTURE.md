@@ -200,19 +200,45 @@ Bill **`nova_response`** when Bedrock + session persist succeed, **even if** ste
 
 The server does **not** inject a JSON schema or fixed document structure for the main Sonnet output. **Content and layout** come from the FE **`message`** (clinician instructions + pasted charts).
 
-The server **does** inject a small **plain-text formatting** system block when:
+The server **does** inject small **plain-text formatting** system blocks when:
 
-1. **Turn 1** — `POST …/completions-and-save-pre-visit-summary` (`savePreVisitSummary: true`).
+1. **Turn 1** — `POST …/completions-and-save-pre-visit-summary` (processor flag `savePreVisitSummary: true`).
 2. **Follow-up turns** — `POST …/completions` in a chat that already has at least one **`pre_visit_summaries`** row for that `chat_id`.
 
-That block nudges human-readable plain text (avoid markdown styling by default; honor explicit markdown requests in the user message). It does **not** replace FE instructions in **`message`**.
+That formatting block nudges human-readable plain text (avoid markdown styling by default; honor explicit markdown requests in the user message). It does **not** replace FE instructions in **`message`**.
+
+### Turn 1 output length (generation only)
+
+Length limits apply **only** to **Turn 1** — `POST …/completions-and-save-pre-visit-summary`. They do **not** apply to:
+
+- Follow-up **`POST …/completions`** (refinement may need more room).
+- **`POST /api/pre-visit-summaries`** (manual create / recovery — no Bedrock; user-supplied **`text`** only).
+
+| Layer | Turn 1 | Follow-up `completions` | Manual `POST /api/pre-visit-summaries` |
+|-------|--------|-------------------------|----------------------------------------|
+| FE template / user **`message`** | Clinician may repeat brevity guidance | Same | N/A (no generation) |
+| Server length system block | Yes (~350 words, ≤1500 chars) | No | No |
+| Server formatting system block | Yes | Yes (when chat has a summary row) | No |
+| Bedrock **`max_tokens`** cap | **400** default (`NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS` env, 64–8192) | **8192** (Nova default) | N/A |
+
+**Constants** (`src/utils/novaPreVisitSummaryLimits.js`):
+
+| Constant | Value | Role |
+|----------|-------|------|
+| `PRE_VISIT_SUMMARY_TARGET_WORDS` | 350 | Soft prompt target (~words); not counted server-side |
+| `PRE_VISIT_SUMMARY_MAX_CHARS` | 1500 | Prompt hard ceiling; char count is enforceable if validation is added later |
+| `NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS_DEFAULT` | 400 | Bedrock hard backstop (~1500 chars; conservative for dense clinical text) |
+
+**Rationale:** models are poor at exact word counts. The prompt uses qualitative brevity plus an approximate word target and a **character** ceiling; **`max_tokens`** is the hard API backstop. Word count is guidance only — **`assistant.content.length`** is the measurable line if server validation is added later.
+
+**Processor wiring:** `forPreVisitSummaryTurn1` and the lowered **`max_tokens`** are set only when **`savePreVisitSummary`** is true (Turn 1 enqueue). This is unrelated to **`createPreVisitSummary`** (shared DB insert used by Turn 1 and manual create).
 
 The FE user message typically includes:
 
-1. Clinician instructions (tone, sections, bullet vs table, etc.) — editable per run; may load defaults from **`pre_visit_summary_templates`** (`GET …/pre-visit-summary-templates/:id`).
+1. Clinician instructions (tone, sections, bullet vs table, etc.) — editable per run; may load defaults from **`pre_visit_summary_templates`** (`GET …/pre-visit-summary-templates/:id`). Templates may echo the same brevity guidance (~350 words, ≤1500 characters).
 2. Delimiters and metadata for each past chart (date, optional labels) plus decrypted note body text — all plain text in **`message`**; the API does not store note ids on `pre_visit_summaries`.
 
-The model returns **free-form text** (markdown, bullets, tables, etc.) per those instructions. That string is stored as **`pre_visit_summaries.text`** (API field **`text`** on responses) without server-side structural parsing.
+The model returns **free-form text** per those instructions. That string is stored as **`pre_visit_summaries.text`** (API field **`text`** on responses) without server-side structural parsing.
 
 **Model:** FE sends `"model": "sonnet"` on completions-and-save-pre-visit-summary (follow-ups: FE choice on normal `completions`).
 
@@ -718,15 +744,17 @@ For backend tracking; FE can ignore this section.
 - [x] `PRE_VISIT_SUMMARY_PERSIST_FAILED` poll enrichment
 - [x] **`maybeRunPreVisitSummaryTitleDetailsExtraction`** + Redis poll cache
 - [x] **`preVisitSummaryTemplatesController`** + CRUD routes
+- [x] Turn 1 output length (`novaPreVisitSummaryLimits`, `forPreVisitSummaryTurn1`, `max_tokens` cap)
 
 ### Routes & tests
 
 - [x] `POST …/completions-and-save-pre-visit-summary`
 - [x] Poll payload + `GET …/pre-visit-summary`
-- [x] Unit tests: `novaPreVisitSummaryTitleDetails`, `novaBedrockChat`
+- [x] Unit tests: `novaPreVisitSummaryTitleDetails`, `novaBedrockChat`, `novaPreVisitSummaryLimits`
 - [x] Integration: `tests/pre-visit-summaries.test.js`, save-route validation in `nova-chat-sessions-completions.test.js`
 - [x] E2E (opt-in): `tests/nova-chat-sessions-save-pre-visit-summary.e2e.test.js`
 - [x] Templates CRUD: `tests/pre-visit-summary-templates.test.js`
+- [x] Turn 1 output length: `tests/novaPreVisitSummaryLimits.unit.test.js`
 
 ---
 
@@ -740,6 +768,7 @@ For backend tracking; FE can ignore this section.
 | Generic session title (non-blocking) | `src/utils/novaChatTitleService.js` |
 | Pre-Visit Summary title details | `src/utils/novaPreVisitSummaryTitleDetailsService.js`, `src/utils/novaPreVisitSummaryTitleDetails.js`, `src/utils/novaPreVisitSummaryTitleDetailsCache.js` |
 | Pre-Visit Summary templates CRUD | `src/fastify/controllers/preVisitSummaryTemplatesController.js`, `src/fastify/routes/preVisitSummaryTemplates.js`, `src/fastify/schemas/preVisitSummaryTemplateRequests.js` |
+| Turn 1 output length constants | `src/utils/novaPreVisitSummaryLimits.js` |
 | Notes encrypt/decrypt | `src/fastify/controllers/notesController.js`, `src/utils/encryptionUtils.js` |
 | Completion request limits | `src/fastify/schemas/novaChatRequests.js` |
 | User master key | `src/fastify/controllers/userSecurityConfigController.js` → `getOrCreateUserMasterKey()` |
