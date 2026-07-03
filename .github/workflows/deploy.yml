@@ -62,6 +62,8 @@ jobs:
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
           CLOUD_RUN_TRANSCRIBE_URL: ${{ secrets.CLOUD_RUN_TRANSCRIBE_URL }}
+          COGNITO_CLIENT_ID: ${{ secrets.COGNITO_CLIENT_ID }}
+          COGNITO_USER_POOL_ID: ${{ secrets.COGNITO_USER_POOL_ID }}
           CPU_THRESHOLD: ${{ secrets.CPU_THRESHOLD }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
@@ -107,6 +109,8 @@ jobs:
             "AZURE_OPENAI_ENDPOINT"
             "AZURE_OPENAI_KEY"
             "CLOUD_RUN_TRANSCRIBE_URL"
+            "COGNITO_CLIENT_ID"
+            "COGNITO_USER_POOL_ID"
             "CPU_THRESHOLD"
             "DATABASE_URL"
             "DEEPGRAM_API_KEY"
@@ -218,6 +222,9 @@ jobs:
           AZURE_OPENAI_ENDPOINT=${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_KEY=${{ secrets.AZURE_OPENAI_KEY }}
           CLOUD_RUN_TRANSCRIBE_URL=${{ secrets.CLOUD_RUN_TRANSCRIBE_URL }}
+          COGNITO_CLIENT_ID=${{ secrets.COGNITO_CLIENT_ID }}
+          COGNITO_REGION=us-east-1
+          COGNITO_USER_POOL_ID=${{ secrets.COGNITO_USER_POOL_ID }}
           CPU_THRESHOLD=${{ secrets.CPU_THRESHOLD }}
           DATABASE_URL=${{ secrets.DATABASE_URL }}
           DEEPGRAM_API_KEY=${{ secrets.DEEPGRAM_API_KEY }}

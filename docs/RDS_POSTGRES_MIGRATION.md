@@ -2,7 +2,7 @@
 
 Walkthrough for moving the **application database** off Supabase Postgres onto **Amazon RDS PostgreSQL** (or Aurora PostgreSQL). Auth and PostgREST stay on Supabase during early parts; storage is already on S3.
 
-**Status (2026-07-02):** **Phase A + B + C + D complete (tentative).** Cutover executed — prod on RDS; monitoring for user-reported errors during confidence window. **Next:** Phase E cleanup (Part 11) after stable period; **Step 3 Cognito** can begin in parallel (infra + dev pool) — [COGNITO_AUTH_MIGRATION.md](./COGNITO_AUTH_MIGRATION.md). Active Step 2 of [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md).
+**Status (2026-07-02):** **Phase A + B + C + D complete (tentative).** Cutover executed — prod on RDS; monitoring for user-reported errors during confidence window. **Next:** Phase E cleanup (Part 11) after stable period; **Step 3 Cognito Phase C done** (`b77c505`) — prod user import + auth cutover remain — [COGNITO_AUTH_MIGRATION.md](./COGNITO_AUTH_MIGRATION.md). Active Step 2 of [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md).
 
 **Prerequisites:** [S3_AUDIO_FILES_MIGRATION.md](./S3_AUDIO_FILES_MIGRATION.md) cutover complete (`RECORDINGS_STORAGE_BACKEND=s3` on prod).
 

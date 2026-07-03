@@ -4,7 +4,7 @@ Walkthrough for moving **authentication** off Supabase onto **Amazon Cognito Use
 
 Assumes **API-mediated auth** — clients call `POST /api/auth` and `POST /api/auth/refresh` on Fastify (EC2), not Cognito Hosted UI. **Email + password only.** Session layer (encrypted `refreshTokens`, wrapper cookie, inactivity caps) stays on the API. **HIPAA:** Cognito, SES, EC2, and RDS in AWS BAA-covered account/region (`us-east-1`).
 
-**Status (2026-07-02):** **Phase C done (local).** **Phase A + B + C complete** on **dev pool** — `npm run smoke:cognito-dev` green; **`npm run test:auth` 28/28** with `AUTH_PROVIDER=cognito`, RDS tunnel (`DATABASE_URL_LOCAL`), and linked `auth.users.cognito_sub`. **Phase D (user import) is next.** Prod auth cutover (Phase F) only after RDS confidence window + SES production access + FE reset flow.
+**Status (2026-07-03):** **Phase C done** — merged `b77c505`. **Phase A infra complete** — IAM + EC2 role, SES production access (`get-account` → `ProductionAccessEnabled: true`), `COGNITO_*` in [deploy.yml](../.github/workflows/deploy.yml) (**`AUTH_PROVIDER` omitted** until Phase F). **Phase D (user import) is next.** Cutover after FE reset + user import + comms.
 
 **Prerequisites:**
 
@@ -23,9 +23,9 @@ Assumes **API-mediated auth** — clients call `POST /api/auth` and `POST /api/a
 
 | Part | Name | Type | Status |
 |------|------|------|--------|
-| **1** | Cognito User Pool + app client | AWS infra | **Done** — `enscribe-dev` + `enscribe-prod`; app clients with `ALLOW_ADMIN_USER_PASSWORD_AUTH` + `ALLOW_REFRESH_TOKEN_AUTH`; dev sign-in smoke-tested (`ADMIN_USER_PASSWORD_AUTH`) |
-| **2** | SES (verify domain, exit sandbox) | AWS infra | **Done (prod access pending)** — `enscribe.online` verified; custom MAIL FROM `mail.enscribe.online` (MX/TXT on Namecheap); DMARC `_dmarc`; prod pool email: SES `us-east-1`, FROM `Enscribe Health LLC <noreply@enscribe.online>`, REPLY-TO `info@enscribe.online`. Confirm SES **production access** before cutover. |
-| **3** | IAM on EC2 role (+ dev IAM user) | AWS infra | **Done (dev verified)** — Cognito policy on IAM user `enscribe-api-prod-ec2-role` (dev + prod pool ARNs); laptop verified `npm run smoke:cognito-dev`. Confirm same prod-pool policy on EC2 instance role before cutover. |
+| **1** | Cognito User Pool + app client | AWS infra | **Done** — `enscribe-dev` + `enscribe-prod`; app clients with `ALLOW_ADMIN_USER_PASSWORD_AUTH` + `ALLOW_REFRESH_TOKEN_AUTH`; sign-in smoke-tested on dev (2026-07-02) and prod pool via IAM user (2026-07-03) |
+| **2** | SES (verify domain, exit sandbox) | AWS infra | **Done** — `enscribe.online` verified; MAIL FROM `mail.enscribe.online`; prod pool on SES; **production access granted** (CLI `ProductionAccessEnabled: true`, 2026-07-03) |
+| **3** | IAM on EC2 role (+ dev IAM user) | AWS infra | **Done** — IAM user `enscribe-api-prod-ec2-role` + EC2 instance role `enscribe-api-ec2-instance-role`; dev + prod pool smoke green (2026-07-03) |
 | **4** | `auth.users.cognito_sub` column + index | SQL migration | **Done** — column + partial unique index on RDS |
 | **5** | JWT verify (`aws-jwt-verify`) | Code PR | **Done** — `cognitoJwt.js`, `authenticateAccessToken.js`, `AUTH_PROVIDER` |
 | **6** | `authController` → Cognito SDK | Code PR | **Done** — sign-in/up/out, refresh, forgot/confirm password, resend |
@@ -53,9 +53,9 @@ Phase G — Cleanup (Part 11)             Remove SUPABASE_* auth secrets + supab
 
 | Phase | Status | Notes |
 |-------|--------|-------|
-| **A — Infra (Parts 1–3)** | **Done** | Dev IAM: `npm run smoke:cognito-dev` green. Before cutover: SES prod access + EC2 role prod pool policy. |
+| **A — Infra (Parts 1–3)** | **Done** | IAM + EC2 role + SES prod access (2026-07-03). `COGNITO_*` in deploy.yml; `AUTH_PROVIDER` at Phase F only. |
 | **B — Schema (Part 4)** | **Done** | `auth.users.cognito_sub` on RDS |
-| **C — Code (Parts 5–7)** | **Done (local)** | Dev pool + `npm run test:auth` **28/28** (2026-07-02). See Phase C log. |
+| **C — Code (Parts 5–7)** | **Done** | Merged `b77c505` (2026-07-02). Dev pool + `npm run test:auth` **28/28**. Prod still Supabase auth until Phase F. See Phase C log. |
 | **D — User import (Part 8)** | **Next** | Bulk `AdminCreateUser`; map `cognito_sub` on prod pool |
 | **E–G** | Planned | FE reset, cutover, decommission |
 
@@ -70,7 +70,28 @@ Phase G — Cleanup (Part 11)             Remove SUPABASE_* auth secrets + supab
 | SES | Domain `enscribe.online` verified; MAIL FROM `mail.enscribe.online`; DMARC `p=none` |
 | Cognito email | `Enscribe Health LLC <noreply@enscribe.online>`; REPLY-TO `info@enscribe.online` |
 | IAM dev user | `enscribe-api-prod-ec2-role` (IAM **user** behind `AWS_ACTIONS_*`) |
-| Smoke | `npm run smoke:cognito-dev` — script: `sql/scripts/smoke-cognito-dev.mjs` |
+| Smoke (dev pool) | `npm run smoke:cognito-dev` green — 2026-07-02; script: `sql/scripts/smoke-cognito-dev.mjs` |
+| Smoke (prod pool) | Same script with prod `COGNITO_*` + prod `TEST_ACCOUNT_*` in `.env.local` — green 2026-07-03 (`AdminInitiateAuth`, access token 3600s) |
+
+### Phase A supplement — prod pool IAM smoke (2026-07-03)
+
+| Item | Detail |
+|------|--------|
+| Principal | `arn:aws:iam::637423355461:user/enscribe-api-prod-ec2-role` |
+| Pool | Prod `us-east-1_UxICChcfK` |
+| Command | `npm run smoke:cognito-dev` (prod `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID` in `.env.local`) |
+| Result | STS + `ADMIN_USER_PASSWORD_AUTH` ✓ |
+| Scope | Laptop IAM **user** only — does not prove EC2 instance role until on-instance `ListUsers` or sign-in smoke |
+
+### Phase A supplement — EC2 instance role smoke (2026-07-03)
+
+| Item | Detail |
+|------|--------|
+| Principal | EC2 instance profile (`enscribe-api-ec2-instance-role`) on `ip-172-31-17-164` |
+| Pool | Prod `us-east-1_UxICChcfK` (`COGNITO_*` on EC2 `.env.local`; `AUTH_PROVIDER` unset) |
+| Command | On-instance `ListUsers` via `@aws-sdk/client-cognito-identity-provider` (see Part 10) |
+| Result | `ListUsers` returned users sample ✓ |
+| Note | Do not `source .env.local` in bash — multi-line `RSA_*` PEM keys error; `grep`/`export` `COGNITO_*` only |
 
 **Pitfalls (learned):**
 
@@ -84,10 +105,12 @@ Phase G — Cleanup (Part 11)             Remove SUPABASE_* auth secrets + supab
 
 | Item | Detail |
 |------|--------|
+| Commit | `b77c505` — `AUTH_PROVIDER`, Cognito modules (`cognitoJwt`, `cognitoAuthService`, `resolveAppUserFromCognito`, …), `DATABASE_URL_LOCAL`, unit + auth tests |
 | Code | `AUTH_PROVIDER=cognito`; Cognito SDK in `authController`; JWKS verify; `confirm-forgot-password` action |
 | Local Postgres | `DATABASE_URL_LOCAL` → `127.0.0.1:15432` (tunnel); TLS `servername` = RDS host from `DATABASE_URL` |
 | Auth tests | **`npm run test:auth` — 28 executed, 28 passed, 0 failed** (~10s; real dev account + refresh/cookie suite) |
 | Prerequisites | `npm run db:tunnel` + `npm run dev:fastify`; `TEST_ACCOUNT_*` linked in RDS (`cognito_sub` or email fallback) |
+| Prod | **`AUTH_PROVIDER` unset → Supabase** on EC2; `COGNITO_*` in [deploy.yml](../.github/workflows/deploy.yml) (pre-cutover); flip `AUTH_PROVIDER=cognito` at Phase F only |
 | Not in scope yet | Prod pool user import (Phase D); FE code reset (Phase E); EC2 `AUTH_PROVIDER` flip (Phase F) |
 
 **Local auth test command:**
@@ -254,7 +277,7 @@ Add DKIM DNS records (Namecheap **Advanced DNS**). No separate SES identity need
 
 ### 2.2 Production access
 
-**SES → Account dashboard** → request **production access** (transactional). Until approved, only verified recipient emails receive mail.
+**SES → Account dashboard** → **production access** (transactional). Verified 2026-07-03: `aws sesv2 get-account --region us-east-1 --query ProductionAccessEnabled` → `true`. Until granted, only verified recipient emails receive mail.
 
 ### 2.3 Custom MAIL FROM domain
 
@@ -365,7 +388,9 @@ Attach to **IAM user** (local dev) and **EC2 instance role** (prod):
 npm run smoke:cognito-dev
 ```
 
-Requires in `.env.local`: `AWS_ACTIONS_*`, `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`, `TEST_ACCOUNT_EMAIL`, `TEST_ACCOUNT_PASSWORD` (dev pool only).
+Requires in `.env.local`: `AWS_ACTIONS_*`, `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`, `TEST_ACCOUNT_EMAIL`, `TEST_ACCOUNT_PASSWORD`.
+
+Use **dev** pool IDs for day-to-day dev; swap to **prod** pool IDs + a prod-pool test user to verify IAM user policy against prod (verified 2026-07-03). Dev and prod pools issue **different** `sub` for the same email.
 
 | API | Cognito operation |
 |-----|-------------------|
@@ -538,17 +563,62 @@ Supabase password hashes **cannot** be imported into Cognito.
 
 Optional: Cognito custom attribute `legacy_supabase_id` = `auth.users.id` for support.
 
+### User comms — password reset (cutover day)
+
+**One mass email** after cutover (no advance notice). Do not mass-trigger Cognito `ForgotPassword` ahead of time — codes expire; users request a code when they follow the steps below.
+
+**Export recipient list:**
+
+```sql
+SELECT email FROM auth.users ORDER BY email;
+```
+
+**Mass send (~26 users)** — pick one:
+
+| Method | Notes |
+|--------|-------|
+| **Google Workspace / Outlook** | BCC in batches of 10–15, or mail merge. FROM `info@enscribe.online`. Simplest at this scale. |
+| **SES `SendEmail` script** | Loop over CSV; FROM `info@enscribe.online` or `noreply@enscribe.online`. |
+| **Cognito `ForgotPassword` per user** | Optional extra — sends code email per user; only at/after cutover if you want Cognito to deliver codes automatically. |
+
+**Cutover mass email template**
+
+> **Subject:** Enscribe — sign-in update: set your new password  
+>  
+> Hi,  
+>  
+> We’ve upgraded sign-in security for Enscribe. **Your current password no longer works.** Your email, recordings, and account data are unchanged.  
+>  
+> **Set a new password:**  
+> 1. Open [https://app.enscribe.online](https://app.enscribe.online)  
+> 2. Click **Forgot password**  
+> 3. Enter your account email  
+> 4. Enter the **6-digit code** from your email and choose a new password  
+>  
+> You can request a new code anytime from the login page if needed.  
+>  
+> Questions? Reply to [info@enscribe.online](mailto:info@enscribe.online).  
+>  
+> — Enscribe Health LLC
+
 ---
 
-## Part 9 — Frontend (`enscribe-web`)
+## Part 9 — Frontend (`enscribe-web`) — Phase E
 
-| Question | Impact |
-|----------|--------|
-| SPA imports `@supabase/supabase-js`? | Remove; API-only Bearer tokens |
-| Password reset page | **Verification code** + new password (not Supabase URL hash) |
-| Token storage | Unchanged if API shape unchanged |
+**Separate repo** — not in `enscribe-api`. Phase C (this repo) already ships the API actions; Phase E is SPA work in **`enscribe-web`**.
 
-**API addition:** `POST /api/auth` action `confirm-forgot-password` with `{ email, code, newPassword }`.
+| Area | Today (Supabase) | Phase E change |
+|------|------------------|----------------|
+| Forgot-password **request** | May call Supabase or API `forgot-password` | Call API `POST /api/auth` `{ action: 'forgot-password', email }` only |
+| **`/reset-password` page** | Parses Supabase magic-link hash (`#access_token=…`) | Form: **email + 6-digit code + new password** → API `confirm-forgot-password` |
+| Confirm reset | Supabase client / redirect | `POST /api/auth` `{ action: 'confirm-forgot-password', email, code, newPassword }` |
+| Optional cleanup | `@supabase/supabase-js` on auth paths | Remove if still imported for auth |
+
+**Not** just updating a redirect URL — the reset **UX and API calls** change because Cognito uses a **code**, not a one-click link.
+
+**API (Phase C — done in this repo):** `confirm-forgot-password` in `authController` + routes + Zod schemas.
+
+**Ship Phase E before or with cutover** — non-breaking until `AUTH_PROVIDER=cognito` on the API; after cutover the code-based page is required.
 
 ---
 
@@ -559,13 +629,37 @@ Optional: Cognito custom attribute `legacy_supabase_id` = `auth.users.id` for su
 - [ ] RDS stable ≥ 1–2 weeks (or agreed risk acceptance)
 - [x] Dev Cognito pool: full `npm run test:auth` green (**28/28**, Phase C — 2026-07-02)
 - [x] Prod Cognito pool + SES domain/Mail FROM/Cognito email config
-- [ ] SES **production access** (out of sandbox)
-- [ ] IAM policy on EC2 instance role (dev user verified — `npm run smoke:cognito-dev`)
+- [x] SES **production access** (CLI `ProductionAccessEnabled: true`, 2026-07-03)
+- [x] IAM user → prod pool: `npm run smoke:cognito-dev` with prod `COGNITO_*` (2026-07-03)
+- [x] EC2 instance role → prod pool: on-instance `ListUsers` (2026-07-03)
 - [x] `cognito_sub` migration applied on RDS
 - [ ] All prod users imported; `cognito_sub` populated
 - [ ] FE deployed with code-based reset
-- [ ] GitHub secrets: `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`
+- [x] GitHub secrets + [deploy.yml](../.github/workflows/deploy.yml): `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` (**add secrets before first deploy**; `AUTH_PROVIDER` **not** in deploy until Phase F)
 - [ ] Rollback plan documented
+
+### Deploy pre-wire (safe before cutover)
+
+[deploy.yml](../.github/workflows/deploy.yml) writes prod `COGNITO_*` to EC2 `.env.local` on every deploy. **`AUTH_PROVIDER` is intentionally omitted** — unset defaults to Supabase (`authProvider.js`). Safe to merge and deploy anytime after GitHub secrets exist.
+
+**Phase F only:** add `AUTH_PROVIDER=cognito` to deploy template (or GitHub secret), deploy, truncate `refreshTokens`, smoke.
+
+**On-instance Cognito smoke (EC2 instance role):**
+
+```bash
+export COGNITO_USER_POOL_ID="$(grep '^COGNITO_USER_POOL_ID=' /opt/enscribe-api/.env.local | cut -d= -f2-)"
+export COGNITO_CLIENT_ID="$(grep '^COGNITO_CLIENT_ID=' /opt/enscribe-api/.env.local | cut -d= -f2-)"
+cd /opt/enscribe-api
+node --input-type=module -e "
+import { CognitoIdentityProviderClient, ListUsersCommand } from '@aws-sdk/client-cognito-identity-provider';
+const client = new CognitoIdentityProviderClient({ region: 'us-east-1' });
+const out = await client.send(new ListUsersCommand({
+  UserPoolId: process.env.COGNITO_USER_POOL_ID,
+  Limit: 1,
+}));
+console.log('EC2 instance role OK, users:', out.Users?.length ?? 0);
+"
+```
 
 ### Cutover window (~30–60 min)
 
@@ -612,6 +706,23 @@ After **2–4 weeks** stable on Cognito:
 ## Environment variables
 
 ### Add (Cognito)
+
+**Prod EC2 (via [deploy.yml](../.github/workflows/deploy.yml)) — pre-cutover:**
+
+```bash
+COGNITO_USER_POOL_ID=us-east-1_UxICChcfK   # GitHub secret
+COGNITO_CLIENT_ID=...                      # GitHub secret
+COGNITO_REGION=us-east-1                   # hardcoded in deploy.yml
+# AUTH_PROVIDER omitted until Phase F → defaults to supabase
+```
+
+**Phase F cutover — add to deploy.yml / EC2:**
+
+```bash
+AUTH_PROVIDER=cognito
+```
+
+**Local dev (`.env.local`):**
 
 ```bash
 AUTH_PROVIDER=cognito
