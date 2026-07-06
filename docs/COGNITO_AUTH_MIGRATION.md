@@ -4,7 +4,7 @@ Walkthrough for moving **authentication** off Supabase onto **Amazon Cognito Use
 
 Assumes **API-mediated auth** — clients call `POST /api/auth` and `POST /api/auth/refresh` on Fastify (EC2), not Cognito Hosted UI. **Email + password only.** Session layer (encrypted `refreshTokens`, wrapper cookie, inactivity caps) stays on the API. **HIPAA:** Cognito, SES, EC2, and RDS in AWS BAA-covered account/region (`us-east-1`).
 
-**Status (2026-07-03):** **Phase C done** — merged `b77c505`. **Phase A infra complete** — IAM + EC2 role, SES production access (`get-account` → `ProductionAccessEnabled: true`), `COGNITO_*` in [deploy.yml](../.github/workflows/deploy.yml) (**`AUTH_PROVIDER` omitted** until Phase F). **Phase D (user import) is next.** Cutover after FE reset + user import + comms.
+**Status (2026-07-05):** **Phase E done** — `enscribe-web` deployed: API `forgot-password` + `/reset-password` code form + `confirm-forgot-password`; local + prod Cognito email template smoke green. **Phase F (cutover) is next** — add `AUTH_PROVIDER=cognito` to [deploy.yml](../.github/workflows/deploy.yml), deploy API, truncate `refreshTokens`, user comms. Phases A–D complete; prod API still Supabase until Phase F.
 
 **Prerequisites:**
 
@@ -30,9 +30,9 @@ Assumes **API-mediated auth** — clients call `POST /api/auth` and `POST /api/a
 | **5** | JWT verify (`aws-jwt-verify`) | Code PR | **Done** — `cognitoJwt.js`, `authenticateAccessToken.js`, `AUTH_PROVIDER` |
 | **6** | `authController` → Cognito SDK | Code PR | **Done** — sign-in/up/out, refresh, forgot/confirm password, resend |
 | **7** | Admin helpers (`AdminGetUser`, signup stub) | Code PR | **Done** — `resolveAppUserFromCognito`, `authUsersStub` + `cognito_sub`, RDS `ensureAuthUserExists` |
-| **8** | User bulk import + password reset comms | Ops | Planned |
-| **9** | Frontend: Cognito forgot-password **code** flow | `enscribe-web` | Planned |
-| **10** | Cutover (flip env, invalidate Supabase sessions) | Ops | Planned |
+| **8** | User bulk import + password reset comms | Ops | **Done** — 27/27 linked; `cognito:confirm-imported-users` (2026-07-03). Mass email at cutover (Part 8). |
+| **9** | Frontend: Cognito forgot-password **code** flow | `enscribe-web` | **Done** — deployed 2026-07-05; forgot → code email → reset form E2E |
+| **10** | Cutover (flip env, invalidate Supabase sessions) | Ops | **Next** |
 | **11** | Decommission Supabase Auth | Ops + cleanup PR | After confidence window |
 
 ### Recommended order
@@ -56,8 +56,10 @@ Phase G — Cleanup (Part 11)             Remove SUPABASE_* auth secrets + supab
 | **A — Infra (Parts 1–3)** | **Done** | IAM + EC2 role + SES prod access (2026-07-03). `COGNITO_*` in deploy.yml; `AUTH_PROVIDER` at Phase F only. |
 | **B — Schema (Part 4)** | **Done** | `auth.users.cognito_sub` on RDS |
 | **C — Code (Parts 5–7)** | **Done** | Merged `b77c505` (2026-07-02). Dev pool + `npm run test:auth` **28/28**. Prod still Supabase auth until Phase F. See Phase C log. |
-| **D — User import (Part 8)** | **Next** | Bulk `AdminCreateUser`; map `cognito_sub` on prod pool |
-| **E–G** | Planned | FE reset, cutover, decommission |
+| **D — User import (Part 8)** | **Done** | 27/27 linked; `import:cognito-users` + `cognito:confirm-imported-users` (see Phase D log). |
+| **E — Frontend (Part 9)** | **Done** | `enscribe-web` deployed 2026-07-05; code reset E2E + Cognito HTML email template on prod pool. |
+| **F — Cutover (Part 10)** | **Next** | Flip `AUTH_PROVIDER=cognito` on EC2 |
+| **G — Cleanup (Part 11)** | Planned | Decommission Supabase auth |
 
 ### Phase A completion log (2026-07-02)
 
@@ -111,7 +113,32 @@ Phase G — Cleanup (Part 11)             Remove SUPABASE_* auth secrets + supab
 | Auth tests | **`npm run test:auth` — 28 executed, 28 passed, 0 failed** (~10s; real dev account + refresh/cookie suite) |
 | Prerequisites | `npm run db:tunnel` + `npm run dev:fastify`; `TEST_ACCOUNT_*` linked in RDS (`cognito_sub` or email fallback) |
 | Prod | **`AUTH_PROVIDER` unset → Supabase** on EC2; `COGNITO_*` in [deploy.yml](../.github/workflows/deploy.yml) (pre-cutover); flip `AUTH_PROVIDER=cognito` at Phase F only |
-| Not in scope yet | Prod pool user import (Phase D); FE code reset (Phase E); EC2 `AUTH_PROVIDER` flip (Phase F) |
+| Not in scope yet | FE code reset (Phase E); EC2 `AUTH_PROVIDER` flip (Phase F) |
+
+### Phase D completion log (2026-07-03)
+
+| Item | Detail |
+|------|--------|
+| Script | `npm run import:cognito-users` — `sql/scripts/import-prod-users-to-cognito.mjs` |
+| Pool | Prod `us-east-1_UxICChcfK` |
+| Bulk run | 26 created, 0 failed; `missing cognito_sub: 0` after first pass |
+| Follow-up | `markvcyis@gmail.com` — stale empty `cognito_sub` (`''` not `NULL`); `SET cognito_sub = NULL` then re-import 1 user |
+| Final | **27/27** `auth.users` rows have prod-pool `cognito_sub`; no Cognito passwords set (reset at cutover) |
+| Pitfall | When unlinking test subs, use `SET cognito_sub = NULL` — not empty string |
+| Pitfall | `AdminCreateUser` alone → `FORCE_CHANGE_PASSWORD`; **ForgotPassword codes are not delivered**. Fix: `npm run cognito:confirm-imported-users -- --apply --confirm-prod` (sets random permanent password → `CONFIRMED`) |
+| Confirm script | `sql/scripts/confirm-cognito-imported-users.mjs`; passwords must meet pool policy (upper, lower, digit, symbol) — see `cognitoPasswordUtils.mjs` |
+| Import script | `import-prod-users-to-cognito.mjs` now calls `AdminSetUserPassword` on create (future imports) |
+
+### Phase E completion log (2026-07-05)
+
+| Item | Detail |
+|------|--------|
+| Repo | **`enscribe-web`** (separate from this API repo) |
+| FE | Login `forgot-password` → API only; `/reset-password` form (email + 6-digit code + new password); `confirm-forgot-password` |
+| Deploy | Pushed to prod (`app.enscribe.online`) |
+| Email | Cognito prod pool **Forgot password** HTML template (SES); `{####}` code; button → `https://app.enscribe.online/reset-password` |
+| Smoke | Forgot password → Cognito email → FE code entry → reset → sign-in (local API `AUTH_PROVIDER=cognito` + RDS tunnel) |
+| Prod API | Still **`AUTH_PROVIDER` unset → Supabase** until Phase F — FE code flow required after cutover |
 
 **Local auth test command:**
 
@@ -319,7 +346,7 @@ aws cognito-idp update-user-pool \
   --email-configuration EmailSendingAccount=DEVELOPER,SourceArn=arn:aws:ses:us-east-1:ACCOUNT_ID:identity/enscribe.online,From="Enscribe Health LLC <noreply@enscribe.online>",ReplyToEmailAddress=info@enscribe.online
 ```
 
-**Message templates:** forgot-password must include **`{####}`** code placeholder.
+**Message templates:** forgot-password must include **`{####}`** code placeholder. Customize in Cognito console → **Messaging** → **Message templates** → **Forgot password** (HTML supported). Test by triggering one real `ForgotPassword` (CLI or `POST /api/auth`); no separate preview send.
 
 ---
 
@@ -554,7 +581,7 @@ Supabase password hashes **cannot** be imported into Cognito.
 |------|--------|
 | 1 | Export `SELECT id, email FROM auth.users` from RDS |
 | 2 | Dev/staging: import into **dev** pool first; validate auth tests |
-| 3 | Prod: `AdminCreateUser` per row (`MessageAction: SUPPRESS`); force password reset |
+| 3 | Prod: `AdminCreateUser` per row (`MessageAction: SUPPRESS`); then **`AdminSetUserPassword` (Permanent, random)** → `CONFIRMED` (required for ForgotPassword codes) |
 | 4 | `UPDATE auth.users SET cognito_sub = $1 WHERE id = $2` |
 | 5 | Email all users: one-time password reset |
 | 6 | Invalidate all `refreshTokens` at cutover |
@@ -620,6 +647,8 @@ SELECT email FROM auth.users ORDER BY email;
 
 **Ship Phase E before or with cutover** — non-breaking until `AUTH_PROVIDER=cognito` on the API; after cutover the code-based page is required.
 
+**Status:** **Done** (2026-07-05) — see Phase E completion log above.
+
 ---
 
 ## Part 10 — Cutover cheat sheet
@@ -633,9 +662,11 @@ SELECT email FROM auth.users ORDER BY email;
 - [x] IAM user → prod pool: `npm run smoke:cognito-dev` with prod `COGNITO_*` (2026-07-03)
 - [x] EC2 instance role → prod pool: on-instance `ListUsers` (2026-07-03)
 - [x] `cognito_sub` migration applied on RDS
-- [ ] All prod users imported; `cognito_sub` populated
-- [ ] FE deployed with code-based reset
-- [x] GitHub secrets + [deploy.yml](../.github/workflows/deploy.yml): `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` (**add secrets before first deploy**; `AUTH_PROVIDER` **not** in deploy until Phase F)
+- [x] All prod users imported; `cognito_sub` populated (**27/27**, Phase D — 2026-07-03)
+- [x] All imported users **CONFIRMED** (`npm run cognito:confirm-imported-users`, Phase D — 2026-07-03)
+- [x] FE deployed with code-based reset (**Phase E — 2026-07-05**)
+- [x] Cognito forgot-password email template (HTML, prod pool)
+- [x] GitHub secrets + [deploy.yml](../.github/workflows/deploy.yml): `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID` (**`AUTH_PROVIDER` not** in deploy until Phase F)
 - [ ] Rollback plan documented
 
 ### Deploy pre-wire (safe before cutover)
@@ -661,14 +692,31 @@ console.log('EC2 instance role OK, users:', out.Users?.length ?? 0);
 "
 ```
 
-### Cutover window (~30–60 min)
+### Cutover window (~30–60 min) — Phase F runbook
 
-1. Announce maintenance — users must re-login.
-2. Deploy API with `AUTH_PROVIDER=cognito`.
-3. Truncate or expire `refreshTokens`.
-4. `pm2 restart` API + workers.
-5. Smoke: sign-in, protected route, refresh, sign-up, forgot password.
-6. Monitor CloudTrail Cognito failures, API 401 rate.
+**Pre-flight:** FE live ✓, users in prod pool ✓, `cognito_sub` ✓, users `CONFIRMED` ✓. Pick a low-traffic window.
+
+1. **Announce maintenance** — all users must re-login; old passwords stop working.
+2. **Add `AUTH_PROVIDER=cognito`** to [deploy.yml](../.github/workflows/deploy.yml) (line with other `COGNITO_*` in EC2 `.env.local` template):
+   ```bash
+   AUTH_PROVIDER=cognito
+   ```
+3. **Merge + deploy API** (GitHub Actions → EC2).
+4. **Truncate refresh sessions** on RDS (invalidates Supabase refresh vault):
+   ```sql
+   TRUNCATE public."refreshTokens";
+   ```
+5. **Restart processes** on EC2: `pm2 restart` API + workers.
+6. **Prod smoke** on `app.enscribe.online`:
+   - Forgot password → code email → reset → sign in
+   - Sign-in (account with Cognito password)
+   - Protected route (Bearer JWT)
+   - Refresh (cookie / mobile body)
+   - Optional: sign-up
+7. **Send mass email** to ~27 users (template in Part 8 above) — BCC from `info@enscribe.online`.
+8. **Monitor** CloudTrail `cognito-idp` failures, API 401 rate, SES bounces.
+
+**On-instance sign-in smoke** (after flip): use a test account that has set a Cognito password via forgot flow; `npm run smoke:cognito-dev` pattern with prod pool on EC2 if needed.
 
 ### Rollback
 

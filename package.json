@@ -47,6 +47,8 @@
     "db:tunnel": "node sql/scripts/rds-local-tunnel.mjs",
     "smoke:recordings-s3": "node sql/scripts/smoke-recordings-s3.mjs",
     "smoke:cognito-dev": "node sql/scripts/smoke-cognito-dev.mjs",
+    "import:cognito-users": "node sql/scripts/import-prod-users-to-cognito.mjs",
+    "cognito:confirm-imported-users": "node sql/scripts/confirm-cognito-imported-users.mjs",
     "migrate:audio-files-to-recordings-s3": "node sql/scripts/migrate-audio-files-to-recordings-s3.mjs"
   },
   "dependencies": {
