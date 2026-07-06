@@ -18,6 +18,41 @@ export const chatSessionsTable = 'chat_sessions';
 export const chatMessagesTable = 'chat_messages';
 export const chatTokenUsageTable = 'chat_token_usage';
 export const novaChatCompletionJobsTable = 'nova_chat_completion_jobs';
+export const preVisitSummariesTable = 'pre_visit_summaries';
+
+/** @typedef {'exclude' | 'include' | 'only'} PreVisitSummaryListFilter */
+
+/**
+ * Resolve Nova chat list filter from query flags (default: exclude linked pre-visit summaries).
+ *
+ * @param {{ includePreVisitSummary?: boolean, onlyPreVisitSummary?: boolean }} opts
+ * @returns {PreVisitSummaryListFilter}
+ */
+export function resolvePreVisitSummaryListFilter(opts) {
+  if (opts.onlyPreVisitSummary) return 'only';
+  if (opts.includePreVisitSummary) return 'include';
+  return 'exclude';
+}
+
+/**
+ * SQL fragment for filtering chat_sessions by linked pre_visit_summaries rows.
+ *
+ * @param {PreVisitSummaryListFilter} mode
+ * @returns {string}
+ */
+export function preVisitSummaryFilterWhereClause(mode) {
+  if (mode === 'include') return '';
+  if (mode === 'only') {
+    return `AND EXISTS (
+      SELECT 1 FROM ${preVisitSummariesTable} p
+       WHERE p.chat_id = ${chatSessionsTable}.id
+    )`;
+  }
+  return `AND NOT EXISTS (
+    SELECT 1 FROM ${preVisitSummariesTable} p
+     WHERE p.chat_id = ${chatSessionsTable}.id
+  )`;
+}
 
 const CHAT_SESSION_SORT_COLUMNS = new Set(['last_active_at', 'created_at', 'updated_at']);
 
@@ -195,18 +230,21 @@ export async function insertChatSessionRow(_supabase, ids) {
  *
  * @param {import('@supabase/supabase-js').SupabaseClient} _supabase
  * @param {string} userId
- * @param {{ limit: number, offset: number, sortBy: 'last_active_at' | 'created_at' | 'updated_at', order: 'asc' | 'desc' }} opts
+ * @param {{ limit: number, offset: number, sortBy: 'last_active_at' | 'created_at' | 'updated_at', order: 'asc' | 'desc', preVisitSummaryFilter?: PreVisitSummaryListFilter }} opts
  * @returns {Promise<{ success: true, sessions: Array<{ chatId: string, organizationId: string, title: string, token_estimate: number, total_tokens: number, created_at: string, updated_at: string, last_active_at: string }>, total: number } | { success: false, error: string }>}
  */
 export async function listChatSessionsForUser(_supabase, userId, opts) {
   const { limit, offset, sortBy, order } = opts;
+  const preVisitSummaryFilter = opts.preVisitSummaryFilter ?? 'exclude';
   const orderClause = chatSessionOrderClause(sortBy, order);
+  const preVisitFilterSql = preVisitSummaryFilterWhereClause(preVisitSummaryFilter);
 
   try {
     const countRow = await pgQueryOne(
       `SELECT COUNT(*)::int AS count
          FROM ${chatSessionsTable}
-        WHERE user_id = $1`,
+        WHERE user_id = $1
+          ${preVisitFilterSql}`,
       [userId]
     );
     const total = countRow?.count ?? 0;
@@ -215,6 +253,7 @@ export async function listChatSessionsForUser(_supabase, userId, opts) {
       `SELECT id, organization_id, title, token_estimate, total_tokens, created_at, updated_at, last_active_at
          FROM ${chatSessionsTable}
         WHERE user_id = $1
+          ${preVisitFilterSql}
         ORDER BY ${orderClause}
         LIMIT $2 OFFSET $3`,
       [userId, limit, offset]

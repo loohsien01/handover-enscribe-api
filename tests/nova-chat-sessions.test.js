@@ -7,6 +7,7 @@
  *   (`sql/migrations/20260616_chat_sessions_title.sql`), `nova_chat_completion_jobs`
  *   (`sql/migrations/20260514_nova_chat_completion_jobs.sql` — enum `nova_chat_completion_job_status`; if you applied an older TEXT-only 20260514, also run `sql/migrations/20260515_nova_chat_completion_jobs_status_enum.sql` once),
  *   (`sql/policies/nova_chat_completion_jobs_RLS.sql`),
+ *   `pre_visit_summaries` (`sql/migrations/20260627_rename_visit_preps_to_pre_visit_summaries.sql` or fresh install),
  *   and organizations billing tables.
  *
  * Does not call Bedrock or `POST .../completions`. Saved JSON has no assistant/LLM turns — only
@@ -338,6 +339,97 @@ export async function runNovaChatSessionsTests() {
       }
       return { passed: true, message: '' };
     },
+  });
+
+  /** @type {string | null} */
+  let preVisitChatId = null;
+
+  const createPreVisitChatRes = await fetch(`${runner.baseUrl}/api/nova/chat-sessions`, {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({}),
+  });
+
+  if (createPreVisitChatRes.status === 201) {
+    const chatData = await createPreVisitChatRes.json();
+    preVisitChatId = chatData.chatId;
+  }
+
+  if (preVisitChatId) {
+    const createSummaryRes = await fetch(`${runner.baseUrl}/api/pre-visit-summaries`, {
+      method: 'POST',
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: preVisitChatId, text: 'nova-list-filter-test summary' }),
+    });
+
+    if (createSummaryRes.status !== 201) {
+      const errBody = await createSummaryRes.json().catch(() => ({}));
+      console.warn(
+        `\n⚠️  Skipping Tests 13–16: POST /pre-visit-summaries returned ${createSummaryRes.status}: ${JSON.stringify(errBody)}\n`
+      );
+      preVisitChatId = null;
+    }
+  } else {
+    console.warn('\n⚠️  Skipping Tests 13–16: could not create chat for pre-visit summary filter tests\n');
+  }
+
+  if (preVisitChatId) {
+    await runner.test('Test 13: GET list excludes chats linked to pre-visit summaries by default', {
+      method: 'GET',
+      endpoint: '/api/nova/chat-sessions?limit=100&offset=0',
+      headers: authHeaders,
+      expectedStatus: 200,
+      customValidator: (data) => {
+        const ids = (data.sessions || []).map((s) => s.chatId);
+        if (!ids.includes(cachedChatId)) {
+          return { passed: false, message: 'normal Nova chat missing from default list' };
+        }
+        if (ids.includes(preVisitChatId)) {
+          return { passed: false, message: 'pre-visit summary chat should be excluded from default list' };
+        }
+        return { passed: true, message: '' };
+      },
+    });
+
+    await runner.test('Test 14: GET list includePreVisitSummary=true returns all chats', {
+      method: 'GET',
+      endpoint: '/api/nova/chat-sessions?limit=100&offset=0&includePreVisitSummary=true',
+      headers: authHeaders,
+      expectedStatus: 200,
+      customValidator: (data) => {
+        const ids = (data.sessions || []).map((s) => s.chatId);
+        if (!ids.includes(cachedChatId) || !ids.includes(preVisitChatId)) {
+          return { passed: false, message: 'expected both normal and pre-visit chats when includePreVisitSummary=true' };
+        }
+        return { passed: true, message: '' };
+      },
+    });
+
+    await runner.test('Test 15: GET list onlyPreVisitSummary=true returns linked chats only', {
+      method: 'GET',
+      endpoint: '/api/nova/chat-sessions?limit=100&offset=0&onlyPreVisitSummary=true',
+      headers: authHeaders,
+      expectedStatus: 200,
+      customValidator: (data) => {
+        const ids = (data.sessions || []).map((s) => s.chatId);
+        if (!ids.includes(preVisitChatId)) {
+          return { passed: false, message: 'pre-visit chat missing from onlyPreVisitSummary list' };
+        }
+        if (ids.includes(cachedChatId)) {
+          return { passed: false, message: 'normal Nova chat should not appear in onlyPreVisitSummary list' };
+        }
+        return { passed: true, message: '' };
+      },
+    });
+  }
+
+  await runner.test('Test 16: GET list rejects includePreVisitSummary and onlyPreVisitSummary together (400)', {
+    method: 'GET',
+    endpoint:
+      '/api/nova/chat-sessions?includePreVisitSummary=true&onlyPreVisitSummary=true',
+    headers: authHeaders,
+    expectedStatus: 400,
+    expectedFields: ['error'],
   });
 
   runner.printResults();

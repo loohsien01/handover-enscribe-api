@@ -25,7 +25,7 @@ import {
 /**
  * Nova AI — Redis hot cache + Supabase encrypted persistence (chat_sessions / chat_messages).
  *
- * - GET    /api/nova/chat-sessions (paginated metadata; query limit, offset, sortBy, order)
+ * - GET    /api/nova/chat-sessions (paginated metadata; query limit, offset, sortBy, order, includePreVisitSummary, onlyPreVisitSummary)
  * - POST   /api/nova/chat-sessions
  * - GET    /api/nova/chat-sessions/:chatId
  * - PATCH  /api/nova/chat-sessions/:chatId

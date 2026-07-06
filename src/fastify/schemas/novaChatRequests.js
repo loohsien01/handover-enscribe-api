@@ -49,6 +49,11 @@ export const novaChatCompletionJobParamsSchema = z.object({
   jobId: z.string().regex(uuidRegex, 'Invalid job id'),
 });
 
+const novaChatListQueryBooleanSchema = z
+  .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+  .optional()
+  .transform((value) => value === true || value === 'true' || value === '1');
+
 /** GET /api/nova/chat-sessions — paginated metadata list (no transcript; use GET …/:chatId). */
 export const novaChatSessionsListQuerySchema = z
   .object({
@@ -56,13 +61,20 @@ export const novaChatSessionsListQuerySchema = z
     offset: z.coerce.number().int().nonnegative().optional(),
     sortBy: z.enum(['last_active_at', 'created_at', 'updated_at']).optional(),
     order: z.enum(['asc', 'desc']).optional(),
+    includePreVisitSummary: novaChatListQueryBooleanSchema,
+    onlyPreVisitSummary: novaChatListQueryBooleanSchema,
   })
   .transform((d) => ({
     limit: d.limit ?? 50,
     offset: d.offset ?? 0,
     sortBy: d.sortBy ?? 'last_active_at',
     order: d.order ?? 'desc',
-  }));
+    includePreVisitSummary: d.includePreVisitSummary ?? false,
+    onlyPreVisitSummary: d.onlyPreVisitSummary ?? false,
+  }))
+  .refine((d) => !(d.includePreVisitSummary && d.onlyPreVisitSummary), {
+    message: 'includePreVisitSummary and onlyPreVisitSummary cannot both be true',
+  });
 
 export const novaChatTokenUsageRequestSchema = z
   .object({

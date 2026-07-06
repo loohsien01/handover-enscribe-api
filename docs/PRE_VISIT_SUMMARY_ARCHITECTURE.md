@@ -73,6 +73,7 @@ CRUD **404** responses for unknown `:id` use `{ "error": "Pre-Visit Summary not 
 | **Tests** | CRUD + save-pre-visit-summary validation + unit tests; Bedrock E2E opt-in | ✅ Shipped |
 | **Templates** | `pre_visit_summary_templates` table + CRUD | ✅ Shipped *(requires migration on each environment)* |
 | **List `chat_title` join** | Join `chat_sessions.title` on list rows | 🔲 Not in v1 |
+| **Nova list filter** | `GET /api/nova/chat-sessions` excludes linked pre-visit chats by default | ✅ Shipped |
 
 ---
 
@@ -162,6 +163,30 @@ Pre-Visit Summary page (returning user)
 
 **Turn 1:** `completions-and-save-pre-visit-summary` only.  
 **Turn 2+:** normal `completions` (no automatic new `pre_visit_summaries` row).
+
+---
+
+## Nova chat list vs Pre-Visit Summary list
+
+Pre-visit threads are normal `chat_sessions` rows (transcript + follow-up `completions`). The **Pre-Visit Summary page** lists **`GET /api/pre-visit-summaries`**; the **Nova sidebar** lists **`GET /api/nova/chat-sessions`**.
+
+To keep the two UIs separate without a schema migration, the Nova list applies a server-side filter on `pre_visit_summaries.chat_id`:
+
+| Query | Default | Semantics |
+|-------|---------|-----------|
+| *(none)* | — | **Exclude** chats with any linked `pre_visit_summaries` row (`NOT EXISTS` subquery) |
+| `includePreVisitSummary=true` | `false` | Return all owned chats (debug / admin) |
+| `onlyPreVisitSummary=true` | `false` | Return only chats with a linked summary |
+
+`includePreVisitSummary` and `onlyPreVisitSummary` cannot both be `true` (**400**). `total` and pagination use the same filter. See [`NOVA_AI_ARCHITECTURE.md`](./NOVA_AI_ARCHITECTURE.md) (`GET /api/nova/chat-sessions`).
+
+**Edge cases:**
+
+- **Save failed** (`PRE_VISIT_SUMMARY_PERSIST_FAILED`) — no summary row → chat may still appear in the default Nova list.
+- **Abandoned flow** — chat created, turn 1 not saved → no summary row → appears in Nova list.
+- **Chat deleted** — `chat_id` SET NULL on summaries; chat drops from both lists; summary text remains on the Pre-Visit Summary page.
+
+**Tests:** `tests/novaChatSessionsList.unit.test.js` (schema + SQL helpers); filter integration in `tests/nova-chat-sessions.test.js` (Tests 13–16).
 
 ---
 
@@ -752,6 +777,7 @@ For backend tracking; FE can ignore this section.
 - [x] Poll payload + `GET …/pre-visit-summary`
 - [x] Unit tests: `novaPreVisitSummaryTitleDetails`, `novaBedrockChat`, `novaPreVisitSummaryLimits`
 - [x] Integration: `tests/pre-visit-summaries.test.js`, save-route validation in `nova-chat-sessions-completions.test.js`
+- [x] Nova list filter: `tests/novaChatSessionsList.unit.test.js`, `tests/nova-chat-sessions.test.js` (Tests 13–16)
 - [x] E2E (opt-in): `tests/nova-chat-sessions-save-pre-visit-summary.e2e.test.js`
 - [x] Templates CRUD: `tests/pre-visit-summary-templates.test.js`
 - [x] Turn 1 output length: `tests/novaPreVisitSummaryLimits.unit.test.js`
@@ -765,6 +791,7 @@ For backend tracking; FE can ignore this section.
 | Prompt-llm save pattern | `src/fastify/routes/promptLlmJobs.js`, `src/fastify/processors/promptLlmProcessor.js`, `src/fastify/controllers/jobController.js` |
 | Nova completion processor | `src/fastify/processors/novaChatCompletionProcessor.js` |
 | Nova routes / poll | `src/fastify/routes/novaChatSessions.js`, `src/fastify/controllers/novaChatSessionsController.js` |
+| Nova list filter (pre-visit) | `src/utils/novaChatPersistence.js` (`listChatSessionsForUser`, `resolvePreVisitSummaryListFilter`) |
 | Generic session title (non-blocking) | `src/utils/novaChatTitleService.js` |
 | Pre-Visit Summary title details | `src/utils/novaPreVisitSummaryTitleDetailsService.js`, `src/utils/novaPreVisitSummaryTitleDetails.js`, `src/utils/novaPreVisitSummaryTitleDetailsCache.js` |
 | Pre-Visit Summary templates CRUD | `src/fastify/controllers/preVisitSummaryTemplatesController.js`, `src/fastify/routes/preVisitSummaryTemplates.js`, `src/fastify/schemas/preVisitSummaryTemplateRequests.js` |

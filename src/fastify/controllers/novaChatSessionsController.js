@@ -11,6 +11,7 @@ import {
 import {
   insertChatSessionRow,
   listChatSessionsForUser,
+  resolvePreVisitSummaryListFilter,
   loadNovaChatSessionFromSupabase,
   persistNovaChatSession,
   insertChatTokenUsageRow,
@@ -146,6 +147,10 @@ export async function listNovaChatSessions(request, reply) {
     offset: q.offset,
     sortBy: q.sortBy,
     order: q.order,
+    preVisitSummaryFilter: resolvePreVisitSummaryListFilter({
+      includePreVisitSummary: q.includePreVisitSummary,
+      onlyPreVisitSummary: q.onlyPreVisitSummary,
+    }),
   });
 
   if (!result.success) {

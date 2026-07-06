@@ -12,7 +12,7 @@ Base path: `/api/nova/…` on the Fastify API host (e.g. local `http://localhost
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/api/nova/chat-sessions` | List the signed-in user’s sessions (query: `limit`, `offset`, `sortBy`, `order`; see below). |
+| `GET` | `/api/nova/chat-sessions` | List the signed-in user’s sessions (query: `limit`, `offset`, `sortBy`, `order`, `includePreVisitSummary`, `onlyPreVisitSummary`; see below). |
 | `POST` | `/api/nova/chat-sessions` | Create a new chat; returns `chatId` + initial `session`. |
 | `GET` | `/api/nova/chat-sessions/:chatId` | Load session (Redis first, else hydrate from Supabase). |
 | `PATCH` | `/api/nova/chat-sessions/:chatId` | Update `summary`, `token_estimate`, `messages`, `appendMessages`, or **`title`**. |
@@ -39,6 +39,16 @@ Server-side env knobs (context limits, summarize thresholds, queue timing) **do 
 ### `GET /api/nova/chat-sessions`
 
 **Query (optional):** `limit` (default **50**, max **100**), `offset` (default **0**), `sortBy` = `last_active_at` \| `created_at` \| `updated_at` (default `last_active_at`), `order` = `asc` \| `desc` (default `desc`).
+
+**Pre-visit summary filter (optional):** By default, chats that have **any** linked row in `pre_visit_summaries` (`chat_id` → `chat_sessions.id`) are **excluded** so the Nova sidebar does not show Pre-Visit Summary threads (those belong on `GET /api/pre-visit-summaries`). Opt-in query flags (camelCase; string `"true"` / `"1"` accepted):
+
+| Query | Default | Effect |
+|-------|---------|--------|
+| *(none)* | — | Exclude chats with a linked pre-visit summary |
+| `includePreVisitSummary=true` | `false` | Return **all** owned chats (no pre-visit filter) |
+| `onlyPreVisitSummary=true` | `false` | Return **only** chats with a linked pre-visit summary |
+
+`includePreVisitSummary` and `onlyPreVisitSummary` cannot both be `true` (**400**). Pagination `total` reflects the active filter.
 
 **Success (200):** paginated rows from `chat_sessions` for the JWT user. Does **not** load Redis or decrypt messages; use `GET …/:chatId` for the full `<Session>`.
 
@@ -246,7 +256,7 @@ All successful bodies are JSON. `<Session>` means the [session object](#session-
 3. **Send a turn:** `POST …/completions` with `{ "model": "haiku" \| "sonnet" \| "opus", "message": "<non-empty string>", "client_message_id": "<uuid>" }` → **202** + `id` (job id). Poll **`GET …/completion-jobs/:id`** until `status` is `complete` or `failed`. The **user** message appears in `session.messages` as soon as **202** is returned (refresh `GET …/:chatId` if needed). While `running`, poll may return growing **`assistant_partial`** — render that in **local UI state** until `complete` (see [Frontend: partial completions](#frontend-partial-completions-poll-pseudo-stream)). **Retry after `failed`:** same `client_message_id` and **same** `message` → **202** for a new job **without** duplicating the user row; if `message` does not match the pending user line, the API returns **400** (`NOVA_CLIENT_MESSAGE_MISMATCH` or `NOVA_COMPLETION_RETRY_INVALID_STATE`).
 4. **After a successful job:** drive the transcript from **`response.session.messages`** on the terminal poll (or **200** idempotent replay). Update **`session.title`** from the same payload; if still **`"New Chat"`** after the **first** completion, optionally re-fetch session or list once for the [async AI title](#session-title-frontend). Optionally show **`response.usage`**; tolerate **`usage: null`**.
 5. **Rolling summary in the UI:** if you surface `summary` or “memory,” refresh via **`GET …/:chatId`** while `summarize_pending` is true (poll lightly or on focus) — the worker updates Redis/DB in the background. The next completion’s `session` is also fine without polling.
-6. **Session list / sidebar:** `GET /api/nova/chat-sessions` for **metadata** (ids, **`title`**, activity, token totals). Bind row **`title`** in the list; refresh the list after create, rename **`PATCH`**, or when you detect an AI title update on the open thread. For transcript content, call `GET …/:chatId` when the user opens a thread (or prefetch sparingly).
+6. **Session list / sidebar:** `GET /api/nova/chat-sessions` for **metadata** (ids, **`title`**, activity, token totals). **Default list excludes** chats linked to a pre-visit summary (`pre_visit_summaries.chat_id`); use `includePreVisitSummary=true` only for debugging or admin views. Pre-Visit Summary threads are listed via `GET /api/pre-visit-summaries`, not the Nova sidebar. Bind row **`title`** in the list; refresh the list after create, rename **`PATCH`**, or when you detect an AI title update on the open thread. For transcript content, call `GET …/:chatId` when the user opens a thread (or prefetch sparingly).
 7. **`PATCH`:** use for **user rename** (`{ "title": "…" }`), transcript edits, or summary/token hints — see the PATCH section and [Session title (frontend)](#session-title-frontend) above.
 
 Reference tests: API **`tests/nova-chat-sessions-completions.test.js`**; Bedrock + title E2E **`tests/nova-chat-sessions-completions.e2e.test.js`** (`npm run test:nova-chat-sessions-completions-e2e`).
