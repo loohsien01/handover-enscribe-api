@@ -56,7 +56,7 @@ All paths require `Authorization: Bearer <access_token>` unless noted.
 
 CRUD **404** responses for unknown `:id` use `{ "error": "Pre-Visit Summary not found" }` without a `code` field.
 
-**DB upgrade *(BE ops only; FE not affected)*:** apply `sql/migrations/20260627_rename_visit_preps_to_pre_visit_summaries.sql` on databases that already ran the old `visit_preps` migrations. Fresh installs use the renamed migration files directly.
+**DB upgrade *(BE ops only; FE not affected)*:** apply `sql/migrations/20260627_rename_visit_preps_to_pre_visit_summaries.sql` on databases that already ran the old `visit_preps` migrations. Apply `sql/migrations/20260706_pre_visit_summaries_title.sql` for the **`title`** column. Fresh installs use the renamed migration files directly.
 
 **Phase 2:** default instruction templates live in `pre_visit_summary_templates` (CRUD shipped; system seed script optional / later).
 
@@ -70,9 +70,10 @@ CRUD **404** responses for unknown `:id` use `{ "error": "Pre-Visit Summary not 
 | **API — CRUD** | `GET` / `POST` / `PATCH` / `DELETE` `/api/pre-visit-summaries` | ✅ Shipped |
 | **API — Nova save** | `POST …/completions-and-save-pre-visit-summary` + completion poll | ✅ Shipped |
 | **API — Nova title** | `extract_title_details` + `pre_visit_summary_title_details` poll field (ephemeral) | ✅ Shipped |
+| **API — summary title** | `title` on `pre_visit_summaries` CRUD + poll embed; default **New Pre-Visit Summary** | ✅ Shipped |
 | **Tests** | CRUD + save-pre-visit-summary validation + unit tests; Bedrock E2E opt-in | ✅ Shipped |
 | **Templates** | `pre_visit_summary_templates` table + CRUD | ✅ Shipped *(requires migration on each environment)* |
-| **List `chat_title` join** | Join `chat_sessions.title` on list rows | 🔲 Not in v1 |
+| **List `chat_title` join** | Join `chat_sessions.title` on list rows | 🔲 Superseded by `pre_visit_summaries.title` |
 | **Nova list filter** | `GET /api/nova/chat-sessions` excludes linked pre-visit chats by default | ✅ Shipped |
 
 ---
@@ -282,6 +283,7 @@ The model returns **free-form text** per those instructions. That string is stor
 | `chat_id` | `uuid` | Nova thread (`chat_sessions.id`). **Required on all API creates**; **nullable in Postgres** (service-role / ops inserts may omit; **`ON DELETE SET NULL`** when chat row is removed). **FK** → `chat_sessions(id)`. |
 | `encrypted_text` | `text` | Ciphertext of summary body; user master key. Nullable if empty. |
 | `text_iv` | `text` | IV for text encryption. Nullable when empty. |
+| `title` | `text` | Plaintext display label for the Pre-Visit Summary list. **`NOT NULL`**, default **`New Pre-Visit Summary`**. Max **40** chars (same normalization as Nova chat titles). |
 | `created_at` | `timestamptz` | `DEFAULT now()` |
 | `updated_at` | `timestamptz` | `DEFAULT now()`; bump on PATCH |
 
@@ -308,6 +310,7 @@ CREATE TABLE public.pre_visit_summaries (
   chat_id uuid REFERENCES public.chat_sessions (id) ON DELETE SET NULL,
   encrypted_text text,
   text_iv text,
+  title text NOT NULL DEFAULT 'New Pre-Visit Summary',
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -351,6 +354,7 @@ Resolve job → summary via **`job.pre_visit_summary_id`**. Do not store **`nova
 | Data | Key | Rationale |
 |------|-----|-----------|
 | `pre_visit_summaries.text` | **User master key** | User-owned PHI; same as `notes` |
+| `pre_visit_summaries.title` | **Plaintext** | Display label only; same model as `chat_sessions.title` |
 | Live `notes` (input charts) | User master key | Existing model |
 
 Helpers: reuse `encryptNoteText` / `decryptNoteText` from `src/utils/encryptionUtils.js` (AES-256-GCM). API responses strip `encrypted_text` / `text_iv` and return decrypted **`text`** only — mirror notes controller.
@@ -371,7 +375,7 @@ Helpers: reuse `encryptNoteText` / `decryptNoteText` from `src/utils/encryptionU
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
  * @param {Buffer} masterKey
- * @param {{ text?: string, chatId: string }} input — `chatId` required (processor + POST handler)
+ * @param {{ text?: string, chatId: string, title?: string }} input — `chatId` required (processor + POST handler)
  * @returns {Promise<{ success: boolean, preVisitSummary?: { id: string, … }, error?: string, code?: string }>}
  */
 export async function createPreVisitSummary(supabase, userId, masterKey, input) { … }
@@ -393,7 +397,8 @@ Create a row without running Bedrock again (manual recovery or rare direct creat
 ```json
 {
   "chat_id": "660e8400-e29b-41d4-a716-446655440001",
-  "text": "Pre-Visit Summary content…"
+  "text": "Pre-Visit Summary content…",
+  "title": "Jane Doe F/U 7/6/26"
 }
 ```
 
@@ -401,6 +406,7 @@ Create a row without running Bedrock again (manual recovery or rare direct creat
 |-------|------|----------|--------|
 | `chat_id` | UUID | **Yes** | Must match an existing owned **`chat_sessions`** row |
 | `text` | `string` | No | Defaults to `""`; encrypted when non-empty |
+| `title` | `string` | No | Defaults to **`New Pre-Visit Summary`** (DB default). Max **40** chars; trimmed via **`normalizeNovaChatTitle`**. |
 
 **Response 201:**
 
@@ -409,6 +415,7 @@ Create a row without running Bedrock again (manual recovery or rare direct creat
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "user_id": "…",
   "chat_id": "660e8400-e29b-41d4-a716-446655440001",
+  "title": "New Pre-Visit Summary",
   "text": "Pre-Visit Summary content…",
   "created_at": "2026-06-23T14:30:00.000Z",
   "updated_at": "2026-06-23T14:30:00.000Z"
@@ -417,7 +424,7 @@ Create a row without running Bedrock again (manual recovery or rare direct creat
 
 ### `GET /api/pre-visit-summaries`
 
-List own rows (paginated). Each item includes **`chat_id`** (UUID or **`null`** if the chat was deleted).
+List own rows (paginated). Each item includes **`chat_id`** (UUID or **`null`** if the chat was deleted) and **`title`**.
 
 **Query params** (all optional; defaults in parentheses):
 
@@ -428,17 +435,27 @@ List own rows (paginated). Each item includes **`chat_id`** (UUID or **`null`** 
 | `sortBy` | `created_at` | `created_at`, `updated_at`, `id` |
 | `order` | `desc` | `asc`, `desc` |
 
-**Not in v1:** joined **`chat_sessions.title`** as **`chat_title`** on list items — FE may fetch session metadata separately when needed.
-
 ### `GET /api/pre-visit-summaries/:id`
 
-Single row with decrypted **`text`** and **`chat_id`** (may be **`null`** after chat delete).
+Single row with decrypted **`text`**, **`title`**, and **`chat_id`** (may be **`null`** after chat delete).
 
 ### `PATCH /api/pre-visit-summaries/:id`
 
-User manual edit (FE pre-visit summary editor).
+User manual edit (FE pre-visit summary editor) or title rename after Haiku extraction.
 
-**Request:** `{ "text": "Updated Pre-Visit Summary content…" }`
+**Request:** at least one of:
+
+```json
+{ "text": "Updated Pre-Visit Summary content…" }
+```
+
+```json
+{ "title": "Jane Doe F/U 7/6/26" }
+```
+
+```json
+{ "text": "…", "title": "Jane Doe F/U 7/6/26" }
+```
 
 **Response 200:** updated object with new **`updated_at`**.
 
@@ -498,6 +515,7 @@ Unchanged route. When job **`status`** is **`complete`** and **`pre_visit_summar
   "pre_visit_summary": {
     "id": "550e8400-e29b-41d4-a716-446655440000",
     "chat_id": "<chatId>",
+    "title": "New Pre-Visit Summary",
     "text": "…",
     "created_at": "…",
     "updated_at": "…"
@@ -578,8 +596,8 @@ After the first job reaches **`complete`**, **`maybeRunNovaChatTitleAfterFirstCo
 | **When it runs** | After session persist on the save route, whether the job ends **`complete`** or **`failed`** / **`PRE_VISIT_SUMMARY_PERSIST_FAILED`** (Bedrock + transcript already succeeded). |
 | **Billing** | Title extraction does **not** record **`nova_response`** usage (mirror generic title Haiku). |
 | **Failure** | **Fail open** — log errors; poll omits **`pre_visit_summary_title_details`**; **`session.title`** stays **`"New Chat"`** until client **`PATCH`** or manual rename. |
-| **Postgres** | **No** new column on **`nova_chat_completion_jobs`** for title fields. Ephemeral cache (e.g. Redis) holds extraction result for poll delivery only. |
-| **Final title** | **Not** written by the server. Client composes sidebar string and **`PATCH /api/nova/chat-sessions/:chatId`**. Max **40** chars enforced by **`normalizeNovaChatTitle`** on PATCH. |
+| **Postgres** | **No** new column on **`nova_chat_completion_jobs`** for title fields. Ephemeral cache (e.g. Redis) holds extraction result for poll delivery only. **`pre_visit_summaries.title`** stores the display label (FE **`PATCH`** after compose). |
+| **Final title** | **Not** written by the server from extraction. Client composes list title from **`pre_visit_summary_title_details`** + local date, then **`PATCH /api/pre-visit-summaries/:id`**. Max **40** chars via **`normalizeNovaChatTitle`**. Optional: FE may still **`PATCH /api/nova/chat-sessions/:chatId`** (not shown in Pre-Visit Summary UI). |
 
 ### Extraction output schema (API contract)
 
@@ -606,10 +624,11 @@ Haiku structured output (Bedrock **`output_config.format`** / JSON schema) — *
 This API repo documents the poll contract only. Expected FE behavior (not implemented here):
 
 1. After terminal job poll, re-poll until **`pre_visit_summary_title_details`** appears (or timeout).
-2. Compose final sidebar title from **`patient_display_name`**, **`visit_kind`**, and **today’s date in the user’s local timezone** (formatting — e.g. spaces between segments — is FE-owned).
-3. Truncate to **40** characters if needed, then **`PATCH { "title": "…" }`**.
+2. Compose final list title from **`patient_display_name`**, **`visit_kind`**, and **today’s date in the user’s local timezone** (formatting — e.g. spaces between segments — is FE-owned).
+3. Truncate to **40** characters if needed, then **`PATCH /api/pre-visit-summaries/:id`** `{ "title": "…" }` (primary).
+4. Optionally **`PATCH /api/nova/chat-sessions/:chatId`** `{ "title": "…" }` afterward (Nova sidebar; not shown on Pre-Visit Summary page).
 
-**`session.title`** in poll payloads remains **`"New Chat"`** until that PATCH; it is **never** JSON.
+Until step 3, **`pre_visit_summaries.title`** remains **`New Pre-Visit Summary`** (DB default on create). **`session.title`** in poll payloads remains **`New Chat`** unless the client patches the chat session.
 
 ---
 

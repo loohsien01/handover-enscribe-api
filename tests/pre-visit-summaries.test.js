@@ -12,6 +12,7 @@ dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
 
 import { TestRunner } from './testUtils.js';
 import { getTestAccount, hasTestAccounts, getApiBaseUrl } from './testConfig.js';
+import { PRE_VISIT_SUMMARY_DEFAULT_TITLE } from '../src/utils/novaChatTitle.js';
 
 const MOCK_TOKEN = 'invalid.token.here';
 const UNKNOWN_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
@@ -151,7 +152,7 @@ export async function runPreVisitSummariesTests() {
     headers: authHeaders,
     body: { chat_id: chatId, text: sampleText },
     expectedStatus: 201,
-    expectedFields: ['id', 'user_id', 'chat_id', 'text', 'created_at', 'updated_at'],
+    expectedFields: ['id', 'user_id', 'chat_id', 'title', 'text', 'created_at', 'updated_at'],
     onSuccess: (data) => {
       createdIds.push(data.id);
     },
@@ -161,6 +162,12 @@ export async function runPreVisitSummariesTests() {
       }
       if (data.chat_id !== chatId) {
         return { passed: false, message: 'chat_id mismatch after create' };
+      }
+      if (data.title !== PRE_VISIT_SUMMARY_DEFAULT_TITLE) {
+        return {
+          passed: false,
+          message: `expected default title ${PRE_VISIT_SUMMARY_DEFAULT_TITLE}, got ${data.title}`,
+        };
       }
       return { passed: true, message: '' };
     },
@@ -174,7 +181,7 @@ export async function runPreVisitSummariesTests() {
     endpoint: `/api/pre-visit-summaries/${createdId}`,
     headers: authHeaders,
     expectedStatus: 200,
-    expectedFields: ['id', 'text', 'chat_id'],
+    expectedFields: ['id', 'text', 'title', 'chat_id'],
     customValidator: (data) => {
       if (data.text !== sampleText) {
         return { passed: false, message: 'decrypted text mismatch on GET' };
@@ -182,8 +189,42 @@ export async function runPreVisitSummariesTests() {
       if (data.chat_id !== chatId) {
         return { passed: false, message: 'chat_id mismatch on GET' };
       }
+      if (data.title !== PRE_VISIT_SUMMARY_DEFAULT_TITLE) {
+        return { passed: false, message: 'default title mismatch on GET' };
+      }
       return { passed: true, message: '' };
     },
+  });
+
+  const patchedTitle = 'Jane Doe F/U 7/6/26';
+
+  await runner.test('8b — PATCH title only', {
+    testNumber: '8b',
+    method: 'PATCH',
+    endpoint: `/api/pre-visit-summaries/${createdId}`,
+    headers: authHeaders,
+    body: { title: patchedTitle },
+    expectedStatus: 200,
+    expectedFields: ['id', 'title', 'text', 'chat_id', 'updated_at'],
+    customValidator: (data) => {
+      if (data.title !== patchedTitle) {
+        return { passed: false, message: 'PATCH title mismatch' };
+      }
+      if (data.text !== sampleText) {
+        return { passed: false, message: 'PATCH title-only must not change text' };
+      }
+      return { passed: true, message: '' };
+    },
+  });
+
+  await runner.test('8c — PATCH empty body rejected', {
+    testNumber: '8c',
+    method: 'PATCH',
+    endpoint: `/api/pre-visit-summaries/${createdId}`,
+    headers: authHeaders,
+    body: {},
+    expectedStatus: 400,
+    expectedFields: ['error'],
   });
 
   await runner.test('9 — GET list includes created row', {
@@ -202,6 +243,9 @@ export async function runPreVisitSummariesTests() {
       }
       if (row.chat_id !== chatId) {
         return { passed: false, message: 'list row chat_id mismatch' };
+      }
+      if (row.title !== patchedTitle) {
+        return { passed: false, message: 'list row title mismatch' };
       }
       return { passed: true, message: '' };
     },
@@ -223,6 +267,9 @@ export async function runPreVisitSummariesTests() {
       }
       if (data.chat_id !== chatId) {
         return { passed: false, message: 'PATCH must not change chat_id' };
+      }
+      if (data.title !== patchedTitle) {
+        return { passed: false, message: 'PATCH text must not change title' };
       }
       return { passed: true, message: '' };
     },

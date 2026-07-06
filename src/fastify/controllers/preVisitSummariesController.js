@@ -10,6 +10,10 @@ import {
 } from '../../utils/pgQueryHelpers.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import { chatSessionsTable } from '../../utils/novaChatPersistence.js';
+import {
+  PRE_VISIT_SUMMARY_DEFAULT_TITLE,
+  normalizeNovaChatTitle,
+} from '../../utils/novaChatTitle.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 
 const preVisitSummariesTable = 'pre_visit_summaries';
@@ -48,6 +52,7 @@ function formatPreVisitSummaryRow(row, masterKey, textOverride) {
   }
   const formatted = stripEncryptionFields(row);
   formatted.text = textOverride !== undefined ? textOverride : decryptResult.text ?? '';
+  formatted.title = row.title ?? PRE_VISIT_SUMMARY_DEFAULT_TITLE;
   return { success: true, preVisitSummary: formatted };
 }
 
@@ -87,10 +92,10 @@ async function verifyOwnedChatSession(userId, chatId) {
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {string} userId
  * @param {Buffer} masterKey
- * @param {{ text?: string, chatId: string }} input
+ * @param {{ text?: string, chatId: string, title?: string }} input
  */
 export async function createPreVisitSummary(supabase, userId, masterKey, input) {
-  const { text = '', chatId } = input;
+  const { text = '', chatId, title } = input;
 
   if (!chatId || !isValidUuid(chatId)) {
     return {
@@ -122,12 +127,19 @@ export async function createPreVisitSummary(supabase, userId, masterKey, input) 
   }
 
   try {
+    const insertColumns = ['user_id', 'chat_id', 'encrypted_text', 'text_iv'];
+    const insertValues = [userId, chatId, encryptedText, textIv];
+    if (title != null) {
+      insertColumns.push('title');
+      insertValues.push(normalizeNovaChatTitle(title));
+    }
+    const placeholders = insertValues.map((_, i) => `$${i + 1}`).join(', ');
+
     const row = await pgQueryOne(
-      `INSERT INTO ${preVisitSummariesTable} (
-         user_id, chat_id, encrypted_text, text_iv
-       ) VALUES ($1, $2, $3, $4)
+      `INSERT INTO ${preVisitSummariesTable} (${insertColumns.join(', ')})
+       VALUES (${placeholders})
        RETURNING *`,
-      [userId, chatId, encryptedText, textIv]
+      insertValues
     );
 
     if (!row) {
@@ -168,14 +180,18 @@ export async function createPreVisitSummaryHandler(request, reply) {
     return reply.status(401).send({ error: 'Unauthorized' });
   }
 
-  const { text = '', chat_id: chatId } = request.body;
+  const { text = '', chat_id: chatId, title } = request.body;
 
   const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, user.id);
   if (!keyResult.success) {
     return reply.status(500).send({ error: keyResult.error });
   }
 
-  const result = await createPreVisitSummary(supabase, user.id, keyResult.masterKey, { text, chatId });
+  const result = await createPreVisitSummary(supabase, user.id, keyResult.masterKey, {
+    text,
+    chatId,
+    title,
+  });
 
   if (!result.success) {
     if (result.code === 'PRE_VISIT_SUMMARY_CHAT_NOT_FOUND') {
@@ -288,7 +304,7 @@ export async function updatePreVisitSummary(request, reply) {
     return reply.status(400).send({ error: 'Invalid Pre-Visit Summary ID format' });
   }
 
-  const { text } = request.body;
+  const { text, title } = request.body;
 
   const keyResult = await userSecurityConfigController.getOrCreateUserMasterKey(supabase, user.id);
   if (!keyResult.success) {
@@ -306,27 +322,47 @@ export async function updatePreVisitSummary(request, reply) {
     return reply.status(404).send({ error: 'Pre-Visit Summary not found' });
   }
 
-  const encryptResult = encryptionUtils.encryptNoteText({ text }, keyResult.masterKey);
-  if (!encryptResult.success) {
-    return reply.status(500).send({ error: encryptResult.error });
+  const setClauses = [];
+  const queryParams = [];
+  let paramIndex = 1;
+
+  if (text !== undefined) {
+    const encryptResult = encryptionUtils.encryptNoteText({ text }, keyResult.masterKey);
+    if (!encryptResult.success) {
+      return reply.status(500).send({ error: encryptResult.error });
+    }
+    setClauses.push(`encrypted_text = $${paramIndex++}`);
+    queryParams.push(encryptResult.value);
+    setClauses.push(`text_iv = $${paramIndex++}`);
+    queryParams.push(encryptResult.iv);
   }
+
+  if (title !== undefined) {
+    setClauses.push(`title = $${paramIndex++}`);
+    queryParams.push(normalizeNovaChatTitle(title));
+  }
+
+  setClauses.push('updated_at = NOW()');
+  queryParams.push(id, user.id);
 
   try {
     const updated = await pgQueryOne(
       `UPDATE ${preVisitSummariesTable}
-          SET encrypted_text = $1,
-              text_iv = $2,
-              updated_at = NOW()
-        WHERE id = $3 AND user_id = $4
+          SET ${setClauses.join(', ')}
+        WHERE id = $${paramIndex++} AND user_id = $${paramIndex++}
         RETURNING *`,
-      [encryptResult.value, encryptResult.iv, id, user.id]
+      queryParams
     );
 
     if (!updated) {
       return reply.status(404).send({ error: 'Pre-Visit Summary not found' });
     }
 
-    const formatted = formatPreVisitSummaryRow(updated, keyResult.masterKey, text);
+    const formatted = formatPreVisitSummaryRow(
+      updated,
+      keyResult.masterKey,
+      text !== undefined ? text : undefined
+    );
     if (!formatted.success) {
       return reply.status(400).send({ error: formatted.error });
     }

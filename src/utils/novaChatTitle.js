@@ -6,6 +6,7 @@
 import { resolveNovaBedrockModelId } from './bedrockClaudeModels.js';
 
 export const NOVA_CHAT_DEFAULT_TITLE = 'New Chat';
+export const PRE_VISIT_SUMMARY_DEFAULT_TITLE = 'New Pre-Visit Summary';
 export const NOVA_CHAT_TITLE_MAX_LENGTH = 40;
 
 /**

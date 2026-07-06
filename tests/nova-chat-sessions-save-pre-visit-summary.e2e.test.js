@@ -47,7 +47,10 @@ const TITLE_POLL_TIMEOUT_MS = (() => {
 })();
 const POLL_MS = 400;
 
-const NOVA_DEFAULT_TITLE = 'New Chat';
+import {
+  NOVA_CHAT_DEFAULT_TITLE,
+  PRE_VISIT_SUMMARY_DEFAULT_TITLE,
+} from '../src/utils/novaChatTitle.js';
 const E2E_PATIENT_NAME = 'Test Doe';
 
 /**
@@ -257,10 +260,11 @@ test('1: completions-and-save-pre-visit-summary → complete + pre_visit_summary
   assert.equal(embedded.id, preVisitSummaryId);
   assert.equal(embedded.chat_id, chatId);
   assert.equal(embedded.text, assistantText);
+  assert.equal(embedded.title, PRE_VISIT_SUMMARY_DEFAULT_TITLE);
 
   assert.equal(
     final?.session?.title,
-    NOVA_DEFAULT_TITLE,
+    NOVA_CHAT_DEFAULT_TITLE,
     'save route does not write sidebar title; FE PATCHes after pre_visit_summary_title_details'
   );
 
@@ -286,6 +290,7 @@ test('1: completions-and-save-pre-visit-summary → complete + pre_visit_summary
   assert.equal(getPrep.body?.id, preVisitSummaryId);
   assert.equal(getPrep.body?.chat_id, chatId);
   assert.equal(getPrep.body?.text, assistantText);
+  assert.equal(getPrep.body?.title, PRE_VISIT_SUMMARY_DEFAULT_TITLE);
 
   logStep('GET …/completion-jobs/:jobId/pre-visit-summary…');
   const getJobPrep = await makeRequest(
@@ -297,6 +302,7 @@ test('1: completions-and-save-pre-visit-summary → complete + pre_visit_summary
   assert.equal(getJobPrep.body?.id, preVisitSummaryId);
   assert.equal(getJobPrep.body?.chat_id, chatId);
   assert.equal(getJobPrep.body?.text, assistantText);
+  assert.equal(getJobPrep.body?.title, PRE_VISIT_SUMMARY_DEFAULT_TITLE);
 
   logStep('cleanup: DELETE /api/pre-visit-summaries/:id…');
   const del = await makeRequest('DELETE', `${base}/api/pre-visit-summaries/${preVisitSummaryId}`, {
