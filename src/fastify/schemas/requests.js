@@ -284,6 +284,7 @@ export const promptLlmRequestSchema = z.object({
 export const promptLlmGenerateNoteRequestSchema = z.object({
   recording_file_path: z.string().min(1, 'Recording file path is required'),
   noteTemplate_id: z.number().int().or(z.bigint()).or(z.string().transform(BigInt)).optional().nullable(),
+  pre_visit_summary_id: z.string().regex(uuidRegex, 'Invalid pre_visit_summary_id').optional().nullable(),
 });
 
 /**

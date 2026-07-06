@@ -62,6 +62,7 @@ When `note_id` is present, **`GET /api/jobs/prompt-llm/:jobId/encounter-bundle`*
 |-------|------|----------|-------------|
 | `recording_file_path` | `string` | Yes | Storage path to the audio recording (same as before). |
 | `noteTemplate_id` | `number` / `bigint` / string coerced to `bigint` | No | Optional template for structured SOAP output. |
+| `pre_visit_summary_id` | `uuid` | No | Optional pre-visit summary for vocabulary/spelling context in the Claude prompt. |
 
 **Success:** `202 Accepted`
 
@@ -81,7 +82,7 @@ When `note_id` is present, **`GET /api/jobs/prompt-llm/:jobId/encounter-bundle`*
 - **GET** `/api/jobs/prompt-llm/:jobId`
 - Optional query: `includeResult=true` to include parsed `soap_note` when complete.
 
-Response shape and job statuses (`pending`, `transcribing`, `generating`, `complete`, `error`) are unchanged from the previous job-based design, except for optional `note_id` on jobs created via **generate-and-save-note** (see section 2).
+Response shape and job statuses (`pending`, `transcribing`, `generating`, `complete`, `error`) are unchanged from the previous job-based design, except for optional `note_id` on jobs created via **generate-and-save-note** (see section 2) and optional **`pre_visit_summary_id`** when the create request included one.
 
 ---
 
@@ -98,6 +99,8 @@ Use this when the product path is: transcribe → generate SOAP → **atomically
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `patient_encounter_name` | `string` | Yes | Display name for the new patient encounter (stored encrypted). |
+
+`pre_visit_summary_id` is optional on both routes. When present on **generate-and-save-note** and persistence succeeds, the server sets `pre_visit_summaries.patientEncounter_id` on that summary (1:1). Returns **409** `PRE_VISIT_SUMMARY_ALREADY_LINKED` if the summary was already consumed.
 
 **Success:** `202 Accepted` with `{ "id": "<job-uuid>", "status": "pending" }` — poll the same way as `generate-note`. After `note_id` appears on the job poll response, call **`GET /api/jobs/prompt-llm/:jobId/encounter-bundle`** for the full saved bundle.
 

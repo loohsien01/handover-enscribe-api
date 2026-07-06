@@ -12,9 +12,48 @@ import { getSupabaseClient } from '../../utils/supabase.js';
 import { promptLlmProcessor } from '../processors/promptLlmProcessor.js';
 import parseSoapNotes from '../../utils/parseSoapNotes.js';
 import { getPatientEncounterBundleByNoteId } from './patientEncountersController.js';
+import { validatePreVisitSummaryForNoteGeneration } from './preVisitSummariesController.js';
 import { pgQueryOne, pgCoerceBigIntFields } from '../../utils/pgQueryHelpers.js';
 
 const jobsTable = 'jobs';
+
+/**
+ * @param {string} userId
+ * @param {string | null | undefined} preVisitSummaryId
+ * @param {import('fastify').FastifyReply} reply
+ * @returns {Promise<boolean>} false when reply was sent (validation error)
+ */
+async function validatePreVisitSummaryIdForJob(userId, preVisitSummaryId, reply) {
+  if (!preVisitSummaryId) {
+    return true;
+  }
+
+  const validation = await validatePreVisitSummaryForNoteGeneration(userId, preVisitSummaryId);
+  if (validation.success) {
+    return true;
+  }
+
+  const payload = { error: validation.error };
+  if (validation.code) {
+    payload.code = validation.code;
+  }
+  reply.status(validation.status).send(payload);
+  return false;
+}
+
+/**
+ * @param {string} userId
+ * @param {string} recordingFilePath
+ * @param {string | null | undefined} preVisitSummaryId
+ */
+async function insertPromptLlmJob(userId, recordingFilePath, preVisitSummaryId) {
+  return pgQueryOne(
+    `INSERT INTO ${jobsTable} (user_id, recording_file_path, status, pre_visit_summary_id)
+     VALUES ($1, $2, 'pending', $3)
+     RETURNING *`,
+    [userId, recordingFilePath, preVisitSummaryId ?? null]
+  );
+}
 
 /**
  * Create a new SOAP note generation job (used by generate-note routes).
@@ -28,23 +67,23 @@ const jobsTable = 'jobs';
  */
 export async function createPromptLlmJobHandler(request, reply) {
   try {
-    const { recording_file_path, noteTemplate_id } = request.body;
+    const { recording_file_path, noteTemplate_id, pre_visit_summary_id: preVisitSummaryId } = request.body;
     const userId = request.user.id;
 
     console.log('[createPromptLlmJobHandler] generate-note payload:', {
       userId,
       recording_file_path,
       noteTemplate_id: noteTemplate_id ?? null,
+      pre_visit_summary_id: preVisitSummaryId ?? null,
     });
+
+    if (!(await validatePreVisitSummaryIdForJob(userId, preVisitSummaryId, reply))) {
+      return;
+    }
 
     let job;
     try {
-      job = await pgQueryOne(
-        `INSERT INTO ${jobsTable} (user_id, recording_file_path, status)
-         VALUES ($1, $2, 'pending')
-         RETURNING *`,
-        [userId, recording_file_path]
-      );
+      job = await insertPromptLlmJob(userId, recording_file_path, preVisitSummaryId);
     } catch (createError) {
       console.error('[createPromptLlmJobHandler] Database error:', createError);
       return reply.status(500).send({ error: 'Failed to create job' });
@@ -80,17 +119,21 @@ export async function createPromptLlmJobHandler(request, reply) {
  */
 export async function createPromptLlmJobAndSaveNoteHandler(request, reply) {
   try {
-    const { recording_file_path, noteTemplate_id, patient_encounter_name: patientEncounterName } = request.body;
+    const {
+      recording_file_path,
+      noteTemplate_id,
+      patient_encounter_name: patientEncounterName,
+      pre_visit_summary_id: preVisitSummaryId,
+    } = request.body;
     const userId = request.user.id;
+
+    if (!(await validatePreVisitSummaryIdForJob(userId, preVisitSummaryId, reply))) {
+      return;
+    }
 
     let job;
     try {
-      job = await pgQueryOne(
-        `INSERT INTO ${jobsTable} (user_id, recording_file_path, status)
-         VALUES ($1, $2, 'pending')
-         RETURNING *`,
-        [userId, recording_file_path]
-      );
+      job = await insertPromptLlmJob(userId, recording_file_path, preVisitSummaryId);
     } catch (createError) {
       console.error('[createPromptLlmJobAndSaveNoteHandler] Database error:', createError);
       return reply.status(500).send({ error: 'Failed to create job' });
@@ -121,10 +164,10 @@ export async function createPromptLlmJobAndSaveNoteHandler(request, reply) {
 
 /**
  * GET /api/jobs/prompt-llm/:jobId
- * 
+ *
  * Poll job status and optionally retrieve results
  * Query param ?includeResult=true returns parsed SOAP note (only if status='complete')
- * 
+ *
  * @param {Object} request - Fastify request with { jobId }
  * @param {Object} reply - Fastify reply
  */
@@ -137,7 +180,7 @@ export async function getPromptLlmJobStatusHandler(request, reply) {
     let job;
     try {
       job = await pgQueryOne(
-        `SELECT id, status, transcript_text, soap_note_text, error_message, created_at, updated_at, note_id
+        `SELECT id, status, transcript_text, soap_note_text, error_message, created_at, updated_at, note_id, pre_visit_summary_id
            FROM ${jobsTable}
           WHERE id = $1 AND user_id = $2`,
         [jobId, userId]
@@ -164,6 +207,9 @@ export async function getPromptLlmJobStatusHandler(request, reply) {
     }
     if (job.error_message) {
       response.error_message = job.error_message;
+    }
+    if (job.pre_visit_summary_id) {
+      response.pre_visit_summary_id = job.pre_visit_summary_id;
     }
 
     if (includeResult && job.status === 'complete' && job.soap_note_text) {

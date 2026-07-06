@@ -1,4 +1,4 @@
--- Enable RLS for pre_visit_summaries (user-owned PHI; no encounter linkage)
+-- Enable RLS for pre_visit_summaries (user-owned PHI; patientEncounter_id nullable)
 ALTER TABLE public.pre_visit_summaries ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users can view their own pre-visit summaries"

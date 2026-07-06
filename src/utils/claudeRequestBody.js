@@ -28,11 +28,50 @@ const SOAP_NOTE_MEDICATION_NAME_EXCEPTION =
     'This exception applies only to drug-name spelling/normalization — it does not permit adding medications, doses, or plan changes not discussed.';
 
 /**
+ * @param {string} transcript
+ * @param {{ title?: string, text?: string } | null} preVisitContext
+ * @returns {string}
+ */
+function buildSoapNoteUserMessage(transcript, preVisitContext) {
+    let content = `Here is a patient encounter transcript:
+
+${transcript}
+`;
+
+    const title = preVisitContext?.title != null ? String(preVisitContext.title).trim() : '';
+    const summaryText = preVisitContext?.text != null ? String(preVisitContext.text).trim() : '';
+
+    if (title || summaryText) {
+        content += `
+Pre-visit summary (reference only — prepared before this visit and may be outdated):
+`;
+        if (title) {
+            content += `Title (prefer spellings from this line when transcript ASR is ambiguous): ${title}
+`;
+        }
+        if (summaryText) {
+            content += `
+${summaryText}
+`;
+        }
+        content += `
+Use the transcript as the sole authority for what was discussed today — do not add clinical content from the pre-visit summary unless it also appears in the transcript.
+For spelling and vocabulary only: when speech-to-text may have garbled names, medications, ages (e.g. forty vs fourteen), or other terms, prefer spellings from the pre-visit summary title and body over verbatim transcript wording. This does not permit importing problems, medications, or plan items not discussed in the visit.
+`;
+    }
+
+    content += `
+Generate SOAP note. PHI information has been masked for privacy. Example (for reference only): Evan is 105 years old --> {{NAME_1}} is {{AGE_2}} years old.
+Use bullet points (marked by '-' symbols, '•' is invalid symbol) and markdown formatting and "\\n" for clarity.
+For medication names only: apply the system exception for speech-to-text errors — do not copy garbled drug spellings verbatim.
+
+IMPORTANT: Return ONLY valid JSON matching the structure above. Do not include any text before or after the JSON.`;
+
+    return content;
+}
+
+/**
  * Helper: Escape special characters in template section fields for safe JSON embedding
- * Handles quotes, newlines, backslashes, and other JSON escape sequences
- * Also replaces backticks to prevent template literal breakage
- * @param {string} str - The string to escape
- * @returns {string} - The escaped string safe for JSON
  */
 function escapeJsonString(str) {
     if (!str) return '';
@@ -48,16 +87,17 @@ function escapeJsonString(str) {
 /**
  * Generates Claude Bedrock request body for SOAP note.
  * Uses default Haiku profile (`defaultHaikuBedrockModelId()`).
- * 
+ *
  * Note: Claude doesn't support response_format parameter like OpenAI,
  * so the JSON schema is specified in the system prompt and we trust
  * Claude to follow the format requirements.
- * 
+ *
  * @param {string} transcript - The masked medical transcript
  * @param {Array} noteTemplateSections - Optional note template sections with { name, layout, details }
+ * @param {{ title?: string, text?: string } | null} [preVisitContext] - Optional pre-visit summary for vocabulary/spelling anchor
  * @returns {object} Claude Bedrock request body for SOAP note generation
  */
-export function getSoapNoteRequestBody(transcript, noteTemplateSections = null) {
+export function getSoapNoteRequestBody(transcript, noteTemplateSections = null, preVisitContext = null) {
     // Build JSON schema based on whether we have a note template
     let jsonSchemaDescription;
     
@@ -112,15 +152,7 @@ You MUST return a valid JSON object with this exact structure:
         messages: [
             {
                 role: "user",
-                content: `Here is a patient encounter transcript:
-
-${transcript}
-
-Generate SOAP note. PHI information has been masked for privacy. Example (for reference only): Evan is 105 years old --> {{NAME_1}} is {{AGE_2}} years old.
-Use bullet points (marked by '-' symbols, '•' is invalid symbol) and markdown formatting and "\\n" for clarity.
-For medication names only: apply the system exception for speech-to-text errors — do not copy garbled drug spellings verbatim.
-
-IMPORTANT: Return ONLY valid JSON matching the structure above. Do not include any text before or after the JSON.`
+                content: buildSoapNoteUserMessage(transcript, preVisitContext)
             }
         ],
     max_tokens: 10000,

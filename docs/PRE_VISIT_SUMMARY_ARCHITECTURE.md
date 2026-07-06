@@ -56,7 +56,7 @@ All paths require `Authorization: Bearer <access_token>` unless noted.
 
 CRUD **404** responses for unknown `:id` use `{ "error": "Pre-Visit Summary not found" }` without a `code` field.
 
-**DB upgrade *(BE ops only; FE not affected)*:** apply `sql/migrations/20260627_rename_visit_preps_to_pre_visit_summaries.sql` on databases that already ran the old `visit_preps` migrations. Apply `sql/migrations/20260706_pre_visit_summaries_title.sql` for the **`title`** column. Fresh installs use the renamed migration files directly.
+**DB upgrade *(BE ops only; FE not affected)*:** apply `sql/migrations/20260627_rename_visit_preps_to_pre_visit_summaries.sql` on databases that already ran the old `visit_preps` migrations. Apply `sql/migrations/20260706_pre_visit_summaries_title.sql` for the **`title`** column. Apply `sql/migrations/20260706_pre_visit_summaries_patient_encounter_and_jobs_pre_visit_summary_id.sql` for encounter linkage + prompt-llm job audit column. Fresh installs use the renamed migration files directly.
 
 **Phase 2:** default instruction templates live in `pre_visit_summary_templates` (CRUD shipped; system seed script optional / later).
 
@@ -90,7 +90,6 @@ CRUD **404** responses for unknown `:id` use `{ "error": "Pre-Visit Summary not 
 
 - No server-side assembly of the Nova user message (FE builds the message from fetched notes + instructions).
 - No JSON schema on the **pre-visit summary document** (main Sonnet assistant output) — clinicians control format via natural-language instructions in the user message. (Separate Haiku JSON extraction for **session title fields** is documented under [Session title](#session-title).)
-- No `patient_encounter_id` or encounter linkage on `pre_visit_summaries`.
 - No server-side “apply template” endpoint — FE loads template `text` via CRUD and prepends into Nova `message`.
 - No `source_note_ids` on `pre_visit_summaries` — input charts live only in the Nova user `message`.
 - No second job table or poll URL — reuse `nova_chat_completion_jobs` and **`GET …/completion-jobs/:jobId`**.
@@ -284,6 +283,7 @@ The model returns **free-form text** per those instructions. That string is stor
 | `encrypted_text` | `text` | Ciphertext of summary body; user master key. Nullable if empty. |
 | `text_iv` | `text` | IV for text encryption. Nullable when empty. |
 | `title` | `text` | Plaintext display label for the Pre-Visit Summary list. **`NOT NULL`**, default **`New Pre-Visit Summary`**. Max **40** chars (same normalization as Nova chat titles). |
+| `patientEncounter_id` | `bigint` | Nullable. Set when **`generate-and-save-note`** persists an encounter successfully (first consumption). **FK** → `"patientEncounters"(id)` **`ON DELETE SET NULL`**. Unique when non-null (1 prep ↔ 1 encounter). |
 | `created_at` | `timestamptz` | `DEFAULT now()` |
 | `updated_at` | `timestamptz` | `DEFAULT now()`; bump on PATCH |
 
@@ -311,6 +311,7 @@ CREATE TABLE public.pre_visit_summaries (
   encrypted_text text,
   text_iv text,
   title text NOT NULL DEFAULT 'New Pre-Visit Summary',
+  "patientEncounter_id" bigint REFERENCES public."patientEncounters" (id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -653,6 +654,51 @@ Controller verifies ownership on `:id` routes (defense in depth).
 
 ---
 
+## Phase 3 — prompt-llm note generation integration
+
+Optional pre-visit summary context on SOAP generation (`POST /api/jobs/prompt-llm/generate-note` and `generate-and-save-note`).
+
+### Request
+
+| Field | Type | Required | Notes |
+|-------|------|----------|--------|
+| `pre_visit_summary_id` | `uuid` | No | When set, server loads decrypted **`text`** + **`title`** and injects into the Claude prompt. |
+
+### Validation (enqueue)
+
+| Code | HTTP | When |
+|------|------|------|
+| `PRE_VISIT_SUMMARY_NOT_FOUND` | 404 | Unknown id or not owned |
+| `PRE_VISIT_SUMMARY_ALREADY_LINKED` | 409 | `patientEncounter_id` already set (1 prep ↔ 1 encounter) |
+| `PRE_VISIT_SUMMARY_INVALID_ID` | 400 | Malformed UUID |
+
+### Claude prompt hierarchy
+
+1. **Transcript** — sole authority for clinical content discussed today.
+2. **Pre-visit summary** — secondary context; may be outdated.
+3. **Title + body** — emphasized for spelling/vocabulary when ASR garbles names, meds, ages (e.g. forty vs fourteen).
+
+Summary text is included **unmasked** as vocabulary reference; transcript stays PHI-tokenized.
+
+### Persistence
+
+| Column | Table | When set |
+|--------|-------|----------|
+| `pre_visit_summary_id` | `jobs` | Job create (both routes) — input audit |
+| `patientEncounter_id` | `pre_visit_summaries` | **`generate-and-save-note`** only, after `patientEncounterCompleteBundle` succeeds |
+
+If encounter save fails (fail-open), **`patientEncounter_id`** is not set (same as no `note_id`).
+
+Prep ↔ note relationship is **indirect** via the shared encounter (`notes.patientEncounter_id`).
+
+### Job poll
+
+`GET /api/jobs/prompt-llm/:jobId` includes **`pre_visit_summary_id`** when the job was created with one.
+
+**Migration:** `sql/migrations/20260706_pre_visit_summaries_patient_encounter_and_jobs_pre_visit_summary_id.sql`
+
+---
+
 ## Phase 2 — `pre_visit_summary_templates`
 
 Default **instruction blocks** for the Pre-Visit Summary page. FE loads template **`text`**, lets the clinician edit it, then prepends it into the Nova user **`message`** (along with pasted charts). **No** dedicated “apply template” API — CRUD only. Nova save contract unchanged.
@@ -780,6 +826,7 @@ For backend tracking; FE can ignore this section.
 - [x] `chat_id` FK `ON DELETE SET NULL` (`20260626_pre_visit_summaries_chat_id_fkey.sql`)
 - [x] Upgrade rename from `visit_preps` (`20260627_rename_visit_preps_to_pre_visit_summaries.sql`)
 - [x] `pre_visit_summary_templates` table + RLS (`20260628_pre_visit_summary_templates.sql`, `pre_visit_summary_templates_RLS.sql`) *(apply on each environment)*
+- [x] `pre_visit_summaries.patientEncounter_id` + `jobs.pre_visit_summary_id` (`20260706_pre_visit_summaries_patient_encounter_and_jobs_pre_visit_summary_id.sql`)
 
 ### Controller & processor
 
@@ -789,6 +836,7 @@ For backend tracking; FE can ignore this section.
 - [x] **`maybeRunPreVisitSummaryTitleDetailsExtraction`** + Redis poll cache
 - [x] **`preVisitSummaryTemplatesController`** + CRUD routes
 - [x] Turn 1 output length (`novaPreVisitSummaryLimits`, `forPreVisitSummaryTurn1`, `max_tokens` cap)
+- [x] Phase 3: `pre_visit_summary_id` on prompt-llm generate routes + `jobs.pre_visit_summary_id` + `pre_visit_summaries.patientEncounter_id`
 
 ### Routes & tests
 

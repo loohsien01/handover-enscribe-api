@@ -7,6 +7,7 @@ import {
   pgQueryOne,
   pgQueryRows,
   pgErrorMessage,
+  pgCoerceBigIntFields,
 } from '../../utils/pgQueryHelpers.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import { chatSessionsTable } from '../../utils/novaChatPersistence.js';
@@ -53,7 +54,92 @@ function formatPreVisitSummaryRow(row, masterKey, textOverride) {
   const formatted = stripEncryptionFields(row);
   formatted.text = textOverride !== undefined ? textOverride : decryptResult.text ?? '';
   formatted.title = row.title ?? PRE_VISIT_SUMMARY_DEFAULT_TITLE;
+  const coerced = pgCoerceBigIntFields(row, ['patientEncounter_id']);
+  formatted.patientEncounter_id = coerced.patientEncounter_id ?? null;
   return { success: true, preVisitSummary: formatted };
+}
+
+/**
+ * Enqueue-time guard for prompt-llm jobs: summary must exist, be owned, and not yet linked to an encounter.
+ *
+ * @param {string} userId
+ * @param {string} preVisitSummaryId
+ */
+export async function validatePreVisitSummaryForNoteGeneration(userId, preVisitSummaryId) {
+  if (!preVisitSummaryId) {
+    return { success: true };
+  }
+
+  if (!isValidUuid(preVisitSummaryId)) {
+    return {
+      success: false,
+      status: 400,
+      error: 'Invalid pre_visit_summary_id',
+      code: 'PRE_VISIT_SUMMARY_INVALID_ID',
+    };
+  }
+
+  const row = await pgQueryOne(
+    `SELECT id, "patientEncounter_id"
+       FROM ${preVisitSummariesTable}
+      WHERE id = $1 AND user_id = $2`,
+    [preVisitSummaryId, userId]
+  );
+
+  if (!row) {
+    return {
+      success: false,
+      status: 404,
+      error: 'Pre-Visit Summary not found',
+      code: 'PRE_VISIT_SUMMARY_NOT_FOUND',
+    };
+  }
+
+  if (row.patientEncounter_id != null) {
+    return {
+      success: false,
+      status: 409,
+      error: 'Pre-Visit Summary is already linked to a patient encounter',
+      code: 'PRE_VISIT_SUMMARY_ALREADY_LINKED',
+    };
+  }
+
+  return { success: true };
+}
+
+/**
+ * Set encounter link after successful generate-and-save-note (first consumption only).
+ *
+ * @param {string} userId
+ * @param {string} preVisitSummaryId
+ * @param {bigint|number|string} patientEncounterId
+ */
+export async function linkPreVisitSummaryToPatientEncounter(userId, preVisitSummaryId, patientEncounterId) {
+  if (!preVisitSummaryId || !patientEncounterId) {
+    return { success: false };
+  }
+
+  try {
+    const updated = await pgQueryOne(
+      `UPDATE ${preVisitSummariesTable}
+          SET "patientEncounter_id" = $1, updated_at = NOW()
+        WHERE id = $2 AND user_id = $3 AND "patientEncounter_id" IS NULL
+        RETURNING id`,
+      [patientEncounterId, preVisitSummaryId, userId]
+    );
+
+    if (!updated) {
+      console.warn(
+        `[linkPreVisitSummaryToPatientEncounter] No row updated for summary ${preVisitSummaryId} (already linked or not found)`
+      );
+      return { success: false };
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('[linkPreVisitSummaryToPatientEncounter] update failed:', error);
+    return { success: false, error: pgErrorMessage(error) };
+  }
 }
 
 /**

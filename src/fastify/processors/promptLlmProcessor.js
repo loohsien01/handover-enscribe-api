@@ -22,6 +22,10 @@ import { mask_phi } from '../../utils/maskPhiHelper.js';
 import parseSoapNotes from '../../utils/parseSoapNotes.js';
 import { claudeAPIReq } from '../../utils/bedrockClient.js';
 import { getSystemMasterKey, getOrCreateUserMasterKey } from '../controllers/userSecurityConfigController.js';
+import {
+  linkPreVisitSummaryToPatientEncounter,
+  loadPreVisitSummaryForPoll,
+} from '../controllers/preVisitSummariesController.js';
 import { decryptNoteTemplateSectionDetails } from '../../utils/encryptionUtils.js';
 import { getCompleteTemplate } from '../controllers/noteTemplatesCompleteController.js';
 import {
@@ -231,7 +235,7 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
     let job;
     try {
       job = await pgQueryOne(
-        `SELECT recording_file_path FROM ${jobsTable} WHERE id = $1`,
+        `SELECT recording_file_path, pre_visit_summary_id FROM ${jobsTable} WHERE id = $1`,
         [jobId]
       );
     } catch (getError) {
@@ -242,7 +246,7 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
       throw new Error('Failed to retrieve job: not found');
     }
 
-    const { recording_file_path } = job;
+    const { recording_file_path, pre_visit_summary_id: preVisitSummaryId } = job;
 
     const internalRequest = {
       headers: {
@@ -257,10 +261,21 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
         })
       : Promise.resolve(null);
 
+    const preVisitSummaryPromise = preVisitSummaryId
+      ? (async () => {
+          const keyResult = await getOrCreateUserMasterKey(supabase, userId);
+          if (!keyResult.success) {
+            throw new Error(`Failed to load user master key: ${keyResult.error}`);
+          }
+          return loadPreVisitSummaryForPoll(supabase, userId, preVisitSummaryId, keyResult.masterKey);
+        })()
+      : Promise.resolve(null);
+
     let transcript;
     let maskedTranscript;
     let tokens;
     let templateResult = null;
+    let preVisitSummary = null;
     const transcribeStartTime = Date.now();
 
     const reusedTranscript = await findTranscriptFromPriorJob(
@@ -274,11 +289,13 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
         `[promptLlmProcessor] ${jobId}: Dedup — reusing transcript from a prior job for this recording (skipping transcribe)`
       );
       try {
-        const [maskResult, templateRes] = await Promise.all([
+        const [maskResult, templateRes, preVisitRes] = await Promise.all([
           mask_phi(reusedTranscript),
           templatePromise,
+          preVisitSummaryPromise,
         ]);
         templateResult = templateRes;
+        preVisitSummary = preVisitRes;
         transcript = reusedTranscript;
         maskedTranscript = maskResult.masked_transcript;
         tokens = maskResult.tokens;
@@ -304,15 +321,17 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
 
       let transcriptResult;
       try {
-        const [transcriptRes, templateRes] = await Promise.all([
+        const [transcriptRes, templateRes, preVisitRes] = await Promise.all([
           transcribe_expand_mask({
             recording_file_signed_url: signedUrl,
             req: internalRequest,
           }),
           templatePromise,
+          preVisitSummaryPromise,
         ]);
         transcriptResult = transcriptRes;
         templateResult = templateRes;
+        preVisitSummary = preVisitRes;
       } catch (error) {
         throw new Error(`Transcription failed: ${error?.message || 'Unknown error'}`);
       }
@@ -335,6 +354,20 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
     console.log(
       `[promptLlmProcessor] ${jobId}: Transcribe/dedup stage done (${(transcribeEndTime - transcribeStartTime) / 1000}s)`
     );
+
+    if (preVisitSummaryId && !preVisitSummary) {
+      throw new Error('Pre-Visit Summary not found');
+    }
+
+    const preVisitContext = preVisitSummary
+      ? { title: preVisitSummary.title, text: preVisitSummary.text }
+      : null;
+
+    if (preVisitContext) {
+      console.log(
+        `[promptLlmProcessor] ${jobId}: Using pre-visit summary ${preVisitSummaryId} (title="${preVisitSummary.title ?? ''}")`
+      );
+    }
 
     // Step 2: Update status to generating with transcript
     await updateJobStatus(jobId, 'generating', {
@@ -362,7 +395,11 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
     }
 
     try {
-      soapNoteAndBillingReqBody = claudeRequestBody.getSoapNoteRequestBody(maskedTranscript, noteTemplateSections);
+      soapNoteAndBillingReqBody = claudeRequestBody.getSoapNoteRequestBody(
+        maskedTranscript,
+        noteTemplateSections,
+        preVisitContext
+      );
       
       // Log the final schema being sent to Claude (crucial for debugging LLM prompt)
       console.log(`[promptLlmProcessor] ${jobId}: Final JSON schema for Claude:`);
@@ -505,6 +542,18 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
         console.log(
           `[promptLlmProcessor] ${jobId}: Persisted note id=${bundle.note.id} (patient encounter id=${bundle.patientEncounter.id})`
         );
+        if (preVisitSummaryId) {
+          const linkResult = await linkPreVisitSummaryToPatientEncounter(
+            userId,
+            preVisitSummaryId,
+            bundle.patientEncounter.id
+          );
+          if (linkResult.success) {
+            console.log(
+              `[promptLlmProcessor] ${jobId}: Linked pre-visit summary ${preVisitSummaryId} to encounter ${bundle.patientEncounter.id}`
+            );
+          }
+        }
       } catch (persistErr) {
         console.error(
           `[promptLlmProcessor] ${jobId}: Persist encounter after generation failed (SOAP remains on job):`,

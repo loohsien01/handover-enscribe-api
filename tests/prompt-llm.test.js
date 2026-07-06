@@ -11,8 +11,8 @@
  * Architecture: POST /api/jobs/prompt-llm/generate-note (202) → GET /api/jobs/prompt-llm/:jobId (poll)
  * Polling: 10s initial, exponential backoff to 45s on HTTP error, 10min timeout
  * 
- * Note: Transcription and PHI masking are tested separately in Deepgram and AWS tests.
- * This test focuses only on the OpenAI LLM functionality.
+ * - Pre-visit summary enqueue validation (3a–3d, no Bedrock)
+ * - Test 4 optionally passes pre_visit_summary_id through full Bedrock pipeline
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -25,7 +25,12 @@ const envPath = path.resolve(__dirname, '../.env.local');
 dotenv.config({ path: envPath });
 
 import { TestRunner } from './testUtils.js';
-import { getTestAccount, hasTestAccounts } from './testConfig.js';
+import { getTestAccount, hasTestAccounts, checkRedisReachableForTests } from './testConfig.js';
+import { getSupabasePostgresUrl } from '../src/utils/supabasePostgresUrl.js';
+import {
+  closeSupabasePostgresPool,
+  querySupabasePostgres,
+} from '../src/utils/supabasePostgresPool.js';
 
 const runner = new TestRunner('OpenAI Prompt-LLM API Tests');
 
@@ -108,8 +113,49 @@ async function makeRequest(method, endpoint, body, headers = {}) {
   }
 }
 
+const UNKNOWN_PRE_VISIT_SUMMARY_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
+
+function hasPostgresForTests() {
+  try {
+    return Boolean(getSupabasePostgresUrl());
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Poll a job until completion or timeout
+ * @param {string} accessToken
+ * @param {string} text
+ * @param {string} [title]
+ */
+async function createNovaChatAndPreVisitSummary(accessToken, text, title) {
+  const authHeaders = {
+    Authorization: `Bearer ${accessToken}`,
+    'Content-Type': 'application/json',
+  };
+
+  const chatRes = await makeRequest('POST', '/api/nova/chat-sessions', {}, authHeaders);
+  if (!chatRes.ok || chatRes.status !== 201 || !chatRes.body?.chatId) {
+    return { ok: false, error: `Nova chat create failed: HTTP ${chatRes.status}` };
+  }
+
+  const body = { chat_id: chatRes.body.chatId, text };
+  if (title) body.title = title;
+
+  const summaryRes = await makeRequest('POST', '/api/pre-visit-summaries', body, authHeaders);
+  if (!summaryRes.ok || summaryRes.status !== 201 || !summaryRes.body?.id) {
+    return { ok: false, error: `Pre-visit summary create failed: HTTP ${summaryRes.status}` };
+  }
+
+  return {
+    ok: true,
+    chatId: chatRes.body.chatId,
+    preVisitSummaryId: summaryRes.body.id,
+    preVisitSummary: summaryRes.body,
+  };
+}
+
+/**
  * Returns: { jobId, finalStatus, transcript_text, soap_note_text, soap_note, error_message, elapsed }
  */
 async function pollJobUntilComplete(jobId, accessToken, maxWaitMs = 600000) {
@@ -187,6 +233,7 @@ async function pollJobUntilComplete(jobId, accessToken, maxWaitMs = 600000) {
         transcript_text: resultResponse.body.transcript_text,
         soap_note_text: resultResponse.body.soap_note_text,
         soap_note: resultResponse.body.soap_note,
+        pre_visit_summary_id: resultResponse.body.pre_visit_summary_id ?? null,
         elapsed: finalElapsed,
         statusTransitions,
       };
@@ -396,13 +443,219 @@ async function runAllPromptLlmTests() {
     testNumber: 3,
   });
 
+  // --- Pre-visit summary + generate-note (no Bedrock) ---
+  const redisCheck = await checkRedisReachableForTests();
+  if (!redisCheck.ok) {
+    console.warn(`\n⚠️  Skipping Tests 3a–3d (pre-visit enqueue): ${redisCheck.message}\n`);
+  } else {
+
+    await runner.test('Invalid pre_visit_summary_id format', {
+      method: 'POST',
+      endpoint: '/api/jobs/prompt-llm/generate-note',
+      body: { recording_file_path: recording.path, pre_visit_summary_id: 'not-a-uuid' },
+      headers: { Authorization: `Bearer ${accessToken}` },
+      expectedStatus: 400,
+      customValidator: (body) => ({
+        passed: body?.error?.name === 'ZodError',
+        message: body?.error?.name === 'ZodError' ? '' : 'expected ZodError for invalid UUID',
+      }),
+      testNumber: '3a',
+    });
+
+    await runner.test('Unknown pre_visit_summary_id returns 404', {
+      method: 'POST',
+      endpoint: '/api/jobs/prompt-llm/generate-note',
+      body: {
+        recording_file_path: recording.path,
+        pre_visit_summary_id: UNKNOWN_PRE_VISIT_SUMMARY_ID,
+      },
+      headers: { Authorization: `Bearer ${accessToken}` },
+      expectedStatus: 404,
+      customValidator: (body) => ({
+        passed: body?.code === 'PRE_VISIT_SUMMARY_NOT_FOUND',
+        message:
+          body?.code === 'PRE_VISIT_SUMMARY_NOT_FOUND'
+            ? ''
+            : `expected PRE_VISIT_SUMMARY_NOT_FOUND, got ${body?.code}`,
+      }),
+      testNumber: '3b',
+    });
+
+    const prepForEnqueue = await createNovaChatAndPreVisitSummary(
+      accessToken,
+      'Enqueue test: metformin 500mg, patient Jane Doe.',
+      'Jane Doe F/U'
+    );
+
+    if (!prepForEnqueue.ok) {
+      runner.results.push({
+        name: 'Create job with pre_visit_summary_id echoes id on poll (pending)',
+        passed: false,
+        endpoint: '/api/jobs/prompt-llm/generate-note',
+        method: 'POST → GET',
+        status: null,
+        expectedStatus: 202,
+        body: {},
+        customMessage: prepForEnqueue.error,
+        testNumber: '3c',
+        timestamp: new Date().toISOString(),
+      });
+      console.log(`\n❌ Test 3c: skipped — ${prepForEnqueue.error}`);
+    } else {
+      const createWithPrep = await makeRequest(
+        'POST',
+        '/api/jobs/prompt-llm/generate-note',
+        {
+          recording_file_path: recording.path,
+          pre_visit_summary_id: prepForEnqueue.preVisitSummaryId,
+        },
+        { Authorization: `Bearer ${accessToken}` }
+      );
+
+      let test3cPassed = false;
+      let test3cMessage = '';
+      if (createWithPrep.status !== 202 || !createWithPrep.body?.id) {
+        test3cMessage = `Expected 202 with job id, got HTTP ${createWithPrep.status}`;
+      } else {
+        const pollRes = await makeRequest(
+          'GET',
+          `/api/jobs/prompt-llm/${createWithPrep.body.id}`,
+          null,
+          { Authorization: `Bearer ${accessToken}` }
+        );
+        if (
+          pollRes.ok &&
+          pollRes.body?.pre_visit_summary_id === prepForEnqueue.preVisitSummaryId
+        ) {
+          test3cPassed = true;
+          test3cMessage = 'Job poll includes pre_visit_summary_id while still pending/running';
+        } else {
+          test3cMessage = `Poll missing pre_visit_summary_id (got ${pollRes.body?.pre_visit_summary_id})`;
+        }
+      }
+
+      runner.results.push({
+        name: 'Create job with pre_visit_summary_id echoes id on poll (pending)',
+        passed: test3cPassed,
+        endpoint: '/api/jobs/prompt-llm/generate-note',
+        method: 'POST → GET',
+        status: createWithPrep.status,
+        expectedStatus: 202,
+        body: createWithPrep.body,
+        customMessage: test3cMessage,
+        testNumber: '3c',
+        timestamp: new Date().toISOString(),
+      });
+      console.log(`\n${test3cPassed ? '✅' : '❌'} Test 3c: ${test3cMessage}`);
+    }
+
+    if (!hasPostgresForTests()) {
+      console.warn('\n⚠️  Skipping Test 3d (409 already linked): Postgres URL not configured\n');
+      runner.results.push({
+        name: 'Already-linked pre_visit_summary_id returns 409',
+        passed: true,
+        endpoint: '/api/jobs/prompt-llm/generate-note',
+        method: 'POST',
+        status: null,
+        expectedStatus: 409,
+        body: {},
+        customMessage: 'SKIPPED: no Postgres URL for seeding patientEncounter_id',
+        testNumber: '3d',
+        timestamp: new Date().toISOString(),
+      });
+    } else if (!recording.encounterId) {
+      console.warn('\n⚠️  Skipping Test 3d: test recording has no encounterId\n');
+    } else {
+      const prepLinked = await createNovaChatAndPreVisitSummary(
+        accessToken,
+        'Already linked prep row.',
+        'Linked Prep'
+      );
+      let test3dPassed = false;
+      let test3dMessage = '';
+      if (!prepLinked.ok) {
+        test3dMessage = prepLinked.error;
+      } else {
+        try {
+          await querySupabasePostgres(
+            `UPDATE public.pre_visit_summaries
+                SET "patientEncounter_id" = $1, updated_at = NOW()
+              WHERE id = $2`,
+            [recording.encounterId, prepLinked.preVisitSummaryId]
+          );
+          const conflictRes = await makeRequest(
+            'POST',
+            '/api/jobs/prompt-llm/generate-note',
+            {
+              recording_file_path: recording.path,
+              pre_visit_summary_id: prepLinked.preVisitSummaryId,
+            },
+            { Authorization: `Bearer ${accessToken}` }
+          );
+          if (
+            conflictRes.status === 409 &&
+            conflictRes.body?.code === 'PRE_VISIT_SUMMARY_ALREADY_LINKED'
+          ) {
+            test3dPassed = true;
+            test3dMessage = '409 PRE_VISIT_SUMMARY_ALREADY_LINKED when patientEncounter_id set';
+          } else {
+            test3dMessage = `Expected 409 PRE_VISIT_SUMMARY_ALREADY_LINKED, got HTTP ${conflictRes.status} code=${conflictRes.body?.code}`;
+          }
+        } catch (err) {
+          test3dMessage = `Postgres seed failed: ${err?.message || err}`;
+        } finally {
+          await closeSupabasePostgresPool().catch(() => {});
+        }
+      }
+      runner.results.push({
+        name: 'Already-linked pre_visit_summary_id returns 409',
+        passed: test3dPassed,
+        endpoint: '/api/jobs/prompt-llm/generate-note',
+        method: 'POST',
+        status: null,
+        expectedStatus: 409,
+        body: {},
+        customMessage: test3dMessage,
+        testNumber: '3d',
+        timestamp: new Date().toISOString(),
+      });
+      console.log(`\n${test3dPassed ? '✅' : '❌'} Test 3d: ${test3dMessage}`);
+    }
+  }
+
+  // Pre-visit summary for Test 4 Bedrock E2E (reuse transcript dedup from 3c job if any)
+  let test4PreVisitSummaryId = null;
+  if (redisCheck.ok) {
+    const prepE2e = await createNovaChatAndPreVisitSummary(
+      accessToken,
+      'E2E prep: Patient Jane Doe, metformin 500mg, lisinopril 10mg. F/U hypertension.',
+      'Jane Doe F/U E2E'
+    );
+    if (prepE2e.ok) {
+      test4PreVisitSummaryId = prepE2e.preVisitSummaryId;
+      console.log(`\n✓ Test 4 will use pre_visit_summary_id=${test4PreVisitSummaryId}\n`);
+    } else {
+      console.warn(`\n⚠️  Test 4 will run without pre_visit_summary_id: ${prepE2e.error}\n`);
+    }
+  }
+
   // Test 4: REAL call - Generate SOAP note via job-based polling with standard note template (PRIMARY TEST)
   console.log('\n⏳ Test 4 will create a job with standard note template (ID: 33) and poll until complete (max 10 minutes)...\n');
   console.log('   Process: Audio → Transcribe (Deepgram) → Expand dot phrases → Mask PHI (AWS) → Fetch Template → LLM Generate note\n');
   
-  // Create job with noteTemplate_id parameter
-  const createResponse = await makeRequest('POST', '/api/jobs/prompt-llm/generate-note',
-    { recording_file_path: recording.path, noteTemplate_id: "33" },
+  // Create job with noteTemplate_id parameter (+ optional pre_visit_summary_id for E2E)
+  const test4RequestBody = {
+    recording_file_path: recording.path,
+    noteTemplate_id: '33',
+  };
+  if (test4PreVisitSummaryId) {
+    test4RequestBody.pre_visit_summary_id = test4PreVisitSummaryId;
+  }
+
+  const createResponse = await makeRequest(
+    'POST',
+    '/api/jobs/prompt-llm/generate-note',
+    test4RequestBody,
     { Authorization: `Bearer ${accessToken}` }
   );
 
@@ -431,6 +684,11 @@ async function runAllPromptLlmTests() {
     } else if (pollResult.finalStatus === 'complete') {
       if (!pollResult.soap_note) {
         test4Message = 'Job completed but parsed SOAP note is missing';
+      } else if (
+        test4PreVisitSummaryId &&
+        pollResult.pre_visit_summary_id !== test4PreVisitSummaryId
+      ) {
+        test4Message = `Expected pre_visit_summary_id=${test4PreVisitSummaryId} on poll, got ${pollResult.pre_visit_summary_id}`;
       } else {
         // Parse soap_note if it's a string
         let parsedSoapNote = pollResult.soap_note;
@@ -450,7 +708,10 @@ async function runAllPromptLlmTests() {
             billing: parsedSoapNote.billing,
           };
           test4Passed = true;
-          test4Message = `Completed in ${pollResult.elapsed}s`;
+          const prepNote = test4PreVisitSummaryId
+            ? `; pre_visit_summary_id=${test4PreVisitSummaryId} on poll`
+            : '';
+          test4Message = `Completed in ${pollResult.elapsed}s${prepNote}`;
         }
       }
     } else {
@@ -466,7 +727,7 @@ async function runAllPromptLlmTests() {
     status: createResponse.status,
     expectedStatus: 202,
     body: createResponse.body,
-    requestBody: { recording_file_path: recording.path, noteTemplate_id: "33" },
+    requestBody: test4RequestBody,
     customMessage: test4Message,
     testNumber: 4,
     timestamp: new Date().toISOString(),
@@ -735,7 +996,7 @@ async function runAllPromptLlmTests() {
   console.log(`   ${test7Message}`);
 
   // Print and save results
-  runner.printResults(7); // 7 total tests
+  runner.printResults();
   
   const resultsPath = runner.saveResults('prompt-llm-tests.json');
   console.log(`✅ Detailed results saved to: ${resultsPath}`);
