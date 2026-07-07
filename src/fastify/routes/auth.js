@@ -1,6 +1,7 @@
 import fp from 'fastify-plugin';
 import * as authController from '../controllers/authController.js';
 import { serializeZodError } from '../../utils/serializeZodError.js';
+import { verifyTurnstile } from '../../utils/turnstile.js';
 import {
   authSignUpRequestSchema,
   authSignInRequestSchema,
@@ -191,6 +192,29 @@ async function authRoutes(fastify, opts) {
           if (!validation.success) {
             return reply.status(400).send({ error: serializeZodError(validation.error) });
           }
+
+          // Bot-protection soft rollout (docs/AUTH_BOT_PROTECTION.md).
+          // Verify-if-present: the beta login page sends a Turnstile token; the
+          // stable page omits it. When present we verify server-side and reject
+          // on failure. Absent token = stable path, proceeds unverified for now.
+          const { turnstileToken, channel } = validation.data;
+          if (turnstileToken) {
+            const turnstile = await verifyTurnstile(turnstileToken, {
+              remoteip: request.ip,
+            });
+            console.log('[sign-in] Turnstile check', {
+              channel: channel || 'unspecified',
+              success: turnstile.success,
+              reason: turnstile.reason,
+            });
+            if (!turnstile.success) {
+              // Generic message; do not leak Cloudflare error codes to clients.
+              return reply.status(400).send({
+                error: 'Verification failed. Please retry the challenge.',
+              });
+            }
+          }
+
           const result = await authController.signIn(email, password);
           
           if (!result.success) {

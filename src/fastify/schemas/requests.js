@@ -596,6 +596,14 @@ export const authSignUpRequestSchema = z.object({
  * POST request for auth sign-in action
  * Endpoint: POST /api/auth
  * Action: sign-in
+ *
+ * Bot-protection soft rollout (docs/AUTH_BOT_PROTECTION.md):
+ *  - `turnstileToken` — optional Cloudflare Turnstile token. The beta login page
+ *    sends it; the stable login page omits it. When present, the BE verifies it
+ *    server-side (verify-if-present) and rejects on failure. Not yet required.
+ *  - `channel` — optional cohort hint ('beta' | 'stable') for logging/metrics
+ *    ONLY. It must never drive whether verification runs (a client could forge
+ *    it); token presence is the actual signal.
  */
 export const authSignInRequestSchema = z.object({
   action: z.literal('sign-in'),
@@ -604,6 +612,8 @@ export const authSignInRequestSchema = z.object({
     .min(1, 'Email is required'),
   password: z.string()
     .min(1, 'Password is required'),
+  turnstileToken: z.string().min(1).max(2048).optional(),
+  channel: z.enum(['beta', 'stable']).optional(),
 });
 
 /**

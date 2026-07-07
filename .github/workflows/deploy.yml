@@ -100,12 +100,12 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         run: |
           REQUIRED_SECRETS=(
+            "AUTH_PROVIDER"
             "AWS_ACTIONS_ACCESS_KEY_ID"
             "AWS_ACTIONS_SECRET_ACCESS_KEY"
             "AWS_ARCHIVE_S3_BUCKET"
             "AWS_RECORDINGS_S3_BUCKET"
             "AWS_REGION"
-            "AUTH_PROVIDER"
             "AZURE_OPENAI_API_VERSION"
             "AZURE_OPENAI_DEPLOYMENT"
             "AZURE_OPENAI_ENDPOINT"
@@ -225,6 +225,7 @@ jobs:
           AZURE_OPENAI_ENDPOINT=${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_KEY=${{ secrets.AZURE_OPENAI_KEY }}
           CLOUD_RUN_TRANSCRIBE_URL=${{ secrets.CLOUD_RUN_TRANSCRIBE_URL }}
+          CLOUDFLARE_TURNSTILE_SECRET_KEY=${{ secrets.CLOUDFLARE_TURNSTILE_SECRET_KEY }}
           COGNITO_CLIENT_ID=${{ secrets.COGNITO_CLIENT_ID }}
           COGNITO_REGION=us-east-1
           COGNITO_USER_POOL_ID=${{ secrets.COGNITO_USER_POOL_ID }}
