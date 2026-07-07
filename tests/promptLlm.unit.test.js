@@ -85,6 +85,8 @@ test('processor-shaped context: title and body both appear in Claude user payloa
   assert.ok(content.includes('Robert Chen NP 7/6/26'));
   assert.ok(content.includes('Allergies: penicillin'));
   assert.ok(content.includes('sole authority for what was discussed today'));
+  assert.ok(content.includes('different patient or visit than the transcript'));
+  assert.ok(content.includes('same patient and topic as the transcript'));
   assert.ok(content.includes('forty vs fourteen'));
 });
 

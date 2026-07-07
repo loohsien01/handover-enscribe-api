@@ -59,15 +59,16 @@ const noteTemplateSections = [
 const preVisitSummaryTemplates = [
   {
     name: 'Default instructions',
-    text: 
-      `1. Patient name, age, sex,
-      2. relevant past medical history
-      3. reason for follow-up
-      4. summary of findings
-      5. current symptoms and clinical status
-      6. active medications
-      7. current plan: including any pending items.
-      8. Vocabulary section to show correct spelling (any niche words to help AI avoid misspelling, e.g. medications, doctor/patient names)`,
+    // Multiline template: paste lines at column 0 (flush left); .trim() drops the leading newline only.
+    text: `
+1. Patient details: name, age, sex,
+2. Relevant past medical history
+3. Reason for follow-up
+4. Summary of findings
+5. Current symptoms and clinical status
+6. Active medications
+7. Current plan: including any pending items.
+8. Vocabulary section to show correct spelling (any niche words to help AI avoid misspelling, e.g. medications, doctor/patient names)`.trim(),
     is_default: false,
   },
 ];

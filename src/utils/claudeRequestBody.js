@@ -56,7 +56,8 @@ ${summaryText}
         }
         content += `
 Use the transcript as the sole authority for what was discussed today — do not add clinical content from the pre-visit summary unless it also appears in the transcript.
-For spelling and vocabulary only: when speech-to-text may have garbled names, medications, ages (e.g. forty vs fourteen), or other terms, prefer spellings from the pre-visit summary title and body over verbatim transcript wording. This does not permit importing problems, medications, or plan items not discussed in the visit.
+If the pre-visit summary appears to describe a different patient or visit than the transcript, ignore it entirely — do not use it for clinical content or spelling.
+For spelling and vocabulary only: when speech-to-text may have garbled names, medications, ages (e.g. forty vs fourteen), or other terms, prefer spellings from the pre-visit summary title and body over verbatim transcript wording — but only when they clearly refer to the same patient and topic as the transcript. This does not permit importing problems, medications, or plan items not discussed in the visit.
 `;
     }
 
