@@ -192,7 +192,7 @@ To keep the two UIs separate without a schema migration, the Nova list applies a
 
 ## Normal completion vs completions-and-save-pre-visit-summary
 
-Both paths share the same **`nova_chat_completion_jobs`** row shape, Redis session, Bedrock invoke/stream, encrypted `chat_messages`, billing (`nova_response`), partial streaming, and poll URL.
+Both paths share the same **`nova_chat_completion_jobs`** row shape, Redis session, Bedrock invoke/stream, encrypted `chat_messages`, partial streaming, and poll URL. **Billing differs by metric** (see below): the save route counts **`pre_visit_summary`**; follow-up **`…/completions`** turns in a chat that already has a summary count **`pre_visit_summary_chat_turn`**; all other Nova chat counts **`nova_response`**.
 
 | Step | `…/completions` | `…/completions-and-save-pre-visit-summary` |
 |------|-------------------|-------------------------------------|
@@ -211,11 +211,19 @@ Implementation: extend **`novaChatCompletionProcessor(jobId, userId, chatId, aut
 
 1. Bedrock → append assistant to session → **persist session** (same as normal completion).
 2. **`createPreVisitSummary({ text, chatId })`** — on failure → **`failed`** / `PRE_VISIT_SUMMARY_PERSIST_FAILED` (do **not** set `pre_visit_summary_id`).
-3. On success → set **`pre_visit_summary_id`** on job → **`recordUsageSuccess`** (`nova_response`) → **`status: 'complete'`**.
+3. On success → set **`pre_visit_summary_id`** on job → **`recordUsageSuccess`** (`pre_visit_summary`) → **`status: 'complete'`**.
 
 The processor always passes **`chatId`** from its closure (session persist already succeeded). **`chat_id`** on the new `pre_visit_summaries` row matches the URL `:chatId`.
 
-Bill **`nova_response`** when Bedrock + session persist succeed, **even if** step 2 fails (the model turn completed; save is a separate step). Persist **`usage`** on the job row before marking **`failed`** for `PRE_VISIT_SUMMARY_PERSIST_FAILED` so the failure poll can return it.
+**Usage metric** is resolved once per completion by **`resolveNovaUsageMetric`** (in `billingUsage.js`) and used for both the pre-check (402) and the success increment:
+
+| Route / condition | Metric |
+|-------------------|--------|
+| `…/completions-and-save-pre-visit-summary` (`savePreVisitSummary`) | `pre_visit_summary` |
+| `…/completions` in a chat that has a `pre_visit_summaries` row (`chatHasPreVisitSummaryRow`) | `pre_visit_summary_chat_turn` |
+| `…/completions` otherwise | `nova_response` |
+
+Bill the resolved metric when Bedrock + session persist succeed, **even if** step 2 fails (the model turn completed; save is a separate step). Persist **`usage`** on the job row before marking **`failed`** for `PRE_VISIT_SUMMARY_PERSIST_FAILED` so the failure poll can return it.
 
 **Title extraction (save route only):** after step 1 (session persist), when **`extract_title_details`** was true on the enqueueing POST, fire-and-forget **`maybeRunPreVisitSummaryTitleDetailsExtraction`** — **once per chat, first successful Nova turn**, same guard as generic title. Runs whether step 2 succeeds (**`complete`**) or fails (**`PRE_VISIT_SUMMARY_PERSIST_FAILED`**) because Bedrock + session persist already succeeded. Does **not** block the job row transition. Does **not** call **`maybeRunNovaChatTitleAfterFirstCompletion`**.
 
@@ -635,7 +643,7 @@ Until step 3, **`pre_visit_summaries.title`** remains **`New Pre-Visit Summary`*
 
 ## Follow-up chat
 
-After turn 1, the FE uses **`POST …/completions`** in the **same `chatId`**. Rolling summary, partial streaming, billing, and transcript rules unchanged.
+After turn 1, the FE uses **`POST …/completions`** in the **same `chatId`**. Rolling summary, partial streaming, and transcript rules unchanged. **Billing:** because the chat now has a `pre_visit_summaries` row, these follow-up turns count against **`pre_visit_summary_chat_turn`** (not `nova_response`).
 
 The FE may copy assistant text via **`POST /api/pre-visit-summaries`** (with the same **`chat_id`**), or run another **`completions-and-save-pre-visit-summary`** with a new `client_message_id` — product choice; v1 does not auto-create rows on follow-up turns.
 

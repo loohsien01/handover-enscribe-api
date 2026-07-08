@@ -24,8 +24,8 @@ import {
   claimNovaCompletionJob,
   updateNovaCompletionJob,
   loadChatSessionOrganizationId,
+  chatHasPreVisitSummaryRow,
 } from '../../utils/novaChatPersistence.js';
-import { pgQueryOne } from '../../utils/pgQueryHelpers.js';
 import * as userSecurityConfigController from '../controllers/userSecurityConfigController.js';
 import { getNovaChatCompletionRequestBody } from '../../utils/claudeRequestBody.js';
 import { novaPreVisitSummaryTurn1MaxTokens } from '../../utils/novaPreVisitSummaryLimits.js';
@@ -37,17 +37,15 @@ import {
 } from '../../utils/novaCompletionPartial.js';
 import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
 import {
-  USAGE_METRICS,
   UsageLimitExceededError,
   assertUsageAllowed,
   recordUsageSuccess,
   resolveBillingContext,
+  resolveNovaUsageMetric,
 } from '../../utils/billingUsage.js';
 import { maybeRunNovaChatTitleAfterFirstCompletion } from '../../utils/novaChatTitleService.js';
 import { maybeRunPreVisitSummaryTitleDetailsExtraction } from '../../utils/novaPreVisitSummaryTitleDetailsService.js';
 import { createPreVisitSummary } from '../controllers/preVisitSummariesController.js';
-
-const preVisitSummariesTable = 'pre_visit_summaries';
 
 /**
  * @param {import('redis').RedisClientType} redis
@@ -123,11 +121,17 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
     return;
   }
 
+  const chatHasPreVisitSummary = savePreVisitSummary
+    ? false
+    : await chatHasPreVisitSummaryRow(userId, chatId);
+  const forPreVisitSummary = savePreVisitSummary || chatHasPreVisitSummary;
+  const usageMetric = resolveNovaUsageMetric({ savePreVisitSummary, chatHasPreVisitSummary });
+
   const billingCtx = await resolveBillingContext(userId);
   try {
     await assertUsageAllowed({
       organizationId,
-      metric: USAGE_METRICS.NOVA_RESPONSE,
+      metric: usageMetric,
       bypassUsageLimits: billingCtx.bypassUsageLimits,
       planKeyForLimits: billingCtx.planKeyForLimits,
     });
@@ -180,18 +184,6 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
       completed_at: new Date().toISOString(),
     });
     return;
-  }
-
-  let forPreVisitSummary = savePreVisitSummary;
-  if (!forPreVisitSummary) {
-    const preVisitSummaryRow = await pgQueryOne(
-      `SELECT id
-         FROM ${preVisitSummariesTable}
-        WHERE chat_id = $1 AND user_id = $2
-        LIMIT 1`,
-      [chatId, userId]
-    );
-    forPreVisitSummary = Boolean(preVisitSummaryRow?.id);
   }
 
   const reqBody = getNovaChatCompletionRequestBody({
@@ -295,8 +287,8 @@ export async function novaChatCompletionProcessor(jobId, userId, chatId, authori
     recordUsageSuccess({
       organizationId,
       userId,
-      metric: USAGE_METRICS.NOVA_RESPONSE,
-      idempotencyKey: `nova_response:job:${jobId}`,
+      metric: usageMetric,
+      idempotencyKey: `${usageMetric}:job:${jobId}`,
       metadata: { chat_id: chatId, job_id: jobId },
       bypassUsageLimits: billingCtx.bypassUsageLimits,
     });

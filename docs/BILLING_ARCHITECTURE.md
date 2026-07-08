@@ -44,8 +44,8 @@ to paying users. Items are ordered by risk impact.
 | `src/utils/billingStripeSync.js` | `derivePlanKeyFromSubscription`, `syncOrganizationFromSubscription`. |
 | `src/services/personalOrganization.js` | `ensurePersonalOrganization` (idempotent service-role create). |
 | `src/fastify/controllers/patientEncountersController.js` | `patientEncounterCompleteBundle` — gates `notes_saved`. |
-| `src/fastify/controllers/novaChatSessionsController.js` | `POST …/completions` — asserts `nova_response` quota before enqueue. |
-| `src/fastify/processors/novaChatCompletionProcessor.js` | Re-checks quota at run; records `nova_response` on success. |
+| `src/fastify/controllers/novaChatSessionsController.js` | `POST …/completions` — resolves the Nova metric (`resolveNovaUsageMetric`) and asserts that quota before enqueue. |
+| `src/fastify/processors/novaChatCompletionProcessor.js` | Re-checks quota at run; records the resolved Nova metric (`nova_response` \| `pre_visit_summary` \| `pre_visit_summary_chat_turn`) on success. |
 | `src/utils/billingUsage.js` | Period helpers, `assertUsageAllowed`, `recordUsageSuccess`, `loadUsageForUserContext`. |
 | `sql/policies/internalAccess_RLS.sql` | SELECT-only RLS policy for `internal_access`. |
 
@@ -96,7 +96,9 @@ GET /api/me/entitlements -> 200
     "period_end": "2026-06-01T00:00:00.000Z",
     "metrics": {
       "notes_saved": { "used": 3, "limit": 10 },
-      "nova_response": { "used": 12, "limit": 50 }
+      "nova_response": { "used": 12, "limit": 50 },
+      "pre_visit_summary": { "used": 2, "limit": 10 },
+      "pre_visit_summary_chat_turn": { "used": 5, "limit": 50 }
     }
   }
 }
@@ -353,7 +355,18 @@ select policyname, cmd, roles
   `patientEncounterCompleteBundle` (persisted encounter + note). Draft
   `generate-note` runs do not increment.
 - **`nova_response`** — usage metric: one increment per Nova completion job that
-  reaches `complete` (successful assistant turn). FE copy: “Nova responses this month”.
+  reaches `complete` (successful assistant turn) **for a chat with no pre-visit
+  summary**. FE copy: “Nova responses this month”.
+- **`pre_visit_summary`** — usage metric: one increment per pre-visit summary
+  generation (turn 1 via `POST …/completions-and-save-pre-visit-summary`,
+  `savePreVisitSummary: true`). Kept separate so pre-visit prep does not consume
+  the general Nova chat quota.
+- **`pre_visit_summary_chat_turn`** — usage metric: one increment per follow-up
+  Nova turn (`POST …/completions`) in a chat that already has a
+  `pre_visit_summaries` row. Detected via `chatHasPreVisitSummaryRow`.
+  The metric a Nova completion counts against is resolved once by
+  `resolveNovaUsageMetric` and used for both the pre-check (402) and the
+  success increment.
 - **`internal_access` (metering)** — active row bypasses `plan_limits`; intended for
   staff / beta testers without Stripe. Still entitled via `has_internal_access`.
 
@@ -375,7 +388,7 @@ request time into `usage_counters` / `usage_events`.
 | Column | Purpose |
 |--------|---------|
 | `plan_key` | `free` \| `pro` |
-| `metric` | `notes_saved` \| `nova_response` |
+| `metric` | `notes_saved` \| `nova_response` \| `pre_visit_summary` \| `pre_visit_summary_chat_turn` |
 | `limit_quantity` | `bigint`; **NULL = unlimited** |
 | `period_type` | v1: `calendar_month` |
 
@@ -385,8 +398,16 @@ Starter seed (adjust via SQL anytime):
 |----------|--------|----------------|
 | free | notes_saved | 10 |
 | free | nova_response | 50 |
+| free | pre_visit_summary | 10 |
+| free | pre_visit_summary_chat_turn | 50 |
 | pro | notes_saved | NULL |
 | pro | nova_response | NULL |
+| pro | pre_visit_summary | NULL |
+| pro | pre_visit_summary_chat_turn | NULL |
+
+Pre-visit summary metrics were added in
+`sql/migrations/20260707120000_pre_visit_summary_usage_metrics.sql` to decouple
+pre-visit work from the shared `nova_response` quota.
 
 **`usage_counters`** — `organization_id`, `metric`, `period_start`, `period_end`,
 `quantity`, `updated_at`. Unique on `(organization_id, metric, period_start)`.
@@ -421,7 +442,7 @@ Starter seed (adjust via SQL anytime):
 | Metric | When to check | When to increment |
 |--------|---------------|-------------------|
 | `notes_saved` | Start of `patientEncounterCompleteBundle` | After successful `create_patient_encounter_complete` RPC |
-| `nova_response` | Before accepting completion (optional) or only on success | When `nova_chat_completion_jobs.status` → `complete` |
+| `nova_response` / `pre_visit_summary` / `pre_visit_summary_chat_turn` | Before enqueue in `postNovaChatCompletion` (metric via `resolveNovaUsageMetric`) + re-check in processor | When `nova_chat_completion_jobs.status` → `complete` (same resolved metric) |
 
 **Save paths sharing the bundle gate:**
 

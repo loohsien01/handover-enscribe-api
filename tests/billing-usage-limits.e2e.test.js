@@ -1,17 +1,18 @@
 /**
  * Billing usage limits — E2E (Tier C).
  *
- * **Not** in `npm test` / `runAll.js`. Seeds `usage_counters` via Postgres (service pool),
+ * **Not** in `npm test` / `runAll.js`. Seeds `usage_counters` via the same Postgres pool
+ * the API uses (`querySupabasePostgres` / `DATABASE_URL_LOCAL` or `DATABASE_URL`),
  * then asserts **402** `USAGE_LIMIT_EXCEEDED` on the API.
  *
  * Prerequisites:
- * - Fastify running (`npm run dev:fastify`)
- * - Migration `sql/migrations/20260528120000_usage_metering.sql` applied
+ * - Fastify running (`npm run dev:fastify`) with the **same** Postgres URL as this test
+ * - Migration `sql/migrations/20260528120000_usage_metering.sql` applied on that DB
+ * - Migration `sql/migrations/20260707120000_pre_visit_summary_usage_metrics.sql` for pre-visit tests
  * - `.env.local`:
  *     TEST_BILLING_USAGE_LIMIT_EMAIL
  *     TEST_BILLING_USAGE_LIMIT_PASSWORD
- *     SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (seed/reset counters via admin)
- *     SUPABASE_DB_DIRECT_URL (preflight `plan_limits` check only)
+ *     DATABASE_URL_LOCAL (dev tunnel) or DATABASE_URL — **not** legacy Supabase REST alone
  * - Account must be **free** (no active Pro; no active `internal_access`)
  * - Nova test: `REDIS_URL` + Redis running
  *
@@ -34,7 +35,6 @@ import {
   hasBillingUsageLimitTestAccount,
   checkRedisReachableForTests,
 } from './testConfig.js';
-import { supabaseAdmin } from '../src/utils/supabaseAdmin.js';
 import {
   closeSupabasePostgresPool,
   querySupabasePostgres,
@@ -43,15 +43,13 @@ import {
   USAGE_LIMIT_EXCEEDED_CODE,
   USAGE_METRICS,
   getCalendarMonthPeriod,
+  getPlanLimit,
 } from '../src/utils/billingUsage.js';
 
 /** @param {string} label */
 function logStep(label) {
   console.log(`[billing-usage-limits.e2e] ${label}`);
 }
-
-const FREE_NOTES_SAVED_LIMIT = 10;
-const FREE_NOVA_RESPONSE_LIMIT = 50;
 
 const JSON_HEADERS = {
   Accept: 'application/json',
@@ -78,11 +76,26 @@ async function e2eSkipReason() {
     if (!rows?.length) {
       return 'plan_limits not found — apply sql/migrations/20260528120000_usage_metering.sql';
     }
+    const { rows: pvsRows } = await querySupabasePostgres(
+      `SELECT 1 FROM public.plan_limits WHERE plan_key = 'free' AND metric = 'pre_visit_summary' LIMIT 1`
+    );
+    if (!pvsRows?.length) {
+      return 'pre-visit summary plan_limits not found — apply sql/migrations/20260707120000_pre_visit_summary_usage_metrics.sql';
+    }
   } catch (err) {
     const msg = err && typeof err.message === 'string' ? err.message : String(err);
     return `Postgres unavailable for usage metering (${msg})`;
   }
   return false;
+}
+
+/**
+ * Read free-tier cap from plan_limits (same source the API uses).
+ * @param {import('../src/utils/billingUsage.js').UsageMetric} metric
+ * @returns {Promise<number | null>}
+ */
+async function readFreePlanLimit(metric) {
+  return getPlanLimit('free', metric);
 }
 
 /**
@@ -92,20 +105,14 @@ async function e2eSkipReason() {
  */
 async function seedUsageCounter(organizationId, metric, quantity) {
   const { periodStartIso, periodEndIso } = getCalendarMonthPeriod();
-  const admin = supabaseAdmin();
-  const { error } = await admin.from('usage_counters').upsert(
-    {
-      organization_id: organizationId,
-      metric,
-      period_start: periodStartIso,
-      period_end: periodEndIso,
-      quantity,
-    },
-    { onConflict: 'organization_id,metric,period_start' }
+  await querySupabasePostgres(
+    `INSERT INTO public.usage_counters (
+       organization_id, metric, period_start, period_end, quantity
+     ) VALUES ($1, $2, $3::timestamptz, $4::timestamptz, $5)
+     ON CONFLICT (organization_id, metric, period_start)
+     DO UPDATE SET quantity = EXCLUDED.quantity, updated_at = now()`,
+    [organizationId, metric, periodStartIso, periodEndIso, quantity]
   );
-  if (error) {
-    throw new Error(`seedUsageCounter failed: ${error.message}`);
-  }
 }
 
 /**
@@ -115,21 +122,20 @@ async function seedUsageCounter(organizationId, metric, quantity) {
  */
 async function readUsageCounterSnapshot(organizationId, metric) {
   const { periodStartIso } = getCalendarMonthPeriod();
-  const admin = supabaseAdmin();
-  const { data, error } = await admin
-    .from('usage_counters')
-    .select('quantity')
-    .eq('organization_id', organizationId)
-    .eq('metric', metric)
-    .eq('period_start', periodStartIso)
-    .maybeSingle();
-  if (error) {
-    throw new Error(`readUsageCounterSnapshot failed: ${error.message}`);
-  }
-  if (!data) {
+  const { rows } = await querySupabasePostgres(
+    `SELECT quantity
+       FROM public.usage_counters
+      WHERE organization_id = $1
+        AND metric = $2
+        AND period_start = $3::timestamptz
+      LIMIT 1`,
+    [organizationId, metric, periodStartIso]
+  );
+  const row = rows?.[0];
+  if (!row) {
     return { quantity: 0, hadRow: false };
   }
-  return { quantity: Number(data.quantity ?? 0), hadRow: true };
+  return { quantity: Number(row.quantity ?? 0), hadRow: true };
 }
 
 /**
@@ -139,35 +145,27 @@ async function readUsageCounterSnapshot(organizationId, metric) {
  */
 async function restoreUsageCounter(organizationId, metric, snapshot) {
   const { periodStartIso, periodEndIso } = getCalendarMonthPeriod();
-  const admin = supabaseAdmin();
 
   if (!snapshot.hadRow && snapshot.quantity === 0) {
-    const { error } = await admin
-      .from('usage_counters')
-      .delete()
-      .eq('organization_id', organizationId)
-      .eq('metric', metric)
-      .eq('period_start', periodStartIso);
-    if (error) {
-      throw new Error(`restoreUsageCounter (delete) failed: ${error.message}`);
-    }
+    await querySupabasePostgres(
+      `DELETE FROM public.usage_counters
+        WHERE organization_id = $1
+          AND metric = $2
+          AND period_start = $3::timestamptz`,
+      [organizationId, metric, periodStartIso]
+    );
     logStep(`${metric}: restored (removed test row; was absent before)`);
     return;
   }
 
-  const { error } = await admin.from('usage_counters').upsert(
-    {
-      organization_id: organizationId,
-      metric,
-      period_start: periodStartIso,
-      period_end: periodEndIso,
-      quantity: snapshot.quantity,
-    },
-    { onConflict: 'organization_id,metric,period_start' }
+  await querySupabasePostgres(
+    `INSERT INTO public.usage_counters (
+       organization_id, metric, period_start, period_end, quantity
+     ) VALUES ($1, $2, $3::timestamptz, $4::timestamptz, $5)
+     ON CONFLICT (organization_id, metric, period_start)
+     DO UPDATE SET quantity = EXCLUDED.quantity, updated_at = now()`,
+    [organizationId, metric, periodStartIso, periodEndIso, snapshot.quantity]
   );
-  if (error) {
-    throw new Error(`restoreUsageCounter failed: ${error.message}`);
-  }
   logStep(`${metric}: restored quantity=${snapshot.quantity}`);
 }
 
@@ -263,8 +261,29 @@ test('billing usage limits E2E', async (t) => {
     const { organizationId } = await loadPersonalOrgContext(authHeaders);
     logStep(`organizationId=${organizationId}`);
 
+    const [
+      notesSavedLimit,
+      novaResponseLimit,
+      preVisitSummaryLimit,
+      preVisitChatTurnLimit,
+    ] = await Promise.all([
+      readFreePlanLimit(USAGE_METRICS.NOTES_SAVED),
+      readFreePlanLimit(USAGE_METRICS.NOVA_RESPONSE),
+      readFreePlanLimit(USAGE_METRICS.PRE_VISIT_SUMMARY),
+      readFreePlanLimit(USAGE_METRICS.PRE_VISIT_SUMMARY_CHAT_TURN),
+    ]);
+    logStep(
+      `free plan_limits: notes_saved=${notesSavedLimit}, nova_response=${novaResponseLimit}, ` +
+        `pre_visit_summary=${preVisitSummaryLimit}, pre_visit_summary_chat_turn=${preVisitChatTurnLimit}`
+    );
+
     // Notes first — no Redis; usually the fastest signal that 402 gating works.
     await t.test('notes_saved: at monthly cap → POST patient-encounters/complete returns 402', async (st) => {
+      if (notesSavedLimit == null) {
+        st.skip('free notes_saved limit is NULL (unlimited)');
+        return;
+      }
+
       const original = await readUsageCounterSnapshot(organizationId, USAGE_METRICS.NOTES_SAVED);
       logStep(
         `notes_saved: original counter=${original.quantity}${original.hadRow ? '' : ' (no row)'}`
@@ -272,7 +291,7 @@ test('billing usage limits E2E', async (t) => {
 
       logStep('notes_saved: seed counter to limit…');
       const base = getApiBaseUrl();
-      await seedUsageCounter(organizationId, USAGE_METRICS.NOTES_SAVED, FREE_NOTES_SAVED_LIMIT);
+      await seedUsageCounter(organizationId, USAGE_METRICS.NOTES_SAVED, notesSavedLimit);
 
       try {
         logStep('notes_saved: POST /patient-encounters/complete (expect 402)…');
@@ -290,8 +309,8 @@ test('billing usage limits E2E', async (t) => {
         });
         assert.equal(completeRes.passed, true, `expected 402, got ${completeRes.status}`);
         assertUsageLimit402(completeRes.body, USAGE_METRICS.NOTES_SAVED);
-        assert.equal(completeRes.body?.used, FREE_NOTES_SAVED_LIMIT);
-        assert.equal(completeRes.body?.limit, FREE_NOTES_SAVED_LIMIT);
+        assert.equal(completeRes.body?.used, notesSavedLimit);
+        assert.equal(completeRes.body?.limit, notesSavedLimit);
         logStep('notes_saved: 402 OK');
       } finally {
         await restoreUsageCounter(organizationId, USAGE_METRICS.NOTES_SAVED, original);
@@ -299,6 +318,11 @@ test('billing usage limits E2E', async (t) => {
     });
 
     await t.test('nova_response: at monthly cap → POST completion returns 402', async (st) => {
+      if (novaResponseLimit == null) {
+        st.skip('free nova_response limit is NULL (unlimited)');
+        return;
+      }
+
       logStep('nova_response: Redis check…');
       const redisCheck = await redisReachableWithTimeout(5000);
       if (!redisCheck.ok) {
@@ -313,7 +337,7 @@ test('billing usage limits E2E', async (t) => {
       );
 
       logStep('nova_response: seed counter to limit…');
-      await seedUsageCounter(organizationId, USAGE_METRICS.NOVA_RESPONSE, FREE_NOVA_RESPONSE_LIMIT);
+      await seedUsageCounter(organizationId, USAGE_METRICS.NOVA_RESPONSE, novaResponseLimit);
 
       try {
         logStep('nova_response: POST /nova/chat-sessions…');
@@ -347,13 +371,179 @@ test('billing usage limits E2E', async (t) => {
         );
         assert.equal(compRes.passed, true, `expected 402, got ${compRes.status}`);
         assertUsageLimit402(compRes.body, USAGE_METRICS.NOVA_RESPONSE);
-        assert.equal(compRes.body?.used, FREE_NOVA_RESPONSE_LIMIT);
-        assert.equal(compRes.body?.limit, FREE_NOVA_RESPONSE_LIMIT);
+        assert.equal(compRes.body?.used, novaResponseLimit);
+        assert.equal(compRes.body?.limit, novaResponseLimit);
         logStep('nova_response: 402 OK');
       } finally {
         await restoreUsageCounter(organizationId, USAGE_METRICS.NOVA_RESPONSE, original);
       }
     });
+
+    await t.test(
+      'pre_visit_summary: at monthly cap → POST completions-and-save-pre-visit-summary returns 402',
+      async (st) => {
+        if (preVisitSummaryLimit == null) {
+          st.skip('free pre_visit_summary limit is NULL (unlimited)');
+          return;
+        }
+
+        logStep('pre_visit_summary: Redis check…');
+        const redisCheck = await redisReachableWithTimeout(5000);
+        if (!redisCheck.ok) {
+          st.skip(`Redis required for Nova completions: ${redisCheck.message}`);
+          return;
+        }
+
+        const base = getApiBaseUrl();
+        const original = await readUsageCounterSnapshot(
+          organizationId,
+          USAGE_METRICS.PRE_VISIT_SUMMARY
+        );
+        logStep(
+          `pre_visit_summary: original counter=${original.quantity}${original.hadRow ? '' : ' (no row)'}`
+        );
+
+        logStep('pre_visit_summary: seed counter to limit…');
+        await seedUsageCounter(
+          organizationId,
+          USAGE_METRICS.PRE_VISIT_SUMMARY,
+          preVisitSummaryLimit
+        );
+
+        try {
+          logStep('pre_visit_summary: POST /nova/chat-sessions…');
+          const createRes = await makeRequest('POST', `${base}/api/nova/chat-sessions`, {
+            headers: authHeadersNoBody,
+            expectedStatus: 201,
+            timeoutMs: 30_000,
+          });
+          assert.equal(
+            createRes.passed,
+            true,
+            `POST /nova/chat-sessions expected 201, got ${createRes.status} ${JSON.stringify(createRes.body)}`
+          );
+          const chatId = createRes.body?.chatId;
+          assert.ok(typeof chatId === 'string');
+
+          logStep('pre_visit_summary: POST /completions-and-save-pre-visit-summary (expect 402)…');
+          const compRes = await makeRequest(
+            'POST',
+            `${base}/api/nova/chat-sessions/${chatId}/completions-and-save-pre-visit-summary`,
+            {
+              headers: authHeaders,
+              body: {
+                model: 'sonnet',
+                message: 'Usage limit E2E pre-visit summary probe.',
+                client_message_id: randomUUID(),
+              },
+              expectedStatus: 402,
+              timeoutMs: 30_000,
+            }
+          );
+          assert.equal(compRes.passed, true, `expected 402, got ${compRes.status}`);
+          assertUsageLimit402(compRes.body, USAGE_METRICS.PRE_VISIT_SUMMARY);
+          assert.equal(compRes.body?.used, preVisitSummaryLimit);
+          assert.equal(compRes.body?.limit, preVisitSummaryLimit);
+          logStep('pre_visit_summary: 402 OK');
+        } finally {
+          await restoreUsageCounter(organizationId, USAGE_METRICS.PRE_VISIT_SUMMARY, original);
+        }
+      }
+    );
+
+    await t.test(
+      'pre_visit_summary_chat_turn: at monthly cap → follow-up POST completions returns 402',
+      async (st) => {
+        if (preVisitChatTurnLimit == null) {
+          st.skip('free pre_visit_summary_chat_turn limit is NULL (unlimited)');
+          return;
+        }
+
+        logStep('pre_visit_summary_chat_turn: Redis check…');
+        const redisCheck = await redisReachableWithTimeout(5000);
+        if (!redisCheck.ok) {
+          st.skip(`Redis required for Nova completions: ${redisCheck.message}`);
+          return;
+        }
+
+        const base = getApiBaseUrl();
+        const original = await readUsageCounterSnapshot(
+          organizationId,
+          USAGE_METRICS.PRE_VISIT_SUMMARY_CHAT_TURN
+        );
+        logStep(
+          `pre_visit_summary_chat_turn: original counter=${original.quantity}${original.hadRow ? '' : ' (no row)'}`
+        );
+
+        logStep('pre_visit_summary_chat_turn: seed counter to limit…');
+        await seedUsageCounter(
+          organizationId,
+          USAGE_METRICS.PRE_VISIT_SUMMARY_CHAT_TURN,
+          preVisitChatTurnLimit
+        );
+
+        try {
+          logStep('pre_visit_summary_chat_turn: POST /nova/chat-sessions…');
+          const createRes = await makeRequest('POST', `${base}/api/nova/chat-sessions`, {
+            headers: authHeadersNoBody,
+            expectedStatus: 201,
+            timeoutMs: 30_000,
+          });
+          assert.equal(
+            createRes.passed,
+            true,
+            `POST /nova/chat-sessions expected 201, got ${createRes.status} ${JSON.stringify(createRes.body)}`
+          );
+          const chatId = createRes.body?.chatId;
+          assert.ok(typeof chatId === 'string');
+
+          // Link a pre_visit_summaries row so this chat's follow-up turns are
+          // metered as pre_visit_summary_chat_turn (not nova_response).
+          logStep('pre_visit_summary_chat_turn: POST /pre-visit-summaries (link summary row)…');
+          const pvsRes = await makeRequest('POST', `${base}/api/pre-visit-summaries`, {
+            headers: authHeaders,
+            body: {
+              chat_id: chatId,
+              text: 'E2E linked pre-visit summary.',
+            },
+            expectedStatus: 201,
+            timeoutMs: 30_000,
+          });
+          assert.equal(
+            pvsRes.passed,
+            true,
+            `POST /pre-visit-summaries expected 201, got ${pvsRes.status} ${JSON.stringify(pvsRes.body)}`
+          );
+
+          logStep('pre_visit_summary_chat_turn: POST /completions (expect 402)…');
+          const compRes = await makeRequest(
+            'POST',
+            `${base}/api/nova/chat-sessions/${chatId}/completions`,
+            {
+              headers: authHeaders,
+              body: {
+                model: 'haiku',
+                message: 'Usage limit E2E follow-up probe.',
+                client_message_id: randomUUID(),
+              },
+              expectedStatus: 402,
+              timeoutMs: 30_000,
+            }
+          );
+          assert.equal(compRes.passed, true, `expected 402, got ${compRes.status}`);
+          assertUsageLimit402(compRes.body, USAGE_METRICS.PRE_VISIT_SUMMARY_CHAT_TURN);
+          assert.equal(compRes.body?.used, preVisitChatTurnLimit);
+          assert.equal(compRes.body?.limit, preVisitChatTurnLimit);
+          logStep('pre_visit_summary_chat_turn: 402 OK');
+        } finally {
+          await restoreUsageCounter(
+            organizationId,
+            USAGE_METRICS.PRE_VISIT_SUMMARY_CHAT_TURN,
+            original
+          );
+        }
+      }
+    );
   } finally {
     await closeSupabasePostgresPool().catch(() => {});
   }

@@ -21,6 +21,7 @@ import {
   insertNovaCompletionJob,
   deleteNovaCompletionJob,
   isPgUniqueViolation,
+  chatHasPreVisitSummaryRow,
 } from '../../utils/novaChatPersistence.js';
 import { pgQueryOne } from '../../utils/pgQueryHelpers.js';
 import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
@@ -31,9 +32,9 @@ import { enrichNovaCompletionPollWithPartial } from '../../utils/novaCompletionP
 import { enrichNovaCompletionPollWithPreVisitSummaryTitleDetails } from '../../utils/novaPreVisitSummaryTitleDetailsCache.js';
 import { NOVA_CHAT_DEFAULT_TITLE, normalizeNovaChatTitle } from '../../utils/novaChatTitle.js';
 import {
-  USAGE_METRICS,
   UsageLimitExceededError,
   assertUsageAllowedForUser,
+  resolveNovaUsageMetric,
 } from '../../utils/billingUsage.js';
 import { loadPreVisitSummaryForPoll } from './preVisitSummariesController.js';
 
@@ -479,8 +480,13 @@ export async function postNovaChatCompletion(request, reply, completionOptions =
 
   const hasFailedRetry = Boolean(latestFailedForClientId?.id);
 
+  const chatHasPreVisitSummary = savePreVisitSummary
+    ? false
+    : await chatHasPreVisitSummaryRow(userId, chatId);
+  const usageMetric = resolveNovaUsageMetric({ savePreVisitSummary, chatHasPreVisitSummary });
+
   try {
-    await assertUsageAllowedForUser(userId, USAGE_METRICS.NOVA_RESPONSE);
+    await assertUsageAllowedForUser(userId, usageMetric);
   } catch (err) {
     if (err instanceof UsageLimitExceededError) {
       return reply.status(402).send(err.toJSON());

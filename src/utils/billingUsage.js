@@ -6,11 +6,15 @@ import {
   organizationHasProPlan,
 } from './billingEntitlements.js';
 
-/** @typedef {'notes_saved' | 'nova_response'} UsageMetric */
+/** @typedef {'notes_saved' | 'nova_response' | 'pre_visit_summary' | 'pre_visit_summary_chat_turn'} UsageMetric */
 
 export const USAGE_METRICS = Object.freeze({
   NOTES_SAVED: 'notes_saved',
   NOVA_RESPONSE: 'nova_response',
+  /** Pre-visit summary generation (turn 1 save route). */
+  PRE_VISIT_SUMMARY: 'pre_visit_summary',
+  /** Follow-up Nova turn in a chat that has a pre-visit summary. */
+  PRE_VISIT_SUMMARY_CHAT_TURN: 'pre_visit_summary_chat_turn',
 });
 
 export const USAGE_LIMIT_EXCEEDED_CODE = 'USAGE_LIMIT_EXCEEDED';
@@ -48,6 +52,23 @@ export function evaluateUsageAllowance({ used, limit, bypass = false }) {
     return { allowed: false, used, limit };
   }
   return { allowed: true, used, limit };
+}
+
+/**
+ * Which usage metric a Nova completion should count against.
+ *
+ * Pre-visit summary work is decoupled from the shared `nova_response` quota:
+ *   - turn 1 save route (`savePreVisitSummary`)                → `pre_visit_summary`
+ *   - follow-up turn in a chat that already has a summary row  → `pre_visit_summary_chat_turn`
+ *   - everything else                                          → `nova_response`
+ *
+ * @param {{ savePreVisitSummary?: boolean, chatHasPreVisitSummary?: boolean }} input
+ * @returns {UsageMetric}
+ */
+export function resolveNovaUsageMetric({ savePreVisitSummary = false, chatHasPreVisitSummary = false }) {
+  if (savePreVisitSummary) return USAGE_METRICS.PRE_VISIT_SUMMARY;
+  if (chatHasPreVisitSummary) return USAGE_METRICS.PRE_VISIT_SUMMARY_CHAT_TURN;
+  return USAGE_METRICS.NOVA_RESPONSE;
 }
 
 export class UsageLimitExceededError extends Error {

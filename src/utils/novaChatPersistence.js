@@ -521,6 +521,25 @@ export async function countNovaPreVisitPersistFailedJobs(userId, chatId) {
 }
 
 /**
+ * Whether a chat already has a linked pre-visit summary row (i.e. follow-up turns
+ * in that chat count against the pre-visit chat quota, not the general Nova quota).
+ *
+ * @param {string} userId
+ * @param {string} chatId
+ * @returns {Promise<boolean>}
+ */
+export async function chatHasPreVisitSummaryRow(userId, chatId) {
+  const row = await pgQueryOne(
+    `SELECT 1
+       FROM ${preVisitSummariesTable}
+      WHERE chat_id = $1 AND user_id = $2
+      LIMIT 1`,
+    [chatId, userId]
+  );
+  return Boolean(row);
+}
+
+/**
  * @param {string} userId
  * @param {string} jobId
  * @param {Record<string, unknown>} patch
