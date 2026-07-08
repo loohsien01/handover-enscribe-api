@@ -307,6 +307,16 @@ export async function deletePatientEncounter(request, reply) {
       return reply.status(400).send({ error: 'Invalid ID format - must be a numeric ID' });
     }
 
+    // The pre_visit_summaries → patientEncounters FK is ON DELETE SET NULL, so deleting the
+    // encounter alone would orphan the linked summary. Remove it first (scoped by user_id, so a
+    // non-owned/nonexistent encounter id is a harmless no-op).
+    await pgQueryOne(
+      `DELETE FROM pre_visit_summaries
+        WHERE "patientEncounter_id" = $1 AND user_id = $2
+        RETURNING id`,
+      [id, user.id]
+    );
+
     const data = await pgQueryOne(
       `DELETE FROM "patientEncounters"
         WHERE id = $1 AND user_id = $2

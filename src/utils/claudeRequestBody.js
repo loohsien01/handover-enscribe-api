@@ -30,12 +30,24 @@ const SOAP_NOTE_MEDICATION_NAME_EXCEPTION =
 /**
  * @param {string} transcript
  * @param {{ title?: string, text?: string } | null} preVisitContext
+ * @param {string | null} [patientEncounterTitle] - From API `patient_encounter_name`; prepended as `Title:` in transcript (primary source)
  * @returns {string}
  */
-function buildSoapNoteUserMessage(transcript, preVisitContext) {
+function buildSoapNoteUserMessage(transcript, preVisitContext, patientEncounterTitle = null) {
+    const encounterTitle =
+        patientEncounterTitle != null ? String(patientEncounterTitle).trim() : '';
+
+    // The encounter title is a PRIMARY source: prepend it inside the transcript block itself so
+    // the model treats it as part of today's visit (unlike the pre-visit summary, which is
+    // reference-only). Useful for anchoring names/spellings (e.g. patient name).
+    const transcriptBlock = encounterTitle
+        ? `Title: ${encounterTitle}
+${transcript}`
+        : transcript;
+
     let content = `Here is a patient encounter transcript:
 
-${transcript}
+${transcriptBlock}
 `;
 
     const title = preVisitContext?.title != null ? String(preVisitContext.title).trim() : '';
@@ -96,9 +108,10 @@ function escapeJsonString(str) {
  * @param {string} transcript - The masked medical transcript
  * @param {Array} noteTemplateSections - Optional note template sections with { name, layout, details }
  * @param {{ title?: string, text?: string } | null} [preVisitContext] - Optional pre-visit summary for vocabulary/spelling anchor
+ * @param {string | null} [patientEncounterTitle] - From API `patient_encounter_name`; prepended as `Title:` in transcript (primary source)
  * @returns {object} Claude Bedrock request body for SOAP note generation
  */
-export function getSoapNoteRequestBody(transcript, noteTemplateSections = null, preVisitContext = null) {
+export function getSoapNoteRequestBody(transcript, noteTemplateSections = null, preVisitContext = null, patientEncounterTitle = null) {
     // Build JSON schema based on whether we have a note template
     let jsonSchemaDescription;
     
@@ -153,7 +166,7 @@ You MUST return a valid JSON object with this exact structure:
         messages: [
             {
                 role: "user",
-                content: buildSoapNoteUserMessage(transcript, preVisitContext)
+                content: buildSoapNoteUserMessage(transcript, preVisitContext, patientEncounterTitle)
             }
         ],
     max_tokens: 10000,

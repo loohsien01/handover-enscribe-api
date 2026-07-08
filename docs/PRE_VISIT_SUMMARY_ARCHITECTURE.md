@@ -250,25 +250,25 @@ Length limits apply **only** to **Turn 1** — `POST …/completions-and-save-pr
 | Layer | Turn 1 | Follow-up `completions` | Manual `POST /api/pre-visit-summaries` |
 |-------|--------|-------------------------|----------------------------------------|
 | FE template / user **`message`** | Clinician may repeat brevity guidance | Same | N/A (no generation) |
-| Server length system block | Yes (~350 words, ≤1500 chars) | No | No |
+| Server length system block | Yes (~450 words, ≤2500 chars) | No | No |
 | Server formatting system block | Yes | Yes (when chat has a summary row) | No |
-| Bedrock **`max_tokens`** cap | **400** default (`NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS` env, 64–8192) | **8192** (Nova default) | N/A |
+| Bedrock **`max_tokens`** cap | **750** default (`NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS` env, 64–8192) | **8192** (Nova default) | N/A |
 
 **Constants** (`src/utils/novaPreVisitSummaryLimits.js`):
 
 | Constant | Value | Role |
 |----------|-------|------|
-| `PRE_VISIT_SUMMARY_TARGET_WORDS` | 350 | Soft prompt target (~words); not counted server-side |
-| `PRE_VISIT_SUMMARY_MAX_CHARS` | 1500 | Prompt hard ceiling; char count is enforceable if validation is added later |
-| `NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS_DEFAULT` | 400 | Bedrock hard backstop (~1500 chars; conservative for dense clinical text) |
+| `PRE_VISIT_SUMMARY_TARGET_WORDS` | 450 | Soft prompt target (~words); not counted server-side |
+| `PRE_VISIT_SUMMARY_MAX_CHARS` | 2500 | Prompt hard ceiling; char count is enforceable if validation is added later |
+| `NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS_DEFAULT` | 750 | Bedrock hard backstop (above char ceiling; ~2500 chars @ ~2.8 c/tok + headroom) |
 
-**Rationale:** models are poor at exact word counts. The prompt uses qualitative brevity plus an approximate word target and a **character** ceiling; **`max_tokens`** is the hard API backstop. Word count is guidance only — **`assistant.content.length`** is the measurable line if server validation is added later.
+**Rationale:** models are poor at exact word counts. The prompt uses qualitative brevity plus an approximate word target and a **character** ceiling; **`max_tokens`** is the hard API backstop and must sit **above** what the char ceiling needs (otherwise generation stops mid-sentence before the model can finish). Intended hierarchy: soft word target &lt; char ceiling in prompt &lt; `max_tokens`. Word count is guidance only — **`assistant.content.length`** is the measurable line if server validation is added later.
 
 **Processor wiring:** `forPreVisitSummaryTurn1` and the lowered **`max_tokens`** are set only when **`savePreVisitSummary`** is true (Turn 1 enqueue). This is unrelated to **`createPreVisitSummary`** (shared DB insert used by Turn 1 and manual create).
 
 The FE user message typically includes:
 
-1. Clinician instructions (tone, sections, bullet vs table, etc.) — editable per run; may load defaults from **`pre_visit_summary_templates`** (`GET …/pre-visit-summary-templates/:id`). Templates may echo the same brevity guidance (~350 words, ≤1500 characters).
+1. Clinician instructions (tone, sections, bullet vs table, etc.) — editable per run; may load defaults from **`pre_visit_summary_templates`** (`GET …/pre-visit-summary-templates/:id`). Templates may echo the same brevity guidance (~450 words, ≤2500 characters).
 2. Delimiters and metadata for each past chart (date, optional labels) plus decrypted note body text — all plain text in **`message`**; the API does not store note ids on `pre_visit_summaries`.
 
 The model returns **free-form text** per those instructions. That string is stored as **`pre_visit_summaries.text`** (API field **`text`** on responses) without server-side structural parsing.

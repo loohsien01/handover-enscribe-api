@@ -67,7 +67,12 @@ async function insertPromptLlmJob(userId, recordingFilePath, preVisitSummaryId) 
  */
 export async function createPromptLlmJobHandler(request, reply) {
   try {
-    const { recording_file_path, noteTemplate_id, pre_visit_summary_id: preVisitSummaryId } = request.body;
+    const {
+      recording_file_path,
+      noteTemplate_id,
+      pre_visit_summary_id: preVisitSummaryId,
+      patient_encounter_name: patientEncounterName,
+    } = request.body;
     const userId = request.user.id;
 
     console.log('[createPromptLlmJobHandler] generate-note payload:', {
@@ -75,6 +80,7 @@ export async function createPromptLlmJobHandler(request, reply) {
       recording_file_path,
       noteTemplate_id: noteTemplate_id ?? null,
       pre_visit_summary_id: preVisitSummaryId ?? null,
+      patient_encounter_name: patientEncounterName ?? null,
     });
 
     if (!(await validatePreVisitSummaryIdForJob(userId, preVisitSummaryId, reply))) {
@@ -95,7 +101,9 @@ export async function createPromptLlmJobHandler(request, reply) {
 
     const authorizationHeader = request.headers.authorization;
     setImmediate(() => {
-      promptLlmProcessor(job.id, userId, authorizationHeader, noteTemplate_id).catch((err) => {
+      promptLlmProcessor(job.id, userId, authorizationHeader, noteTemplate_id, {
+        patientEncounterName,
+      }).catch((err) => {
         console.error(`[promptLlmProcessor] Unhandled error for job ${job.id}:`, err);
       });
     });
@@ -147,6 +155,7 @@ export async function createPromptLlmJobAndSaveNoteHandler(request, reply) {
     setImmediate(() => {
       promptLlmProcessor(job.id, userId, authorizationHeader, noteTemplate_id, {
         persistEncounterName: patientEncounterName,
+        patientEncounterName,
       }).catch((err) => {
         console.error(`[promptLlmProcessor] Unhandled error for job ${job.id}:`, err);
       });

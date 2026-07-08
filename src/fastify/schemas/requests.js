@@ -280,19 +280,22 @@ export const promptLlmRequestSchema = z.object({
  * POST request for SOAP note generation (job-based, polling).
  * Endpoint: POST /api/jobs/prompt-llm/generate-note
  * Optional: noteTemplate_id to use a specific note template for SOAP note generation
+ * Optional: patient_encounter_name — display name for this visit (e.g. patient name); prepended to
+ *   the transcript as a primary source when generating the SOAP note.
  */
 export const promptLlmGenerateNoteRequestSchema = z.object({
   recording_file_path: z.string().min(1, 'Recording file path is required'),
   noteTemplate_id: z.number().int().or(z.bigint()).or(z.string().transform(BigInt)).optional().nullable(),
   pre_visit_summary_id: z.string().regex(uuidRegex, 'Invalid pre_visit_summary_id').optional().nullable(),
+  patient_encounter_name: z.string().trim().min(1).max(500).optional().nullable(),
 });
 
 /**
  * POST /api/jobs/prompt-llm/generate-and-save-note
- * Same as generate-note plus patient encounter display name for atomic save after generation.
+ * Same as generate-note; patient_encounter_name is required (persisted encrypted on save).
  */
 export const promptLlmGenerateAndSaveNoteRequestSchema = promptLlmGenerateNoteRequestSchema.extend({
-  patient_encounter_name: z.string().min(1, 'patient_encounter_name is required'),
+  patient_encounter_name: z.string().trim().min(1, 'patient_encounter_name is required').max(500),
 });
 
 /**

@@ -870,6 +870,13 @@ async function processOneQueueRow(supabase, s3, archiveBucket, row, rowOpts = {}
       [encounterId]
     );
 
+    // Delete before the encounter: the FK is ON DELETE SET NULL, so deleting the encounter first
+    // would null the link and orphan the summary row (already archived to db-rows.jsonl above).
+    await querySupabasePostgres(
+      `DELETE FROM public.pre_visit_summaries WHERE "patientEncounter_id" = $1`,
+      [encounterId]
+    );
+
     const eDel = await querySupabasePostgres(
       `DELETE FROM public."patientEncounters" WHERE id = $1`,
       [encounterId]
@@ -923,6 +930,16 @@ async function buildBundleJsonlLines(_supabase, encounterId, userId) {
     [encounterId]
   );
   for (const n of notes) lines.push(JSON.stringify({ table: 'notes', row: n }));
+
+  // Pre-visit summaries are 1:1 with an encounter (encrypted_text/text_iv use the user master key,
+  // same as notes). Capture before the encounter delete nulls the FK (ON DELETE SET NULL).
+  const preVisitSummaries = await pgQueryRows(
+    `SELECT * FROM public.pre_visit_summaries WHERE "patientEncounter_id" = $1`,
+    [encounterId]
+  );
+  for (const p of preVisitSummaries) {
+    lines.push(JSON.stringify({ table: 'pre_visit_summaries', row: p }));
+  }
 
   const recs = await pgQueryRows(
     `SELECT * FROM public.recordings WHERE "patientEncounter_id" = $1`,

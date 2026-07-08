@@ -223,10 +223,11 @@ function convertTemplateSectionsToSchema(sections) {
  * @param {string} userId - User UUID
  * @param {string} authorizationHeader - User's JWT token from initial request (e.g., 'Bearer ...')
  * @param {BigInt|string|null} noteTemplate_id - Optional note template ID to customize SOAP note schema
- * @param {{ persistEncounterName?: string|null }} [options] - If set, after SOAP generation persist via create_patient_encounter_complete
+ * @param {{ persistEncounterName?: string|null, patientEncounterName?: string|null }} [options] - `persistEncounterName`: after SOAP generation persist via create_patient_encounter_complete. `patientEncounterName`: optional on generate-note; prepended to transcript as primary source (same field as save path).
  */
 export async function promptLlmProcessor(jobId, userId, authorizationHeader, noteTemplate_id = null, options = {}) {
-  const { persistEncounterName = null } = options || {};
+  const { persistEncounterName = null, patientEncounterName = null } = options || {};
+  const encounterTitleForClaude = patientEncounterName ?? persistEncounterName;
   const startTime = Date.now();
   console.log(`[promptLlmProcessor] Starting job ${jobId} for user ${userId}`);
 
@@ -369,6 +370,12 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
       );
     }
 
+    if (encounterTitleForClaude) {
+      console.log(
+        `[promptLlmProcessor] ${jobId}: Using patient encounter name as primary source (title="${encounterTitleForClaude}")`
+      );
+    }
+
     // Step 2: Update status to generating with transcript
     await updateJobStatus(jobId, 'generating', {
       transcript_text: transcript,
@@ -398,7 +405,8 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
       soapNoteAndBillingReqBody = claudeRequestBody.getSoapNoteRequestBody(
         maskedTranscript,
         noteTemplateSections,
-        preVisitContext
+        preVisitContext,
+        encounterTitleForClaude
       );
       
       // Log the final schema being sent to Claude (crucial for debugging LLM prompt)

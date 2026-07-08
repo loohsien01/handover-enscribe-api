@@ -4,13 +4,13 @@
  */
 
 /** Soft target communicated in prompts (~words); enforce with char / token caps. */
-export const PRE_VISIT_SUMMARY_TARGET_WORDS = 350;
+export const PRE_VISIT_SUMMARY_TARGET_WORDS = 450;
 
 /** Hard char ceiling for Turn 1 assistant output (prompt + optional future validation). */
-export const PRE_VISIT_SUMMARY_MAX_CHARS = 1500;
+export const PRE_VISIT_SUMMARY_MAX_CHARS = 2500;
 
-/** Default Bedrock max_tokens for Turn 1 (~1500 chars; conservative vs dense clinical text). */
-export const NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS_DEFAULT = 400;
+/** Default Bedrock max_tokens for Turn 1 (backstop above char ceiling; ~2500 chars @ ~2.8 c/tok + headroom). */
+export const NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS_DEFAULT = 750;
 
 /**
  * Bedrock max_tokens for Turn 1 (`completions-and-save-pre-visit-summary` only).

@@ -53,6 +53,43 @@ test('promptLlmGenerateAndSaveNoteRequestSchema inherits pre_visit_summary_id', 
   assert.equal(result.data.pre_visit_summary_id, SUMMARY_ID);
 });
 
+test('generate-note schema accepts optional patient_encounter_name (trimmed)', () => {
+  const withName = promptLlmGenerateNoteRequestSchema.safeParse({
+    recording_file_path: 'recordings/foo.m4a',
+    patient_encounter_name: '  Jane Doe F/U  ',
+  });
+  assert.equal(withName.success, true);
+  assert.equal(withName.data.patient_encounter_name, 'Jane Doe F/U');
+
+  const withoutName = promptLlmGenerateNoteRequestSchema.safeParse({
+    recording_file_path: 'recordings/foo.m4a',
+  });
+  assert.equal(withoutName.success, true);
+  assert.equal(withoutName.data.patient_encounter_name, undefined);
+});
+
+test('generate-note schema rejects empty patient_encounter_name', () => {
+  const result = promptLlmGenerateNoteRequestSchema.safeParse({
+    recording_file_path: 'recordings/foo.m4a',
+    patient_encounter_name: '   ',
+  });
+  assert.equal(result.success, false);
+});
+
+test('generate-and-save schema requires patient_encounter_name', () => {
+  const missing = promptLlmGenerateAndSaveNoteRequestSchema.safeParse({
+    recording_file_path: 'recordings/foo.m4a',
+  });
+  assert.equal(missing.success, false);
+
+  const ok = promptLlmGenerateAndSaveNoteRequestSchema.safeParse({
+    recording_file_path: 'recordings/foo.m4a',
+    patient_encounter_name: 'Jane Doe F/U',
+  });
+  assert.equal(ok.success, true);
+  assert.equal(ok.data.patient_encounter_name, 'Jane Doe F/U');
+});
+
 // --- SOAP prompt (processor-shaped, immediately before Bedrock) ---
 
 test('processor-shaped context: transcript precedes pre-visit block in user message', () => {
@@ -93,6 +130,39 @@ test('processor-shaped context: title and body both appear in Claude user payloa
 test('processor-shaped context: null summary omits pre-visit block', () => {
   const body = getSoapNoteRequestBody('Transcript only.', null, buildPreVisitContextFromSummary(null));
   assert.ok(!String(body.messages[0].content).includes('Pre-visit summary (reference only'));
+});
+
+test('patient encounter name is prepended as Title in transcript block (primary source)', () => {
+  const maskedTranscript = '{{NAME_1}} is {{AGE_2}} years old. Continue met Foreman ten milligrams.';
+  const body = getSoapNoteRequestBody(maskedTranscript, null, null, 'Jane Doe F/U');
+  const content = String(body.messages[0].content);
+  const titleIdx = content.indexOf('Title: Jane Doe F/U');
+  const transcriptIdx = content.indexOf(maskedTranscript);
+  assert.ok(titleIdx >= 0, 'encounter title missing from user message');
+  assert.ok(transcriptIdx >= 0, 'transcript missing from user message');
+  assert.ok(titleIdx < transcriptIdx, 'title must appear at the start of the transcript block');
+  // Title is a primary source, not the reference-only pre-visit block
+  assert.ok(!content.includes('Pre-visit summary (reference only'));
+});
+
+test('encounter title and pre-visit summary coexist (primary title, secondary summary)', () => {
+  const body = getSoapNoteRequestBody(
+    'Doctor discussed follow-up.',
+    null,
+    { title: 'PVS Title', text: 'Home meds: lisinopril 10mg.' },
+    'Robert Chen NP'
+  );
+  const content = String(body.messages[0].content);
+  const titleIdx = content.indexOf('Title: Robert Chen NP');
+  const preVisitIdx = content.indexOf('Pre-visit summary (reference only');
+  assert.ok(titleIdx >= 0, 'primary encounter title missing');
+  assert.ok(preVisitIdx >= 0, 'pre-visit summary block missing');
+  assert.ok(titleIdx < preVisitIdx, 'primary title must precede reference-only pre-visit block');
+});
+
+test('null encounter name omits Title line', () => {
+  const body = getSoapNoteRequestBody('Transcript only.', null, null, null);
+  assert.ok(!String(body.messages[0].content).includes('Title:'));
 });
 
 test('getSoapNoteRequestBody messages array is single user turn for Bedrock', () => {
