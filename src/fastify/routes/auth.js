@@ -433,9 +433,15 @@ async function authRoutes(fastify, opts) {
           maxAge: Number(process.env.REFRESH_MAX_AGE_SECONDS || 3 * 24 * 3600),
         });
 
+        const user = await authController.resolveRefreshResponseUser(exchangeResult.accessToken);
+        if (!user) {
+          return reply.status(401).send({ error: 'Token exchange failed' });
+        }
+
         return reply.status(200).send({
           accessToken: exchangeResult.accessToken,
           refreshToken: exchangeResult.refreshToken,
+          user,
         });
       }
 
@@ -478,8 +484,14 @@ async function authRoutes(fastify, opts) {
         ...(REFRESH_COOKIE_DOMAIN && { domain: REFRESH_COOKIE_DOMAIN }),
       });
 
+      const user = await authController.resolveRefreshResponseUser(result.accessToken);
+      if (!user) {
+        return reply.status(401).send({ error: result.error || 'invalid_refresh' });
+      }
+
       return reply.status(200).send({
         accessToken: result.accessToken,
+        user,
       });
     } catch (err) {
       fastify.log.error('[POST /auth/refresh] Error:', err);

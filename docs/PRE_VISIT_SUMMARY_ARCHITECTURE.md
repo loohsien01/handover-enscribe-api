@@ -252,7 +252,7 @@ Length limits apply **only** to **Turn 1** — `POST …/completions-and-save-pr
 | FE template / user **`message`** | Clinician may repeat brevity guidance | Same | N/A (no generation) |
 | Server length system block | Yes (~450 words, ≤2500 chars) | No | No |
 | Server formatting system block | Yes | Yes (when chat has a summary row) | No |
-| Bedrock **`max_tokens`** cap | **750** default (`NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS` env, 64–8192) | **8192** (Nova default) | N/A |
+| Bedrock **`max_tokens`** cap | **800** default (`NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS` env, 64–8192) | **8192** (Nova default) | N/A |
 
 **Constants** (`src/utils/novaPreVisitSummaryLimits.js`):
 
@@ -260,7 +260,7 @@ Length limits apply **only** to **Turn 1** — `POST …/completions-and-save-pr
 |----------|-------|------|
 | `PRE_VISIT_SUMMARY_TARGET_WORDS` | 450 | Soft prompt target (~words); not counted server-side |
 | `PRE_VISIT_SUMMARY_MAX_CHARS` | 2500 | Prompt hard ceiling; char count is enforceable if validation is added later |
-| `NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS_DEFAULT` | 750 | Bedrock hard backstop (above char ceiling; ~2500 chars @ ~2.8 c/tok + headroom) |
+| `NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS_DEFAULT` | 800 | Bedrock hard backstop (above char ceiling; ~2500 chars @ ~2.8 c/tok + headroom) |
 
 **Rationale:** models are poor at exact word counts. The prompt uses qualitative brevity plus an approximate word target and a **character** ceiling; **`max_tokens`** is the hard API backstop and must sit **above** what the char ceiling needs (otherwise generation stops mid-sentence before the model can finish). Intended hierarchy: soft word target &lt; char ceiling in prompt &lt; `max_tokens`. Word count is guidance only — **`assistant.content.length`** is the measurable line if server validation is added later.
 

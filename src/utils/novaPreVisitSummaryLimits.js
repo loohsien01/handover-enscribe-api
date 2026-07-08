@@ -10,7 +10,7 @@ export const PRE_VISIT_SUMMARY_TARGET_WORDS = 450;
 export const PRE_VISIT_SUMMARY_MAX_CHARS = 2500;
 
 /** Default Bedrock max_tokens for Turn 1 (backstop above char ceiling; ~2500 chars @ ~2.8 c/tok + headroom). */
-export const NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS_DEFAULT = 750;
+export const NOVA_PRE_VISIT_SUMMARY_TURN1_MAX_TOKENS_DEFAULT = 800;
 
 /**
  * Bedrock max_tokens for Turn 1 (`completions-and-save-pre-visit-summary` only).

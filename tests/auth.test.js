@@ -747,9 +747,14 @@ async function runAuthTests() {
               'Cookie': `refresh_token=${refreshTokenCookie}`,
             },
             expectedStatus: 200,
-            expectedFields: ['accessToken'],
+            expectedFields: ['accessToken', 'user.id', 'user.email'],
             customValidator: (body, response) => {
               const hasAccessToken = body?.accessToken && typeof body.accessToken === 'string';
+              const hasUser =
+                body?.user?.id &&
+                typeof body.user.id === 'string' &&
+                body?.user?.email &&
+                typeof body.user.email === 'string';
               newAccessToken = body?.accessToken;
               
               // Extract new tid from Set-Cookie header to validate token rotation
@@ -799,12 +804,17 @@ async function runAuthTests() {
                 console.log(`       Old iat: ${oldIat}, New iat: ${newIat}`);
               }
 
-              const passed = hasAccessToken && newTid && oldTid && oldTid !== newTid && jwtChanged;
+              const passed =
+                hasAccessToken && hasUser && newTid && oldTid && oldTid !== newTid && jwtChanged;
               return {
                 passed,
-                message: passed 
-                  ? '✅ Token rotated successfully (tid + JWT both changed)' 
-                  : (!hasAccessToken ? 'No accessToken in response' : 'Token rotation not detected (tid or JWT unchanged or missing)')
+                message: passed
+                  ? '✅ Token rotated successfully (tid + JWT both changed)'
+                  : !hasAccessToken
+                    ? 'No accessToken in response'
+                    : !hasUser
+                      ? 'No user.id/user.email in response'
+                      : 'Token rotation not detected (tid or JWT unchanged or missing)',
               };
             },
           });

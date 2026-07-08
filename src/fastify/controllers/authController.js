@@ -1056,6 +1056,19 @@ export async function checkRefreshCookieStatus(wrapper) {
 }
 
 /**
+ * Resolve canonical `{ id, email }` for refresh responses (same shape as sign-in / check-validity).
+ * @param {string} accessToken
+ * @returns {Promise<{ id: string, email: string } | null>}
+ */
+export async function resolveRefreshResponseUser(accessToken) {
+  const { user, error } = await authenticateAccessToken(accessToken);
+  if (error || !user?.id || !user?.email) {
+    return null;
+  }
+  return { id: user.id, email: user.email };
+}
+
+/**
  * Check if a token is valid (verify authentication)
  */
 export async function checkTokenValidity(authHeader) {
