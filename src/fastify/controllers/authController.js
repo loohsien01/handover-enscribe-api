@@ -1,7 +1,11 @@
 import { getSupabaseClient } from '../../utils/supabase.js';
 import crypto from 'crypto';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
-import { upsertUserProfileForUser } from './userProfileController.js';
+import {
+  isUsernameTaken,
+  upsertUserProfileForUser,
+  USERNAME_TAKEN_PAYLOAD,
+} from './userProfileController.js';
 import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
 import { ensureAuthUsersStubAfterSignup } from '../../utils/authUsersStub.js';
 import { isCognitoAuth } from '../../utils/authProvider.js';
@@ -95,6 +99,18 @@ export function createRefreshWrapper(userId, tid) {
  */
 export async function signUp(email, password, opts = {}) {
   try {
+    if (opts.userProfile?.username) {
+      const taken = await isUsernameTaken(opts.userProfile.username);
+      if (taken) {
+        return {
+          success: false,
+          status: 409,
+          error: USERNAME_TAKEN_PAYLOAD.error,
+          code: USERNAME_TAKEN_PAYLOAD.code,
+        };
+      }
+    }
+
     if (isCognitoAuth()) {
       const appUserId = crypto.randomUUID();
       const result = await cognitoSignUp(email, password, appUserId);

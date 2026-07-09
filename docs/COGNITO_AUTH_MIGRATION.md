@@ -573,6 +573,8 @@ await client.send(new InitiateAuthCommand({
 
 **Preserve unchanged:** refresh vault TTLs, wrapper cookie (`tid` + `sub` = **app user id**), anti-enumeration ([AUTH_SIGN_UP_API.md](./AUTH_SIGN_UP_API.md)), optional `userProfile` on sign-up.
 
+**Sign-up + `userProfile`:** Username uniqueness is checked against **`userProfiles`** **before** `SignUp` / `auth.signUp`. A taken username returns **`409`** with **`code: "USERNAME_TAKEN"`** and does **not** create a Cognito user (avoids orphan accounts and stray confirmation emails). See [AUTH_SIGN_UP_API.md](./AUTH_SIGN_UP_API.md) §2.
+
 ---
 
 ## Part 7 — Admin helpers

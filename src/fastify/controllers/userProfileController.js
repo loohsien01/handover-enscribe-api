@@ -8,6 +8,23 @@ import { isCognitoAuth } from '../../utils/authProvider.js';
 
 const userProfileTable = '"userProfiles"';
 
+export const USERNAME_TAKEN_PAYLOAD = {
+  error: 'This username is already taken',
+  code: 'USERNAME_TAKEN',
+};
+
+/**
+ * @param {string} username
+ * @returns {Promise<boolean>}
+ */
+export async function isUsernameTaken(username) {
+  const row = await pgQueryOne(
+    `SELECT 1 AS taken FROM public.${userProfileTable} WHERE username = $1 LIMIT 1`,
+    [username]
+  );
+  return Boolean(row);
+}
+
 /**
  * Verify auth.users row exists (handles rare races after JWT issue).
  * @param {string} userId
@@ -67,10 +84,7 @@ function profileDbErrorToHttp(error) {
   if (error.code === '23505') {
     return {
       status: 409,
-      payload: {
-        error: 'This username is already taken',
-        code: 'USERNAME_TAKEN',
-      },
+      payload: { ...USERNAME_TAKEN_PAYLOAD },
     };
   }
   if (error.code === '23503') {

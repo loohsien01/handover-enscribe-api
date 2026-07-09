@@ -99,7 +99,7 @@ Optional fields when **`userProfile`** was sent:
 
 ## Errors and partial success
 
-Because two operations run in sequence, failures split into **validation**, **auth failure**, and **profile failure after auth succeeded**.
+Sign-up checks run in order: **validation** → **username availability** (when **`userProfile`** is sent) → **auth user creation** → **profile upsert**.
 
 ### 1) Request validation (`400`)
 
@@ -116,9 +116,22 @@ Response shape:
 }
 ```
 
-### 2) Auth provider rejects sign-up (`400`)
+### 2) Username already taken (`409`)
 
-Supabase (or upstream policy) can still return **`400`** for some failures, for example weak password, disallowed email domain, or a provider-specific “user already exists” rule **if** that rule is enabled in your project. Body:
+When **`userProfile`** is sent, the API checks **`userProfiles.username`** **before** creating an auth user (Cognito or Supabase). If another profile already uses that username, sign-up fails immediately — **no auth user is created** and no confirmation email is sent.
+
+```json
+{
+  "error": "This username is already taken",
+  "code": "USERNAME_TAKEN"
+}
+```
+
+**Client guidance:** Show the error on the sign-up form and let the user pick a different username. Same shape as **`409`** on **`POST /api/user-profile`**.
+
+### 3) Auth provider rejects sign-up (`400`)
+
+Supabase or Cognito can still return **`400`** for some failures, for example weak password, disallowed email domain, or a provider-specific “user already exists” rule **if** that rule is enabled in your project. Body:
 
 ```json
 { "error": "<string message from provider>" }
@@ -128,14 +141,14 @@ No **`userProfile`** / **`profileError`** in this case when no usable auth user 
 
 **Note:** With **email confirmation** required, many deployments **do not** return **`400`** for “duplicate email” on sign-up; see **Uniform 201 when confirmation is required (anti-enumeration)** above—the same **`201`** + **`session`: `null`** pattern may apply instead.
 
-### 3) Profile write failed after user was created (`201` + `profileError`)
+### 4) Profile write failed after user was created (`201` + `profileError`)
 
-If **`userProfile`** was sent and the auth user was created, but the profile upsert fails, the API still returns **`201`** with **`user`** (and **`token` / `session`** as in A or B above), and adds:
+Rare: auth user was created, but the profile upsert still failed (e.g. race between two sign-ups claiming the same username, FK violation, or generic DB error). The API returns **`201`** with **`user`** (and **`token` / `session`** as in A or B above), and adds:
 
 ```json
 "profileError": {
   "error": "<human-readable message>",
-  "code": "USERNAME_TAKEN"
+  "code": "<optional code>"
 }
 ```
 
@@ -143,45 +156,22 @@ Possible **`code`** values (aligned with **`POST /api/user-profile`** semantics)
 
 | `code` | Typical cause |
 |--------|----------------|
-| `USERNAME_TAKEN` | Unique constraint on `username` (another user already uses it). |
+| `USERNAME_TAKEN` | Rare race: another request claimed the username after the pre-check. |
 | `FOREIGN_KEY_VIOLATION` | Rare; `user_id` could not be linked (e.g. user missing in auth). |
 | *(omitted)* | Generic DB failure; **`error`** string still set. |
 
 **Client guidance:** Treat **`201`** as “account exists.” If **`profileError`** is present, prompt the user to fix username (or retry profile later via **`POST /api/user-profile`** after sign-in).
-
-### Example: `201` + email confirmation + `profileError` (captured shape)
-
-When Supabase returns **no session** (confirm email) but the auth user was created, and the profile upsert fails (e.g. **`USERNAME_TAKEN`**), a typical JSON body looks like:
-
-```json
-{
-  "message": "Email confirmation required",
-  "user": {
-    "id": "<uuid>",
-    "email": "<new-user-email>",
-    "aud": "authenticated",
-    "role": "authenticated"
-  },
-  "session": null,
-  "profileError": {
-    "error": "This username is already taken",
-    "code": "USERNAME_TAKEN"
-  }
-}
-```
-
-There is **no** top-level **`userProfile`** in this outcome. Field names and extra keys on **`user`** may vary by Supabase version; see a full run in **`test-results/auth-tests.json`** after **`npm run test:auth`**.
 
 ---
 
 ## Idempotency and duplicates
 
 - **Same **`email`** again:** Behavior depends on Supabase and project settings. With **confirm email** enabled, repeated sign-up attempts often still return **`201`** with **`session`: `null`** and the same generic **`message`** as a first-time sign-up (see **Uniform `201`** above)—the API does not expose whether the row was newly created or already existed. That is intentional for privacy and abuse resistance, not a client bug.
-- **`username`** is unique **globally** across profiles. Two different new emails cannot claim the same **`username`** on sign-up; the second gets **`201`** with **`profileError.code === "USERNAME_TAKEN"`** (when **`userProfile`** was sent and auth succeeded).
+- **`username`** is unique **globally** across profiles. When **`userProfile`** is sent, a taken username returns **`409`** with **`code === "USERNAME_TAKEN"`** before any auth user is created (see **§2** above).
 
 ---
 
 ## Related documentation
 
 - **[USER_PROFILE_API.md](./USER_PROFILE_API.md)** — authenticated **`GET` / `POST` / `PATCH`** for `/api/user-profile`.
-- Tests: **`tests/auth.test.js`** (`npm run test:auth`). Sign-up Zod cases are tests **1–6** (`testNumber`). **Test 7** (reserved username **`info`** → **`201`** + **`profileError`**) is **off by default** via **`skipTest9 === true`** because it still **creates a new Supabase auth user** each run. **Test 8** is the sign-in smoke test and requires **`TEST_ACCOUNT_EMAIL`** / **`TEST_ACCOUNT_PASSWORD`** in **`.env.local`** (otherwise recorded as skipped). Full responses are written to **`test-results/auth-tests.json`**.
+- Tests: **`tests/auth.test.js`** (`npm run test:auth`). Sign-up Zod cases are tests **1–6** (`testNumber`). **Test 7** (reserved username **`info`** → **`409 USERNAME_TAKEN`**, no auth user) requires a DB seed and is skippable via **`skipTest7`**. **Test 8** is the sign-in smoke test and requires **`TEST_ACCOUNT_EMAIL`** / **`TEST_ACCOUNT_PASSWORD`** in **`.env.local`** (otherwise recorded as skipped). Full responses are written to **`test-results/auth-tests.json`**.

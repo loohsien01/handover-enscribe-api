@@ -93,9 +93,13 @@ async function authRoutes(fastify, opts) {
           });
           
           if (!result.success) {
-            const errBody = { error: result.error };
-            console.log('[sign-up] Response to FE', { status: 400, body: errBody });
-            return reply.status(400).send(errBody);
+            const status = result.status || 400;
+            const errBody = {
+              error: result.error,
+              ...(result.code ? { code: result.code } : {}),
+            };
+            console.log('[sign-up] Response to FE', { status, body: errBody });
+            return reply.status(status).send(errBody);
           }
 
           const signupProfileFields = {

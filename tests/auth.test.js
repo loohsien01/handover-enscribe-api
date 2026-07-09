@@ -5,7 +5,7 @@
  * `testNumber`: integers 1, 2, 3, … in file order (echoed in results JSON).
  *
  * `skipTest7`: when true, skips test 7 — sign-up with `userProfile.username` `"info"`
- * (still creates a new Supabase auth user each run even when profile returns USERNAME_TAKEN).
+ * (requires DB seed `userProfiles.username === "info"`).
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -21,7 +21,7 @@ import { getTestAccount, hasTestAccounts } from './testConfig.js';
 
 const runner = new TestRunner('Authentication API Tests');
 
-/** Skips test 7 by default (creates auth user + profileError path). Set `false` to enable. */
+/** Skips test 7 by default. Set `false` to enable. */
 const skipTest7 = false;
 
 /**
@@ -232,10 +232,10 @@ async function runAuthTests() {
     },
   });
 
-  // 7: requires DB seed `userProfiles.username === "info"`; still creates a new auth user each run
+  // 7: requires DB seed `userProfiles.username === "info"`
   if (!skipTest7) {
     await runner.test(
-      'Sign-up with userProfile username "info" (201 + profileError USERNAME_TAKEN)',
+      'Sign-up with userProfile username "info" (409 USERNAME_TAKEN, no auth user)',
       {
         testNumber: 7,
         method: 'POST',
@@ -247,33 +247,34 @@ async function runAuthTests() {
           password: '@2Sengaring',
           userProfile: { username: 'info', specialty: 'Internal Medicine' },
         },
-        expectedStatus: 201,
+        expectedStatus: 409,
         customValidator: (body) => {
           const passed =
-            body?.profileError?.code === 'USERNAME_TAKEN' &&
-            Boolean(body?.user?.id) &&
-            body?.userProfile == null;
+            body?.code === 'USERNAME_TAKEN' &&
+            body?.error === 'This username is already taken' &&
+            body?.user == null &&
+            body?.profileError == null;
           return {
             passed,
             message: passed
-              ? 'Auth user created; profileError USERNAME_TAKEN for reserved username "info"'
-              : `Expected 201, user.id, profileError USERNAME_TAKEN, no userProfile; got ${JSON.stringify(body)}`,
+              ? 'Username taken rejected before auth user creation'
+              : `Expected 409 USERNAME_TAKEN, no user/profileError; got ${JSON.stringify(body)}`,
           };
         },
       }
     );
   } else {
     console.log(
-      '\n⏭️  Test 7: SKIPPED BY DEFAULT (set skipTest7 = false to enable) — creates a Supabase auth user each run.\n'
+      '\n⏭️  Test 7: SKIPPED BY DEFAULT (set skipTest7 = false to enable).\n'
     );
     runner.results.push({
-      name: 'Sign-up with userProfile username "info" (201 + profileError USERNAME_TAKEN)',
+      name: 'Sign-up with userProfile username "info" (409 USERNAME_TAKEN, no auth user)',
       passed: true,
       skipped: true,
       endpoint: '/api/auth',
       method: 'POST',
       status: null,
-      expectedStatus: 201,
+      expectedStatus: 409,
       body: {},
       customMessage: 'SKIPPED (skipTest7)',
       testNumber: 7,
