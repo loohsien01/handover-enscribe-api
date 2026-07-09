@@ -3,16 +3,15 @@ import crypto from 'crypto';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
 import {
   isUsernameTaken,
-  upsertUserProfileForUser,
   USERNAME_TAKEN_PAYLOAD,
 } from './userProfileController.js';
 import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
-import { ensureAuthUsersStubAfterSignup } from '../../utils/authUsersStub.js';
 import { isCognitoAuth } from '../../utils/authProvider.js';
 import { authenticateAccessToken } from '../../utils/authenticateAccessToken.js';
 import {
   cognitoConfirmForgotPassword,
   cognitoForgotPassword,
+  cognitoAdminDeleteUser,
   cognitoRefreshTokens,
   cognitoResendConfirmationCode,
   cognitoSignIn,
@@ -25,6 +24,16 @@ import {
   revokeRefreshTokenById,
   updateRefreshTokenById,
 } from '../../utils/refreshTokenPersistence.js';
+import {
+  EMAIL_ALREADY_REGISTERED_PAYLOAD,
+  isEmailAlreadyRegistered,
+} from '../../utils/authEmailCheck.js';
+import {
+  deleteSupabaseAuthUser,
+  rollbackSignupPostgresBundle,
+  updateAuthUsersCognitoSub,
+  writeSignupPostgresBundle,
+} from '../../utils/signupPersistence.js';
 
 // Refresh token storage settings
 const REFRESH_MAX_AGE_SECONDS = Number(process.env.REFRESH_MAX_AGE_SECONDS || 3 * 24 * 3600);
@@ -94,45 +103,103 @@ export function createRefreshWrapper(userId, tid) {
 }
 
 /**
- * Sign up a new user
- * @param {{ userProfile?: { username: string, specialty: string } }} [opts]
+ * @param {{ ok: false, status: number, payload: object }} dbResult
+ */
+function signupBundleFailure(dbResult) {
+  return {
+    success: false,
+    status: dbResult.status,
+    error: dbResult.payload.error,
+    ...(dbResult.payload.code ? { code: dbResult.payload.code } : {}),
+  };
+}
+
+/**
+ * @param {string} userId
+ * @param {string} username
+ */
+async function tryEnsurePersonalOrg(userId, username) {
+  try {
+    await ensurePersonalOrganization(userId, { name: username });
+  } catch (orgErr) {
+    console.error('[signUp] ensurePersonalOrganization:', orgErr);
+  }
+}
+
+/**
+ * Sign up a new user (auth identity + auth.users stub + userProfiles required).
+ * @param {{ userProfile: { username: string, specialty: string } }} opts
  */
 export async function signUp(email, password, opts = {}) {
+  const userProfile = opts.userProfile;
+  if (!userProfile?.username || !userProfile?.specialty) {
+    return { success: false, status: 400, error: 'userProfile with username and specialty is required' };
+  }
+
   try {
-    if (opts.userProfile?.username) {
-      const taken = await isUsernameTaken(opts.userProfile.username);
-      if (taken) {
-        return {
-          success: false,
-          status: 409,
-          error: USERNAME_TAKEN_PAYLOAD.error,
-          code: USERNAME_TAKEN_PAYLOAD.code,
-        };
-      }
+    const taken = await isUsernameTaken(userProfile.username);
+    if (taken) {
+      return {
+        success: false,
+        status: 409,
+        error: USERNAME_TAKEN_PAYLOAD.error,
+        code: USERNAME_TAKEN_PAYLOAD.code,
+      };
+    }
+
+    if (await isEmailAlreadyRegistered(email)) {
+      return {
+        success: false,
+        status: 409,
+        error: EMAIL_ALREADY_REGISTERED_PAYLOAD.error,
+        code: EMAIL_ALREADY_REGISTERED_PAYLOAD.code,
+      };
     }
 
     if (isCognitoAuth()) {
       const appUserId = crypto.randomUUID();
-      const result = await cognitoSignUp(email, password, appUserId);
 
-      if (!result.success) {
-        return { success: false, error: result.error };
+      const dbResult = await writeSignupPostgresBundle({
+        userId: appUserId,
+        email,
+        userProfile,
+      });
+      if (!dbResult.ok) {
+        return signupBundleFailure(dbResult);
       }
 
-      const user = result.user;
-      const cognitoSub = result.cognitoSub;
+      const result = await cognitoSignUp(email, password, appUserId);
+      if (!result.success) {
+        await rollbackSignupPostgresBundle(appUserId);
+        return {
+          success: false,
+          status: result.status || 400,
+          error: result.error,
+          ...(result.code ? { code: result.code } : {}),
+        };
+      }
 
-      if (user?.id && user?.email && cognitoSub && !result.alreadyExists) {
-        const stubResult = await ensureAuthUsersStubAfterSignup(user.id, user.email, cognitoSub);
-        if (!stubResult.ok) {
-          console.error('[signUp] auth.users stub insert failed (signup continues):', stubResult.error);
+      if (result.cognitoSub) {
+        const subResult = await updateAuthUsersCognitoSub(appUserId, email, result.cognitoSub);
+        if (!subResult.ok) {
+          await cognitoAdminDeleteUser(email);
+          await rollbackSignupPostgresBundle(appUserId);
+          return {
+            success: false,
+            status: 500,
+            error: 'Account setup failed',
+            code: 'AUTH_USER_SETUP_FAILED',
+          };
         }
       }
 
+      await tryEnsurePersonalOrg(appUserId, userProfile.username);
+
+      const user = result.user;
       let session = result.session;
       let resolvedUser = user;
 
-      if (!session && result.userConfirmed && !result.alreadyExists) {
+      if (!session && result.userConfirmed) {
         const signInResult = await cognitoSignIn(email, password);
         if (signInResult.success) {
           session = signInResult.session;
@@ -142,25 +209,7 @@ export async function signUp(email, password, opts = {}) {
         }
       }
 
-      const signupProfileExtras = {};
-      if (opts.userProfile && resolvedUser?.id) {
-        const prof = await upsertUserProfileForUser(resolvedUser.id, opts.userProfile);
-        if (prof.ok) {
-          signupProfileExtras.userProfile = prof.data;
-          if (prof.created) {
-            try {
-              await ensurePersonalOrganization(resolvedUser.id, {
-                name: opts.userProfile.username,
-              });
-            } catch (orgErr) {
-              console.error('[signUp] ensurePersonalOrganization:', orgErr);
-            }
-          }
-        } else {
-          console.error('[signUp] Optional profile save failed:', prof.payload);
-          signupProfileExtras.profileError = prof.payload;
-        }
-      }
+      const signupProfileFields = { userProfile: dbResult.data };
 
       if (session) {
         let tid = null;
@@ -198,7 +247,7 @@ export async function signUp(email, password, opts = {}) {
           user: resolvedUser,
           message: 'signed up and logged in',
           tid,
-          ...signupProfileExtras,
+          ...signupProfileFields,
         };
       }
 
@@ -208,11 +257,10 @@ export async function signUp(email, password, opts = {}) {
         session: null,
         user: resolvedUser,
         message: 'Email confirmation required',
-        ...signupProfileExtras,
+        ...signupProfileFields,
       };
     }
 
-    // Route validates email format and password requirements - trust the data
     const supabase = getSupabaseClient();
     const { data, error } = await supabase.auth.signUp({ email, password });
 
@@ -222,37 +270,25 @@ export async function signUp(email, password, opts = {}) {
 
     console.log('[signUp] sign-up result', { hasSession: !!data?.session, hasUser: !!data?.user });
 
-    if (data?.user?.id && data?.user?.email) {
-      const stubResult = await ensureAuthUsersStubAfterSignup(data.user.id, data.user.email);
-      if (!stubResult.ok) {
-        console.error('[signUp] auth.users stub insert failed (signup continues):', stubResult.error);
-      }
+    if (!data?.user?.id || !data?.user?.email) {
+      return { success: false, error: 'Unknown sign-up result' };
     }
 
-    /** Optional profile row (service role); only set when client sent `userProfile`. */
-    const signupProfileExtras = {};
-    if (opts.userProfile && data?.user?.id) {
-      const prof = await upsertUserProfileForUser(data.user.id, opts.userProfile);
-      if (prof.ok) {
-        signupProfileExtras.userProfile = prof.data;
-        if (prof.created) {
-          try {
-            await ensurePersonalOrganization(data.user.id, {
-              name: opts.userProfile.username,
-            });
-          } catch (orgErr) {
-            console.error('[signUp] ensurePersonalOrganization:', orgErr);
-          }
-        }
-      } else {
-        console.error('[signUp] Optional profile save failed:', prof.payload);
-        signupProfileExtras.profileError = prof.payload;
-      }
+    const dbResult = await writeSignupPostgresBundle({
+      userId: data.user.id,
+      email: data.user.email,
+      userProfile,
+    });
+    if (!dbResult.ok) {
+      await deleteSupabaseAuthUser(data.user.id);
+      return signupBundleFailure(dbResult);
     }
+
+    await tryEnsurePersonalOrg(data.user.id, userProfile.username);
+
+    const signupProfileFields = { userProfile: dbResult.data };
 
     if (data?.session) {
-      // Email confirmation disabled - user is immediately signed in
-      // Persist refresh token server-side (same as sign-in)
       let tid = null;
       try {
         const refreshToken = data?.session?.refresh_token;
@@ -290,21 +326,18 @@ export async function signUp(email, password, opts = {}) {
         user: data.user,
         message: 'signed up and logged in',
         tid: tid,
-        ...signupProfileExtras,
-      };
-    } else if (data?.user) {
-      // Email confirmation enabled
-      return {
-        success: true,
-        error: null,
-        session: null,
-        user: data.user,
-        message: 'Email confirmation required',
-        ...signupProfileExtras,
+        ...signupProfileFields,
       };
     }
 
-    return { success: false, error: 'Unknown sign-up result' };
+    return {
+      success: true,
+      error: null,
+      session: null,
+      user: data.user,
+      message: 'Email confirmation required',
+      ...signupProfileFields,
+    };
   } catch (err) {
     console.error('[signUp] Error:', err);
     return { success: false, error: err.message };

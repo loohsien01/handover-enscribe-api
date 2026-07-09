@@ -55,7 +55,7 @@ async function authRoutes(fastify, opts) {
    *   password?: string,
    *   emailRedirectTo?: string,
    *   redirectTo?: string, // optional for 'forgot-password'; default is FRONTEND_URL + /reset-password
-   *   userProfile?: { username: string, specialty: string }  // optional; same shape as POST /user-profile body
+   *   userProfile: { username: string, specialty: string }  // required; same shape as POST /user-profile body
    * }
    */
   fastify.post('/auth', async (request, reply) => {
@@ -103,8 +103,7 @@ async function authRoutes(fastify, opts) {
           }
 
           const signupProfileFields = {
-            ...(result.userProfile !== undefined ? { userProfile: result.userProfile } : {}),
-            ...(result.profileError !== undefined ? { profileError: result.profileError } : {}),
+            userProfile: result.userProfile,
           };
 
           if (result.session) {

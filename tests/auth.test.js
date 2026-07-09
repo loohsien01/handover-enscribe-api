@@ -4,8 +4,10 @@
  *
  * `testNumber`: integers 1, 2, 3, … in file order (echoed in results JSON).
  *
- * `skipTest7`: when true, skips test 7 — sign-up with `userProfile.username` `"info"`
+ * `skipTest8`: when true, skips test 8 — sign-up with `userProfile.username` `"info"`
  * (requires DB seed `userProfiles.username === "info"`).
+ * Test 9 requires `TEST_ACCOUNT_EMAIL` (duplicate email → 409).
+ * Test 10 requires `TEST_ACCOUNT_EMAIL` and `TEST_ACCOUNT_PASSWORD` (sign-in smoke).
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -21,8 +23,8 @@ import { getTestAccount, hasTestAccounts } from './testConfig.js';
 
 const runner = new TestRunner('Authentication API Tests');
 
-/** Skips test 7 by default. Set `false` to enable. */
-const skipTest7 = false;
+/** Skips test 8 by default. Set `false` to enable. */
+const skipTest8 = false;
 
 /**
  * Extract tid from wrapper JWT token (for token rotation validation)
@@ -84,6 +86,7 @@ async function runAuthTests() {
     body: {
       action: 'sign-up',
       email: 'test@example.com',
+      userProfile: { username: 'test_user_zod', specialty: 'Cardiology' },
     },
     expectedStatus: 400,
     customValidator: (body) => {
@@ -109,6 +112,7 @@ async function runAuthTests() {
       action: 'sign-up',
       email: 'notanemail',
       password: 'Password123!',
+      userProfile: { username: 'test_user_zod2', specialty: 'Cardiology' },
     },
     expectedStatus: 400,
     customValidator: (body) => {
@@ -134,6 +138,7 @@ async function runAuthTests() {
       action: 'sign-up',
       email: 'valid@example.com',
       password: 'Short1!',
+      userProfile: { username: 'test_user_zod3', specialty: 'Cardiology' },
     },
     expectedStatus: 400,
     customValidator: (body) => {
@@ -151,8 +156,33 @@ async function runAuthTests() {
   });
 
   // 4
-  await runner.test('Sign-up with userProfile missing specialty (Zod)', {
+  await runner.test('Sign-up without userProfile (Zod)', {
     testNumber: 4,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'sign-up',
+      email: 'zod_pf_0@example.com',
+      password: 'TestPassword123!',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const issues = parseZodIssues(body);
+      const hit = issues.some(
+        (i) => Array.isArray(i.path) && i.path.length === 1 && i.path[0] === 'userProfile'
+      );
+      return {
+        passed: hit,
+        message: hit
+          ? 'Zod flags missing userProfile'
+          : `Expected issue path userProfile; issues=${JSON.stringify(issues)}`,
+      };
+    },
+  });
+
+  // 5
+  await runner.test('Sign-up with userProfile missing specialty (Zod)', {
+    testNumber: 5,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -176,9 +206,9 @@ async function runAuthTests() {
     },
   });
 
-  // 5
+  // 6
   await runner.test('Sign-up with userProfile empty username (Zod)', {
-    testNumber: 5,
+    testNumber: 6,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -202,9 +232,9 @@ async function runAuthTests() {
     },
   });
 
-  // 6
+  // 7
   await runner.test('Sign-up with userProfile wrong type (Zod)', {
-    testNumber: 6,
+    testNumber: 7,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -232,12 +262,12 @@ async function runAuthTests() {
     },
   });
 
-  // 7: requires DB seed `userProfiles.username === "info"`
-  if (!skipTest7) {
+  // 8: requires DB seed `userProfiles.username === "info"`
+  if (!skipTest8) {
     await runner.test(
       'Sign-up with userProfile username "info" (409 USERNAME_TAKEN, no auth user)',
       {
-        testNumber: 7,
+        testNumber: 8,
         method: 'POST',
         endpoint: '/api/auth',
         headers: JSON_ACCEPT_HEADERS,
@@ -253,19 +283,19 @@ async function runAuthTests() {
             body?.code === 'USERNAME_TAKEN' &&
             body?.error === 'This username is already taken' &&
             body?.user == null &&
-            body?.profileError == null;
+            body?.userProfile == null;
           return {
             passed,
             message: passed
               ? 'Username taken rejected before auth user creation'
-              : `Expected 409 USERNAME_TAKEN, no user/profileError; got ${JSON.stringify(body)}`,
+              : `Expected 409 USERNAME_TAKEN, no user/userProfile; got ${JSON.stringify(body)}`,
           };
         },
       }
     );
   } else {
     console.log(
-      '\n⏭️  Test 7: SKIPPED BY DEFAULT (set skipTest7 = false to enable).\n'
+      '\n⏭️  Test 8: SKIPPED BY DEFAULT (set skipTest8 = false to enable).\n'
     );
     runner.results.push({
       name: 'Sign-up with userProfile username "info" (409 USERNAME_TAKEN, no auth user)',
@@ -276,17 +306,65 @@ async function runAuthTests() {
       status: null,
       expectedStatus: 409,
       body: {},
-      customMessage: 'SKIPPED (skipTest7)',
-      testNumber: 7,
+      customMessage: 'SKIPPED (skipTest8)',
+      testNumber: 8,
       timestamp: new Date().toISOString(),
     });
   }
 
-  // 8 — requires TEST_ACCOUNT_* in .env.local (no dummy sign-in fallback)
+  // 9 — duplicate email (requires TEST_ACCOUNT_EMAIL in .env.local)
+  const dupEmailAccount = getTestAccount('primary');
+  if (dupEmailAccount?.email) {
+    await runner.test('Sign-up with existing email (409 EMAIL_ALREADY_REGISTERED)', {
+      testNumber: 9,
+      method: 'POST',
+      endpoint: '/api/auth',
+      headers: JSON_ACCEPT_HEADERS,
+      body: {
+        action: 'sign-up',
+        email: dupEmailAccount.email,
+        password: 'AnotherPassword123!',
+        userProfile: { username: 'dup_email_probe_user', specialty: 'Cardiology' },
+      },
+      expectedStatus: 409,
+      customValidator: (body) => {
+        const passed =
+          body?.code === 'EMAIL_ALREADY_REGISTERED' &&
+          body?.error === 'An account with this email already exists' &&
+          body?.user == null &&
+          body?.userProfile == null;
+        return {
+          passed,
+          message: passed
+            ? 'Duplicate email rejected before auth/profile writes'
+            : `Expected 409 EMAIL_ALREADY_REGISTERED, no user/userProfile; got ${JSON.stringify(body)}`,
+        };
+      },
+    });
+  } else {
+    console.warn(
+      '⚠️  Skipping test 9: set TEST_ACCOUNT_EMAIL in .env.local for duplicate-email sign-up test.'
+    );
+    runner.results.push({
+      name: 'Sign-up with existing email (409 EMAIL_ALREADY_REGISTERED)',
+      passed: true,
+      skipped: true,
+      endpoint: '/api/auth',
+      method: 'POST',
+      status: null,
+      expectedStatus: 409,
+      body: {},
+      customMessage: 'SKIPPED: no primary test email',
+      testNumber: 9,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // 10 — requires TEST_ACCOUNT_* in .env.local (no dummy sign-in fallback)
   const testAccount = getTestAccount('primary');
   if (testAccount?.email && testAccount?.password) {
     await runner.test('Sign-in with email and password (real credentials)', {
-      testNumber: 8,
+      testNumber: 10,
       method: 'POST',
       endpoint: '/api/auth',
       body: {
@@ -307,7 +385,7 @@ async function runAuthTests() {
     });
   } else {
     console.warn(
-      '⚠️  Skipping test 8: set TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local for sign-in smoke test.'
+      '⚠️  Skipping test 10: set TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local for sign-in smoke test.'
     );
     runner.results.push({
       name: 'Sign-in with email and password (real credentials)',
@@ -319,14 +397,14 @@ async function runAuthTests() {
       expectedStatus: 200,
       body: {},
       customMessage: 'SKIPPED: no primary test credentials',
-      testNumber: 8,
+      testNumber: 10,
       timestamp: new Date().toISOString(),
     });
   }
 
-  // 9
+  // 11
   await runner.test('Sign-in with wrong password', {
-    testNumber: 9,
+    testNumber: 11,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -344,9 +422,9 @@ async function runAuthTests() {
     },
   });
 
-  // 10
+  // 11
   await runner.test('Sign-in with empty password', {
-    testNumber: 10,
+    testNumber: 12,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -369,9 +447,9 @@ async function runAuthTests() {
     },
   });
 
-  // 11
+  // 13
   await runner.test('Sign-in with non-existent user', {
-    testNumber: 11,
+    testNumber: 13,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -382,9 +460,9 @@ async function runAuthTests() {
     expectedStatus: 401,
   });
 
-  // 12
+  // 14
   await runner.test('Check validity without auth header', {
-    testNumber: 12,
+    testNumber: 14,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -393,9 +471,9 @@ async function runAuthTests() {
     expectedStatus: 401,
   });
 
-  // 13
+  // 15
   await runner.test('Check validity with invalid token', {
-    testNumber: 13,
+    testNumber: 15,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -407,9 +485,9 @@ async function runAuthTests() {
     expectedStatus: 401,
   });
 
-  // 14
+  // 16
   await runner.test('Sign-out without auth header', {
-    testNumber: 14,
+    testNumber: 16,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -418,9 +496,9 @@ async function runAuthTests() {
     expectedStatus: 401,
   });
 
-  // 15
+  // 17
   await runner.test('Resend confirmation email', {
-    testNumber: 15,
+    testNumber: 17,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -431,9 +509,9 @@ async function runAuthTests() {
     expectedFields: ['message'],
   });
 
-  // 16
+  // 18
   await runner.test('Resend without email', {
-    testNumber: 16,
+    testNumber: 18,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -454,9 +532,9 @@ async function runAuthTests() {
     },
   });
 
-  // 17
+  // 19
   await runner.test('Invalid action type', {
-    testNumber: 17,
+    testNumber: 19,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -472,9 +550,9 @@ async function runAuthTests() {
     },
   });
 
-  // 18
+  // 20
   await runner.test('Missing action field', {
-    testNumber: 18,
+    testNumber: 20,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -495,9 +573,9 @@ async function runAuthTests() {
     },
   });
 
-  // 19
+  // 21
   await runner.test('Resend with emailRedirectTo', {
-    testNumber: 19,
+    testNumber: 21,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -508,9 +586,9 @@ async function runAuthTests() {
     expectedStatus: 200,
   });
 
-  // 20
+  // 22
   await runner.test('Resend with invalid emailRedirectTo URL', {
-    testNumber: 20,
+    testNumber: 22,
     method: 'POST',
     endpoint: '/api/auth',
     body: {
@@ -543,9 +621,9 @@ async function runAuthTests() {
     if (testAccount && testAccount.email && testAccount.password) {
       console.log(`\n📝 Running real account tests with: ${testAccount.email.split('@')[0]}@****\n`);
       
-      // 21
+      // 23
       await runner.test('Sign-in with valid account (real credentials)', {
-        testNumber: 21,
+        testNumber: 23,
         method: 'POST',
         endpoint: '/api/auth',
         body: {
@@ -565,14 +643,14 @@ async function runAuthTests() {
         },
       });
 
-      // Extract token from test 21 for test 22
+      // Extract token from test 22 for test 23
       const signInResult = runner.results[runner.results.length - 1];
       const accessToken = signInResult.body?.token?.access_token;
 
-      // 22 (token from test 21)
+      // 24 
       if (accessToken) {
         await runner.test('Check validity endpoint (with real token)', {
-          testNumber: 22,
+          testNumber: 24,
           method: 'POST',
           endpoint: '/api/auth',
           body: {
@@ -640,9 +718,9 @@ async function runAuthTests() {
         }
         console.log();
 
-        // 23
+        // 25
         await runner.test('POST /api/auth/refresh without token', {
-          testNumber: 23,
+          testNumber: 25,
           method: 'POST',
           endpoint: '/api/auth/refresh',
           expectedStatus: 401,
@@ -656,9 +734,9 @@ async function runAuthTests() {
           },
         });
 
-        // 24
+        // 26
         await runner.test('POST /api/auth/refresh with invalid token', {
-          testNumber: 24,
+          testNumber: 26,
           method: 'POST',
           endpoint: '/api/auth/refresh',
           headers: {
@@ -675,10 +753,10 @@ async function runAuthTests() {
           },
         });
 
-        // 25 (before refresh — avoids cookie rotation)
+        // 27 
         if (refreshTokenCookie) {
           await runner.test('GET /api/auth/cookie-status with valid cookie', {
-            testNumber: 25,
+            testNumber: 27,
             method: 'GET',
             endpoint: '/api/auth/cookie-status',
             headers: {
@@ -695,9 +773,9 @@ async function runAuthTests() {
           });
         }
 
-        // 26
+        // 28
         await runner.test('GET /api/auth/cookie-status without cookie', {
-          testNumber: 26,
+          testNumber: 28,
           method: 'GET',
           endpoint: '/api/auth/cookie-status',
           expectedStatus: 200,
@@ -710,9 +788,9 @@ async function runAuthTests() {
           },
         });
 
-        // 27
+        // 29
         await runner.test('GET /api/auth/cookie-status with invalid cookie', {
-          testNumber: 27,
+          testNumber: 29,
           method: 'GET',
           endpoint: '/api/auth/cookie-status',
           headers: {
@@ -729,7 +807,7 @@ async function runAuthTests() {
         });
 
         // ===== REFRESH TESTS RUN LAST (after cookie-status tests) =====
-        // 28 (after cookie-status; may wait for access-token expiry)
+        // 30 
         if (refreshTokenCookie) {
           const oldTid = extractTidFromWrapperJwt(refreshTokenCookie);
           let newTid = null;
@@ -741,7 +819,7 @@ async function runAuthTests() {
           console.log(`  ✅ Wait complete, proceeding with refresh test\n`);
 
           await runner.test('POST /api/auth/refresh with valid token', {
-            testNumber: 28,
+            testNumber: 30,
             method: 'POST',
             endpoint: '/api/auth/refresh',
             headers: {

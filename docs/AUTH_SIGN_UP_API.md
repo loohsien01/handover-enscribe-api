@@ -1,8 +1,14 @@
 # Auth API: `action: sign-up`
 
-This document describes **`POST /api/auth`** when the body includes **`"action": "sign-up"`**. One request performs **two logical steps**: (1) create the Supabase auth user, and (2) optionally create or update the row in **`public."userProfiles"`** using the service role.
+This document describes **`POST /api/auth`** when the body includes **`"action": "sign-up"`**. One request atomically creates:
 
-General auth behaviors (cookies, refresh, other actions) are not fully covered here; this file focuses on sign-up and the extra outcomes when **`userProfile`** is present.
+1. The auth user (Supabase or Cognito)
+2. The **`auth.users`** registry row on RDS (when applicable)
+3. The **`public."userProfiles"`** row
+
+If any required step fails, the API returns an error and **compensates** (rolls back Postgres rows and deletes the IdP user when one was created). There is **no** partial success (`201` with a profile error).
+
+General auth behaviors (cookies, refresh, other actions) are not fully covered here; this file focuses on sign-up.
 
 All paths are under your API base (for example **`/api`** in development).
 
@@ -26,9 +32,9 @@ All paths are under your API base (for example **`/api`** in development).
 | `action` | string | Yes | Must be `"sign-up"`. |
 | `email` | string | Yes | Valid email format. |
 | `password` | string | Yes | Minimum 8 characters. |
-| `userProfile` | object | No | If present, same shape as **`POST /api/user-profile`**: `username` and `specialty`, both non-empty strings. Creates or updates the profile for the new user **server-side** (no JWT required). |
+| `userProfile` | object | Yes | Same shape as **`POST /api/user-profile`**: `username` and `specialty`, both non-empty strings. |
 
-Example with optional profile:
+Example:
 
 ```json
 {
@@ -46,64 +52,43 @@ Example with optional profile:
 
 ## Success responses (`201 Created`)
 
-Auth user creation is considered successful if the handler returns **`201`**. The body always includes **`user`** (at least `id`, `email`).
+Sign-up succeeds only when auth identity, `auth.users` (RDS), and `userProfiles` are all written. The body always includes **`user`** (at least `id`, `email`) and **`userProfile`** (the saved profile row).
 
 ### A) Email confirmation required (no session)
 
-Typical when Supabase has “confirm email” enabled. There is **no** access token yet.
+Typical when Supabase has “confirm email” enabled or Cognito requires verification. There is **no** access token yet.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `message` | string | e.g. `"Email confirmation required"`. |
 | `user` | object | New auth user. |
 | `session` | `null` | No session until the user confirms and signs in. |
-| `userProfile` | object | Present only if the client sent **`userProfile`** and the **database write succeeded**. Same shape as a `userProfiles` row. |
-| `profileError` | object | Present only if the client sent **`userProfile`** and the **profile write failed** (see below). Mutually exclusive with **`userProfile`** on success. |
+| `userProfile` | object | Saved `userProfiles` row. |
 
-#### Uniform 201 when confirmation is required (anti-enumeration)
-
-With **“confirm email”** enabled, manual tests show the same high-level outcome for several different situations:
-
-- **New address** — first sign-up; confirmation mail is sent.
-- **Existing address, not yet verified** — another sign-up attempt for the same email.
-- **Existing address, already verified** — another sign-up attempt (password is not applied to the existing account via this flow).
-
-In these cases the API still returns **`201`**, **`session`: `null`**, and a generic message such as **`"Email confirmation required"`**. The response **does not** state which of the three cases occurred. That avoids leaking whether an email is registered and reduces signals useful for abuse (e.g. probing or triggering mail floods with clear “new vs existing” feedback).
-
-**Client guidance:** After **`201`** with **`session`: `null`**, treat the outcome as “if this email can receive mail, follow the confirmation / sign-in flow.” Do **not** infer account state from HTTP status or from optional fields on **`user`** (see below).
+**Client guidance:** After **`201`** with **`session`: `null`**, treat the outcome as “check your email and follow the confirmation / sign-in flow.”
 
 #### Variance in the `user` object (Supabase)
 
-The **`user`** payload is whatever Supabase returns for that call. It always includes at least **`id`** and **`email`**, but **other fields are not stable signals** for “brand new vs existing”:
-
-- One successful sign-up may include rich **`identities`**, **`user_metadata`**, **`role`: `"authenticated"`**, **`confirmation_sent_at`**, etc.
-- Another **`201`** for a different lifecycle may show **empty **`identities`****, **empty **`user_metadata`****, **`role`** as an empty string, etc.
-
-Keys and nesting can also change with **Supabase version**. Portable clients should depend only on documented top-level fields (**`message`**, **`session`**, **`token`**, **`userProfile`**, **`profileError`**) and on **`user.id` / `user.email`** when needed—not on the full **`user`** graph for business logic.
+The **`user`** payload is whatever Supabase returns for that call. It always includes at least **`id`** and **`email`**, but **other nested fields are not stable** across Supabase versions. Portable clients should depend only on documented top-level fields (**`message`**, **`session`**, **`token`**, **`userProfile`**) and on **`user.id` / `user.email`** when needed—not on the full **`user`** graph for business logic.
 
 ### B) Signed in immediately (session returned)
 
 When confirmation is disabled (or policy returns a session on sign-up). Response shape depends on **`Accept`**:
 
-- **JSON client** (`Accept` includes `application/json`): `message`, `user`, `token` (Supabase session; includes `access_token`; may include `refresh_token` per product rules).
-- **Web client**: `user`, `token` (refresh token may be omitted; refresh cookie may be set).
-
-Optional fields when **`userProfile`** was sent:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `userProfile` | object | Profile row after successful upsert. |
-| `profileError` | object | If profile upsert failed; auth still succeeded. |
+- **JSON client** (`Accept` includes `application/json`): `message`, `user`, `token`, `userProfile`.
+- **Web client**: `user`, `token`, `userProfile` (refresh token may be omitted; refresh cookie may be set).
 
 ---
 
-## Errors and partial success
+## Errors
 
-Sign-up checks run in order: **validation** → **username availability** (when **`userProfile`** is sent) → **auth user creation** → **profile upsert**.
+Sign-up checks run in order: **validation** → **username availability** → **email availability** → **Postgres bundle + auth user creation** (order differs by provider; see **Atomicity** below).
+
+Any failure returns an error status with **no** account or profile created from the client’s perspective.
 
 ### 1) Request validation (`400`)
 
-Zod validates **`action`**, **`email`**, **`password`**, and optional **`userProfile`** (if the object is present, **`username`** and **`specialty`** are both required and non-empty).
+Zod validates **`action`**, **`email`**, **`password`**, and **`userProfile`** (`username` and `specialty` both required and non-empty).
 
 Response shape:
 
@@ -118,7 +103,7 @@ Response shape:
 
 ### 2) Username already taken (`409`)
 
-When **`userProfile`** is sent, the API checks **`userProfiles.username`** **before** creating an auth user (Cognito or Supabase). If another profile already uses that username, sign-up fails immediately — **no auth user is created** and no confirmation email is sent.
+The API checks **`userProfiles.username`** before any writes. If another profile already uses that username, sign-up fails immediately — **no auth user**, **no** `auth.users` row, **no** confirmation email.
 
 ```json
 {
@@ -129,49 +114,71 @@ When **`userProfile`** is sent, the API checks **`userProfiles.username`** **bef
 
 **Client guidance:** Show the error on the sign-up form and let the user pick a different username. Same shape as **`409`** on **`POST /api/user-profile`**.
 
-### 3) Auth provider rejects sign-up (`400`)
+### 3) Email already registered (`409`)
 
-Supabase or Cognito can still return **`400`** for some failures, for example weak password, disallowed email domain, or a provider-specific “user already exists” rule **if** that rule is enabled in your project. Body:
+Before calling the auth provider, the API checks whether the email is already registered (Cognito **`AdminGetUser`**, **`auth.users`** via Postgres, or Supabase admin fallback). If the email exists, sign-up fails immediately — **no auth user**, **no** `auth.users` stub, **no** profile, **no** confirmation email.
+
+```json
+{
+  "error": "An account with this email already exists",
+  "code": "EMAIL_ALREADY_REGISTERED"
+}
+```
+
+**Client guidance:** Show the error on the sign-up form. Offer **sign-in** and **forgot-password** links. Do **not** navigate to the confirm-email screen for this case.
+
+**Note:** This is an explicit rejection (not the uniform-`201` anti-enumeration pattern some auth providers use on duplicate sign-up). Forgot-password still uses a generic success response regardless of whether the email exists.
+
+### 4) Auth provider rejects sign-up (`400` / `409`)
+
+Supabase or Cognito can return **`400`** for other failures, for example weak password or disallowed email domain:
 
 ```json
 { "error": "<string message from provider>" }
 ```
 
-No **`userProfile`** / **`profileError`** in this case when no usable auth user was created for the profile step.
+Duplicate email should normally be caught by **§3** first; Cognito **`UsernameExistsException`** is also mapped to **`409 EMAIL_ALREADY_REGISTERED`** if it surfaces at the provider step (e.g. race).
 
-**Note:** With **email confirmation** required, many deployments **do not** return **`400`** for “duplicate email” on sign-up; see **Uniform 201 when confirmation is required (anti-enumeration)** above—the same **`201`** + **`session`: `null`** pattern may apply instead.
+On **Cognito**, Postgres rows written in the DB-first step are rolled back when the provider rejects sign-up.
 
-### 4) Profile write failed after user was created (`201` + `profileError`)
+### 5) Database or account-link failure (`409` / `422` / `500`)
 
-Rare: auth user was created, but the profile upsert still failed (e.g. race between two sign-ups claiming the same username, FK violation, or generic DB error). The API returns **`201`** with **`user`** (and **`token` / `session`** as in A or B above), and adds:
+If the Postgres bundle (`auth.users` stub on RDS + `userProfiles` insert) fails, or linking **`cognito_sub`** fails after Cognito sign-up, the API returns an error and compensates (deletes IdP user and/or Postgres rows). Examples:
 
-```json
-"profileError": {
-  "error": "<human-readable message>",
-  "code": "<optional code>"
-}
-```
+| `code` | Status | Typical cause |
+|--------|--------|----------------|
+| `USERNAME_TAKEN` | `409` | Race: another request claimed the username after the pre-check. |
+| `FOREIGN_KEY_VIOLATION` | `422` | Profile could not link to `auth.users`. |
+| `AUTH_USER_SETUP_FAILED` | `500` | `cognito_sub` update failed after Cognito sign-up (compensating delete attempted). |
+| *(omitted)* | `500` | Generic DB failure. |
 
-Possible **`code`** values (aligned with **`POST /api/user-profile`** semantics):
+**Client guidance:** Show the error on the sign-up form; the user can retry with a different username or contact support for persistent **`500`** errors.
 
-| `code` | Typical cause |
-|--------|----------------|
-| `USERNAME_TAKEN` | Rare race: another request claimed the username after the pre-check. |
-| `FOREIGN_KEY_VIOLATION` | Rare; `user_id` could not be linked (e.g. user missing in auth). |
-| *(omitted)* | Generic DB failure; **`error`** string still set. |
+---
 
-**Client guidance:** Treat **`201`** as “account exists.” If **`profileError`** is present, prompt the user to fix username (or retry profile later via **`POST /api/user-profile`** after sign-in).
+## Atomicity
+
+Sign-up is **logically atomic** across the identity provider and Postgres (not a single DB transaction):
+
+| Provider | Order | On failure |
+|----------|-------|------------|
+| **Cognito** | Postgres TX (`auth.users` + profile) → Cognito `SignUp` → set `cognito_sub` | Roll back Postgres; **`AdminDeleteUser`** if Cognito succeeded |
+| **Supabase** | Supabase `signUp` → Postgres TX (`auth.users` stub on RDS + profile) | **`admin.deleteUser`** if Postgres fails |
+
+**`ensurePersonalOrganization`** runs only after full success; failures there are logged and do not fail sign-up.
+
+A verification email may still be sent if the IdP created the user before a later step failed (mainly on the Supabase path). That is rare (infra/DB errors) and acceptable.
 
 ---
 
 ## Idempotency and duplicates
 
-- **Same **`email`** again:** Behavior depends on Supabase and project settings. With **confirm email** enabled, repeated sign-up attempts often still return **`201`** with **`session`: `null`** and the same generic **`message`** as a first-time sign-up (see **Uniform `201`** above)—the API does not expose whether the row was newly created or already existed. That is intentional for privacy and abuse resistance, not a client bug.
-- **`username`** is unique **globally** across profiles. When **`userProfile`** is sent, a taken username returns **`409`** with **`code === "USERNAME_TAKEN"`** before any auth user is created (see **§2** above).
+- **Same `email` again:** **`409`** with **`code === "EMAIL_ALREADY_REGISTERED"`** (see **§3**). No database side effects.
+- **`username`** is unique globally. A taken username returns **`409`** with **`code === "USERNAME_TAKEN"`** before any writes (see **§2**).
 
 ---
 
 ## Related documentation
 
 - **[USER_PROFILE_API.md](./USER_PROFILE_API.md)** — authenticated **`GET` / `POST` / `PATCH`** for `/api/user-profile`.
-- Tests: **`tests/auth.test.js`** (`npm run test:auth`). Sign-up Zod cases are tests **1–6** (`testNumber`). **Test 7** (reserved username **`info`** → **`409 USERNAME_TAKEN`**, no auth user) requires a DB seed and is skippable via **`skipTest7`**. **Test 8** is the sign-in smoke test and requires **`TEST_ACCOUNT_EMAIL`** / **`TEST_ACCOUNT_PASSWORD`** in **`.env.local`** (otherwise recorded as skipped). Full responses are written to **`test-results/auth-tests.json`**.
+- Tests: **`tests/auth.test.js`** (`npm run test:auth`). Sign-up Zod cases are tests **1–7** (`testNumber`). **Test 8** (reserved username **`info`** → **`409 USERNAME_TAKEN`**, no auth user) requires a DB seed and is skippable via **`skipTest8`**. **Test 9** (duplicate email → **`409 EMAIL_ALREADY_REGISTERED`**) requires **`TEST_ACCOUNT_EMAIL`** in **`.env.local`**. **Test 10** is the sign-in smoke test and requires **`TEST_ACCOUNT_EMAIL`** / **`TEST_ACCOUNT_PASSWORD`**. Full responses are written to **`test-results/auth-tests.json`**.

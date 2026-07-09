@@ -30,7 +30,7 @@ export async function isUsernameTaken(username) {
  * @param {string} userId
  * @returns {{ ok: true } | { ok: false, replyPayload: { error: string, code: string } }}
  */
-async function ensureAuthUserExists(userId) {
+export async function ensureAuthUserExists(userId) {
   try {
     if (isCognitoAuth()) {
       const row = await pgQueryOne(
@@ -77,7 +77,7 @@ async function ensureAuthUserExists(userId) {
  * Map common Postgres errors to status + JSON body
  * @returns {{ status: number, payload: object }}
  */
-function profileDbErrorToHttp(error) {
+export function profileDbErrorToHttp(error) {
   if (!error?.code) {
     return { status: 500, payload: { error: 'Database operation failed' } };
   }

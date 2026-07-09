@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import {
+  AdminDeleteUserCommand,
   AdminInitiateAuthCommand,
   ConfirmForgotPasswordCommand,
   ForgotPasswordCommand,
@@ -15,6 +16,7 @@ import {
 } from './cognitoClient.js';
 import { decodeAccessTokenPayload } from './cognitoJwt.js';
 import { resolveAppUserFromCognito } from './resolveAppUserFromCognito.js';
+import { EMAIL_ALREADY_REGISTERED_PAYLOAD } from './authEmailCheck.js';
 
 /**
  * @param {import('@aws-sdk/client-cognito-identity-provider').AuthenticationResultType | undefined} authResult
@@ -110,12 +112,10 @@ export async function cognitoSignUp(email, password, appUserId = crypto.randomUU
     const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : '';
     if (name === 'UsernameExistsException') {
       return {
-        success: true,
-        user: { id: appUserId, email },
-        session: null,
-        cognitoSub: null,
-        userConfirmed: false,
-        alreadyExists: true,
+        success: false,
+        status: 409,
+        error: EMAIL_ALREADY_REGISTERED_PAYLOAD.error,
+        code: EMAIL_ALREADY_REGISTERED_PAYLOAD.code,
       };
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -132,6 +132,33 @@ export async function cognitoSignUp(email, password, appUserId = crypto.randomUU
     cognitoSub,
     userConfirmed,
   };
+}
+
+/**
+ * Compensating delete after sign-up Postgres bundle failure (best-effort).
+ * @param {string} email - Cognito username (email sign-up)
+ */
+export async function cognitoAdminDeleteUser(email) {
+  if (!email) return { ok: true, skipped: true };
+
+  try {
+    const client = getCognitoIdpClient();
+    await client.send(
+      new AdminDeleteUserCommand({
+        UserPoolId: getCognitoUserPoolId(),
+        Username: email,
+      })
+    );
+    return { ok: true };
+  } catch (err) {
+    const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : '';
+    if (name === 'UserNotFoundException') {
+      return { ok: true, skipped: true };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[cognitoAdminDeleteUser] Failed:', message);
+    return { ok: false, error: message };
+  }
 }
 
 /**

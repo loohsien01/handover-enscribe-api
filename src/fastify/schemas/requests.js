@@ -574,7 +574,7 @@ export const notesUpdateRequestSchema = z.object({
 // Authentication Schemas
 // ============================================================================
 
-/** Same fields as POST /user-profile body; reused for optional sign-up profile. */
+/** Same fields as POST /user-profile body; required on sign-up. */
 const userProfileCreateBodySchema = z.object({
   username: z.string().min(1, 'Username is required'),
   specialty: z.string().min(1, 'Specialty is required'),
@@ -592,7 +592,7 @@ export const authSignUpRequestSchema = z.object({
     .min(1, 'Email is required'),
   password: z.string()
     .min(8, 'Password must be at least 8 characters'),
-  userProfile: userProfileCreateBodySchema.optional(),
+  userProfile: userProfileCreateBodySchema,
 });
 
 /**

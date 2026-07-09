@@ -571,9 +571,9 @@ await client.send(new InitiateAuthCommand({
 }));
 ```
 
-**Preserve unchanged:** refresh vault TTLs, wrapper cookie (`tid` + `sub` = **app user id**), anti-enumeration ([AUTH_SIGN_UP_API.md](./AUTH_SIGN_UP_API.md)), optional `userProfile` on sign-up.
+**Preserve unchanged:** refresh vault TTLs, wrapper cookie (`tid` + `sub` = **app user id**), sign-up duplicate-email **`409 EMAIL_ALREADY_REGISTERED`** ([AUTH_SIGN_UP_API.md](./AUTH_SIGN_UP_API.md)), optional `userProfile` on sign-up.
 
-**Sign-up + `userProfile`:** Username uniqueness is checked against **`userProfiles`** **before** `SignUp` / `auth.signUp`. A taken username returns **`409`** with **`code: "USERNAME_TAKEN"`** and does **not** create a Cognito user (avoids orphan accounts and stray confirmation emails). See [AUTH_SIGN_UP_API.md](./AUTH_SIGN_UP_API.md) §2.
+**Sign-up + `userProfile`:** Username uniqueness is checked against **`userProfiles`** **before** `SignUp` / `auth.signUp`. A taken username returns **`409`** with **`code: "USERNAME_TAKEN"`** and does **not** create a Cognito user (avoids orphan accounts and stray confirmation emails). Duplicate email returns **`409`** with **`code: "EMAIL_ALREADY_REGISTERED"`** before any Cognito or DB writes. See [AUTH_SIGN_UP_API.md](./AUTH_SIGN_UP_API.md) §2–§3.
 
 ---
 
@@ -979,5 +979,5 @@ Define in CDK/Terraform/CloudFormation before prod cutover: `AWS::Cognito::UserP
 
 - [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md) — overall order and decision matrix
 - [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md) — `auth.users` Option A, Part 7
-- [AUTH_SIGN_UP_API.md](./AUTH_SIGN_UP_API.md) — sign-up contract and anti-enumeration
+- [AUTH_SIGN_UP_API.md](./AUTH_SIGN_UP_API.md) — sign-up contract (`409` duplicate email / username)
 - [BAA_ARCHITECTURE.md](./BAA_ARCHITECTURE.md) — Bearer JWT on HIPAA routes
