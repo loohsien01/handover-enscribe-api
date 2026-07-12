@@ -531,8 +531,9 @@ JWKS URL (cached by library): `https://cognito-idp.{region}.amazonaws.com/{userP
 | `signIn` | `signInWithPassword` | `AdminInitiateAuth` **`ADMIN_USER_PASSWORD_AUTH`** |
 | `signOut` | `auth.signOut` + vault revoke | Vault revoke + optional `GlobalSignOut` |
 | `resend` | `auth.resend` | `ResendConfirmationCodeCommand` |
+| `confirm-sign-up` | *(email magic link)* | **`ConfirmSignUpCommand`** — email verification after self sign-up |
 | `forgot-password` | `resetPasswordForEmail` | `ForgotPasswordCommand` |
-| `confirm-forgot-password` | *(Supabase link)* | **New action** — `ConfirmForgotPasswordCommand` |
+| `confirm-forgot-password` | *(Supabase link)* | **`ConfirmForgotPasswordCommand`** |
 | `refresh` | Supabase token endpoint | `InitiateAuth` `REFRESH_TOKEN_AUTH` |
 
 ### SDK examples
@@ -653,11 +654,12 @@ SELECT email FROM auth.users ORDER BY email;
 | Forgot-password **request** | May call Supabase or API `forgot-password` | Call API `POST /api/auth` `{ action: 'forgot-password', email }` only |
 | **`/reset-password` page** | Parses Supabase magic-link hash (`#access_token=…`) | Form: **email + 6-digit code + new password** → API `confirm-forgot-password` |
 | Confirm reset | Supabase client / redirect | `POST /api/auth` `{ action: 'confirm-forgot-password', email, code, newPassword }` |
+| **New-user email confirm** | Supabase magic link | After sign-up `session: null`: form **email + 6-digit code** → API `confirm-sign-up` (not reset-password) |
 | Optional cleanup | `@supabase/supabase-js` on auth paths | Remove if still imported for auth |
 
-**Not** just updating a redirect URL — the reset **UX and API calls** change because Cognito uses a **code**, not a one-click link.
+**Not** just updating a redirect URL — the reset **UX and API calls** change because Cognito uses a **code**, not a one-click link. New sign-ups use **`confirm-sign-up`** (`ConfirmSignUp`); password reset uses **`confirm-forgot-password`** (`ConfirmForgotPassword`) — different Cognito code types.
 
-**API (Phase C — done in this repo):** `confirm-forgot-password` in `authController` + routes + Zod schemas.
+**API (Phase C — done in this repo):** `confirm-forgot-password` and `confirm-sign-up` in `authController` + routes + Zod schemas.
 
 **Ship Phase E before or with cutover** — non-breaking until `AUTH_PROVIDER=cognito` on the API; after cutover the code-based page is required.
 

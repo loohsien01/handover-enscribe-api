@@ -10,11 +10,13 @@ import {
   authResendRequestSchema,
   authForgotPasswordRequestSchema,
   authConfirmForgotPasswordRequestSchema,
+  authConfirmSignUpRequestSchema,
 } from '../schemas/requests.js';
 
 /**
  * Fastify plugin for authentication routes
- * Handles: sign-up, sign-in, sign-out, check-validity, resend, forgot-password
+ * Handles: sign-up, sign-in, sign-out, check-validity, resend, forgot-password,
+ * confirm-forgot-password, confirm-sign-up
  */
 async function authRoutes(fastify, opts) {
   // Extract auth header from request
@@ -50,9 +52,11 @@ async function authRoutes(fastify, opts) {
    * 
    * Body:
    * {
-   *   action: 'sign-up' | 'sign-in' | 'sign-out' | 'check-validity' | 'resend' | 'forgot-password',
+   *   action: 'sign-up' | 'sign-in' | 'sign-out' | 'check-validity' | 'resend' | 'forgot-password' | 'confirm-forgot-password' | 'confirm-sign-up',
    *   email?: string,
    *   password?: string,
+   *   code?: string, // confirm-sign-up / confirm-forgot-password
+   *   newPassword?: string, // confirm-forgot-password
    *   emailRedirectTo?: string,
    *   redirectTo?: string, // optional for 'forgot-password'; default is FRONTEND_URL + /reset-password
    *   userProfile: { username: string, specialty: string }  // required; same shape as POST /user-profile body
@@ -375,9 +379,27 @@ async function authRoutes(fastify, opts) {
           });
         }
 
+        case 'confirm-sign-up': {
+          validation = authConfirmSignUpRequestSchema.safeParse(request.body);
+          if (!validation.success) {
+            return reply.status(400).send({ error: serializeZodError(validation.error) });
+          }
+
+          const { email: confirmEmail, code: confirmCode } = validation.data;
+          const result = await authController.confirmSignUp(confirmEmail, confirmCode);
+
+          if (!result.success) {
+            return reply.status(400).send({ error: result.error });
+          }
+
+          return reply.status(200).send({
+            message: 'Email confirmed successfully',
+          });
+        }
+
         default: {
           return reply.status(400).send({
-            error: `Unknown action: ${action}. Must be one of: sign-up, sign-in, sign-out, check-validity, resend, forgot-password, confirm-forgot-password`,
+            error: `Unknown action: ${action}. Must be one of: sign-up, sign-in, sign-out, check-validity, resend, forgot-password, confirm-forgot-password, confirm-sign-up`,
           });
         }
       }

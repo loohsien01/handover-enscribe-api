@@ -67,6 +67,27 @@ Typical when Supabase has “confirm email” enabled or Cognito requires verifi
 
 **Client guidance:** After **`201`** with **`session`: `null`**, treat the outcome as “check your email and follow the confirmation / sign-in flow.”
 
+On Cognito, the user must call **`confirm-sign-up`** with the email verification code (not `confirm-forgot-password` — that is a different Cognito code type). After a successful confirm, they sign in with the password chosen at sign-up.
+
+#### Confirm sign-up (`action: confirm-sign-up`)
+
+**`POST /api/auth`**
+
+```json
+{
+  "action": "confirm-sign-up",
+  "email": "provider@example.com",
+  "code": "123456"
+}
+```
+
+| Outcome | Status | Body |
+|---------|--------|------|
+| Success | `200` | `{ "message": "Email confirmed successfully" }` |
+| Validation / Cognito reject | `400` | Zod error, or `{ "error": "<Cognito message>" }` (e.g. wrong/expired code) |
+
+Requires **`AUTH_PROVIDER=cognito`**. Resend the code with **`action: resend`** if needed.
+
 #### Variance in the `user` object (Supabase)
 
 The **`user`** payload is whatever Supabase returns for that call. It always includes at least **`id`** and **`email`**, but **other nested fields are not stable** across Supabase versions. Portable clients should depend only on documented top-level fields (**`message`**, **`session`**, **`token`**, **`userProfile`**) and on **`user.id` / `user.email`** when needed—not on the full **`user`** graph for business logic.
@@ -181,4 +202,4 @@ A verification email may still be sent if the IdP created the user before a late
 ## Related documentation
 
 - **[USER_PROFILE_API.md](./USER_PROFILE_API.md)** — authenticated **`GET` / `POST` / `PATCH`** for `/api/user-profile`.
-- Tests: **`tests/auth.test.js`** (`npm run test:auth`). Sign-up Zod cases are tests **1–7** (`testNumber`). **Test 8** (reserved username **`info`** → **`409 USERNAME_TAKEN`**, no auth user) requires a DB seed and is skippable via **`skipTest8`**. **Test 9** (duplicate email → **`409 EMAIL_ALREADY_REGISTERED`**) requires **`TEST_ACCOUNT_EMAIL`** in **`.env.local`**. **Test 10** is the sign-in smoke test and requires **`TEST_ACCOUNT_EMAIL`** / **`TEST_ACCOUNT_PASSWORD`**. Full responses are written to **`test-results/auth-tests.json`**.
+- Tests: **`tests/auth.test.js`** (`npm run test:auth`). Sign-up Zod cases are tests **1–7** (`testNumber`). **Test 8** (reserved username **`info`** → **`409 USERNAME_TAKEN`**, no auth user) requires a DB seed and is skippable via **`skipTest8`**. **Test 9** (duplicate email → **`409 EMAIL_ALREADY_REGISTERED`**) requires **`TEST_ACCOUNT_EMAIL`** in **`.env.local`**. **Test 10** is the sign-in smoke test and requires **`TEST_ACCOUNT_EMAIL`** / **`TEST_ACCOUNT_PASSWORD`**. **Tests 23–26** cover **`confirm-sign-up`** validation. Full responses are written to **`test-results/auth-tests.json`**.

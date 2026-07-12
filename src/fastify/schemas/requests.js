@@ -677,6 +677,17 @@ export const authConfirmForgotPasswordRequestSchema = z.object({
     .min(8, 'Password must be at least 8 characters'),
 });
 
+/**
+ * POST request for auth confirm-sign-up action (Cognito email verification)
+ * Endpoint: POST /api/auth
+ * Action: confirm-sign-up
+ */
+export const authConfirmSignUpRequestSchema = z.object({
+  action: z.literal('confirm-sign-up'),
+  email: z.string().email('Invalid email format').min(1, 'Email is required'),
+  code: z.string().min(1, 'Verification code is required'),
+});
+
 // ============================================================================
 // Notes Schemas
 // ============================================================================

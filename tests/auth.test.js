@@ -1,6 +1,7 @@
 /**
  * Test Suite: Authentication API
- * Tests all auth endpoints: sign-up, sign-in, sign-out, check-validity, resend
+ * Tests all auth endpoints: sign-up, sign-in, sign-out, check-validity, resend,
+ * confirm-sign-up, forgot-password / confirm-forgot-password (via suite coverage)
  *
  * `testNumber`: integers 1, 2, 3, … in file order (echoed in results JSON).
  *
@@ -8,6 +9,7 @@
  * (requires DB seed `userProfiles.username === "info"`).
  * Test 9 requires `TEST_ACCOUNT_EMAIL` (duplicate email → 409).
  * Test 10 requires `TEST_ACCOUNT_EMAIL` and `TEST_ACCOUNT_PASSWORD` (sign-in smoke).
+ * Tests 23–26 cover confirm-sign-up validation (Zod + Cognito reject of bad code).
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -611,6 +613,95 @@ async function runAuthTests() {
     },
   });
 
+  // 23
+  await runner.test('Confirm-sign-up without email', {
+    testNumber: 23,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'confirm-sign-up',
+      code: '123456',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const isZodError = body?.error?.name === 'ZodError' && body?.error?.message;
+      const hasEmailIssue = /invalid_type.*email|Invalid email/.test(JSON.stringify(body?.error));
+      return {
+        passed: isZodError && hasEmailIssue,
+        message: isZodError && hasEmailIssue
+          ? 'Should return ZodError for missing email'
+          : `Expected ZodError for missing email. Got: ${JSON.stringify(body?.error)}`,
+      };
+    },
+  });
+
+  // 24
+  await runner.test('Confirm-sign-up without code', {
+    testNumber: 24,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'confirm-sign-up',
+      email: 'newuser@example.com',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const isZodError = body?.error?.name === 'ZodError' && body?.error?.message;
+      const hasCodeIssue = /invalid_type.*code|Verification code/.test(JSON.stringify(body?.error));
+      return {
+        passed: isZodError && hasCodeIssue,
+        message: isZodError && hasCodeIssue
+          ? 'Should return ZodError for missing code'
+          : `Expected ZodError for missing code. Got: ${JSON.stringify(body?.error)}`,
+      };
+    },
+  });
+
+  // 25
+  await runner.test('Confirm-sign-up with invalid email', {
+    testNumber: 25,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'confirm-sign-up',
+      email: 'not-an-email',
+      code: '123456',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const isZodError = body?.error?.name === 'ZodError' && body?.error?.message;
+      const hasEmailIssue = /invalid_format.*email|Invalid email/.test(JSON.stringify(body?.error));
+      return {
+        passed: isZodError && hasEmailIssue,
+        message: isZodError && hasEmailIssue
+          ? 'Should return ZodError for invalid email'
+          : `Expected ZodError for invalid email. Got: ${JSON.stringify(body?.error)}`,
+      };
+    },
+  });
+
+  // 26 — wrong/expired code (Cognito returns 400; no user created)
+  await runner.test('Confirm-sign-up with wrong code (400 from Cognito)', {
+    testNumber: 26,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'confirm-sign-up',
+      email: 'nobody-confirm-signup@example.com',
+      code: '000000',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const hasError = typeof body?.error === 'string' && body.error.length > 0;
+      return {
+        passed: hasError,
+        message: hasError
+          ? 'Cognito rejected invalid confirm-sign-up'
+          : `Expected string error from Cognito. Got: ${JSON.stringify(body)}`,
+      };
+    },
+  });
+
   // ===========================================
   // REAL ACCOUNT TESTS (if configured)
   // ===========================================
@@ -621,9 +712,9 @@ async function runAuthTests() {
     if (testAccount && testAccount.email && testAccount.password) {
       console.log(`\n📝 Running real account tests with: ${testAccount.email.split('@')[0]}@****\n`);
       
-      // 23
+      // 27
       await runner.test('Sign-in with valid account (real credentials)', {
-        testNumber: 23,
+        testNumber: 27,
         method: 'POST',
         endpoint: '/api/auth',
         body: {
@@ -643,14 +734,14 @@ async function runAuthTests() {
         },
       });
 
-      // Extract token from test 22 for test 23
+      // Extract token from previous sign-in for check-validity
       const signInResult = runner.results[runner.results.length - 1];
       const accessToken = signInResult.body?.token?.access_token;
 
-      // 24 
+      // 28
       if (accessToken) {
         await runner.test('Check validity endpoint (with real token)', {
-          testNumber: 24,
+          testNumber: 28,
           method: 'POST',
           endpoint: '/api/auth',
           body: {
@@ -718,9 +809,9 @@ async function runAuthTests() {
         }
         console.log();
 
-        // 25
+        // 29
         await runner.test('POST /api/auth/refresh without token', {
-          testNumber: 25,
+          testNumber: 29,
           method: 'POST',
           endpoint: '/api/auth/refresh',
           expectedStatus: 401,
@@ -734,9 +825,9 @@ async function runAuthTests() {
           },
         });
 
-        // 26
+        // 30
         await runner.test('POST /api/auth/refresh with invalid token', {
-          testNumber: 26,
+          testNumber: 30,
           method: 'POST',
           endpoint: '/api/auth/refresh',
           headers: {
@@ -753,10 +844,10 @@ async function runAuthTests() {
           },
         });
 
-        // 27 
+        // 31
         if (refreshTokenCookie) {
           await runner.test('GET /api/auth/cookie-status with valid cookie', {
-            testNumber: 27,
+            testNumber: 31,
             method: 'GET',
             endpoint: '/api/auth/cookie-status',
             headers: {
@@ -773,9 +864,9 @@ async function runAuthTests() {
           });
         }
 
-        // 28
+        // 32
         await runner.test('GET /api/auth/cookie-status without cookie', {
-          testNumber: 28,
+          testNumber: 32,
           method: 'GET',
           endpoint: '/api/auth/cookie-status',
           expectedStatus: 200,
@@ -788,9 +879,9 @@ async function runAuthTests() {
           },
         });
 
-        // 29
+        // 33
         await runner.test('GET /api/auth/cookie-status with invalid cookie', {
-          testNumber: 29,
+          testNumber: 33,
           method: 'GET',
           endpoint: '/api/auth/cookie-status',
           headers: {
@@ -807,7 +898,7 @@ async function runAuthTests() {
         });
 
         // ===== REFRESH TESTS RUN LAST (after cookie-status tests) =====
-        // 30 
+        // 34
         if (refreshTokenCookie) {
           const oldTid = extractTidFromWrapperJwt(refreshTokenCookie);
           let newTid = null;
@@ -819,7 +910,7 @@ async function runAuthTests() {
           console.log(`  ✅ Wait complete, proceeding with refresh test\n`);
 
           await runner.test('POST /api/auth/refresh with valid token', {
-            testNumber: 30,
+            testNumber: 34,
             method: 'POST',
             endpoint: '/api/auth/refresh',
             headers: {

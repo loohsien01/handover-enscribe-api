@@ -3,6 +3,7 @@ import {
   AdminDeleteUserCommand,
   AdminInitiateAuthCommand,
   ConfirmForgotPasswordCommand,
+  ConfirmSignUpCommand,
   ForgotPasswordCommand,
   GlobalSignOutCommand,
   InitiateAuthCommand,
@@ -191,6 +192,28 @@ export async function cognitoResendConfirmationCode(email) {
       new ResendConfirmationCodeCommand({
         ClientId: getCognitoClientId(),
         Username: email,
+      })
+    );
+    return { success: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Confirm a new user's email with the verification code from SignUp / ResendConfirmationCode.
+ * @param {string} email
+ * @param {string} code
+ */
+export async function cognitoConfirmSignUp(email, code) {
+  const client = getCognitoIdpClient();
+  try {
+    await client.send(
+      new ConfirmSignUpCommand({
+        ClientId: getCognitoClientId(),
+        Username: email,
+        ConfirmationCode: code,
       })
     );
     return { success: true };

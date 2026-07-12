@@ -10,6 +10,7 @@ import { isCognitoAuth } from '../../utils/authProvider.js';
 import { authenticateAccessToken } from '../../utils/authenticateAccessToken.js';
 import {
   cognitoConfirmForgotPassword,
+  cognitoConfirmSignUp,
   cognitoForgotPassword,
   cognitoAdminDeleteUser,
   cognitoRefreshTokens,
@@ -647,6 +648,27 @@ export async function confirmForgotPassword(email, code, newPassword) {
     return cognitoConfirmForgotPassword(email, code, newPassword);
   } catch (err) {
     console.error('[confirmForgotPassword] Error:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Confirm sign-up email with verification code (Cognito).
+ * Distinct from confirm-forgot-password — uses ConfirmSignUp, not ConfirmForgotPassword.
+ * @param {string} email
+ * @param {string} code
+ */
+export async function confirmSignUp(email, code) {
+  try {
+    if (!isCognitoAuth()) {
+      return { success: false, error: 'confirm-sign-up requires AUTH_PROVIDER=cognito' };
+    }
+    if (!email || !code) {
+      return { success: false, error: 'Email and verification code are required' };
+    }
+    return cognitoConfirmSignUp(email, code);
+  } catch (err) {
+    console.error('[confirmSignUp] Error:', err);
     return { success: false, error: err.message };
   }
 }
