@@ -109,6 +109,29 @@ function cleanRawText(s) {
   return s;
 }
 
+/**
+ * Build JSON parse debug details for console + jobs.error_message.
+ */
+function buildSoapJsonParseDebugInfo(rawString, parseError) {
+  const positionMatch = parseError.message.match(/position (\d+)/);
+  const errorPos = positionMatch ? parseInt(positionMatch[1], 10) : null;
+  const contextRadius = 100; // 200 chars total around the error
+
+  let debugInfo = `Failed to parse SOAP note JSON: ${parseError.message}\n`;
+  debugInfo += `Total length: ${rawString.length} characters\n`;
+  debugInfo += `First 100 chars:\n${rawString.substring(0, 100)}...\n\n`;
+
+  if (errorPos != null && !Number.isNaN(errorPos)) {
+    const startContext = Math.max(0, errorPos - contextRadius);
+    const endContext = Math.min(rawString.length, errorPos + contextRadius);
+    debugInfo += `Context around position ${errorPos} (${endContext - startContext} chars):\n`;
+    debugInfo += `[${startContext}] ${rawString.substring(startContext, endContext)} [${endContext}]\n`;
+    debugInfo += `${'='.repeat(Math.min(contextRadius, errorPos - startContext))}↑ ERROR HERE\n`;
+  }
+
+  return debugInfo;
+}
+
 const jobsTable = 'jobs';
 
 /**
@@ -462,29 +485,13 @@ export async function promptLlmProcessor(jobId, userId, authorizationHeader, not
     try {
       soapNoteAndBillingResult = JSON.parse(rawString);
     } catch (error) {
-      // Extract position from error message (e.g., "position 6484")
-      const positionMatch = error.message.match(/position (\d+)/);
-      const errorPos = positionMatch ? parseInt(positionMatch[1], 10) : null;
-      
-      // Build detailed error message for logs
-      let debugInfo = `Failed to parse SOAP note JSON: ${error.message}\n`;
-      debugInfo += `Total length: ${rawString.length} characters\n`;
-      debugInfo += `First 100 chars:\n${rawString.substring(0, 100)}...\n\n`;
-      
-      if (errorPos) {
-        const startContext = Math.max(0, errorPos - 150);
-        const endContext = Math.min(rawString.length, errorPos + 150);
-        debugInfo += `Context around position ${errorPos} (300 chars):\n`;
-        debugInfo += `[${startContext}] ${rawString.substring(startContext, endContext)} [${endContext}]\n`;
-        debugInfo += `${'='.repeat(Math.min(150, errorPos - startContext))}↑ ERROR HERE\n`;
-      }
-      
-      // Log full debugging info with stack trace
+      // Same debug string goes to console and jobs.error_message (outer catch stores error.message)
+      const debugInfo = buildSoapJsonParseDebugInfo(rawString, error);
+
       console.error(`[promptLlmProcessor] ${jobId}: JSON Parse Error:\n${debugInfo}`);
       console.error(`[promptLlmProcessor] ${jobId}: Stack trace:`, error.stack);
-      
-      // Throw clean error message (without debug context) so it can be stored safely in DB
-      throw new Error(`Failed to parse SOAP note JSON: ${error.message}`);
+
+      throw new Error(debugInfo.trim());
     }
 
     // Unmask PHI tokens in the parsed object (no escaping needed)

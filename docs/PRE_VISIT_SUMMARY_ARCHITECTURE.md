@@ -682,11 +682,11 @@ Optional pre-visit summary context on SOAP generation (`POST /api/jobs/prompt-ll
 
 ### Claude prompt hierarchy
 
-1. **Transcript** — sole authority for clinical content discussed today.
-2. **Pre-visit summary** — secondary context; may be outdated.
-3. **Title + body** — emphasized for spelling/vocabulary when ASR garbles names, meds, ages (e.g. forty vs fourteen).
+1. **Transcript** — authority for today's discussion, findings, assessment, and plan; wins on conflicts with the pre-visit summary.
+2. **Pre-visit summary** — historical context for the same patient; merge relevant background (history, chronic problems, home meds, allergies, etc.) into a comprehensive note even when not restated today.
+3. **Title + body (esp. vocabulary)** — preferred spellings for proper nouns when ASR garbles names, meds, ages (e.g. forty vs fourteen).
 
-Summary text is included **unmasked** as vocabulary reference; transcript stays PHI-tokenized.
+Summary text is included **unmasked** as historical + vocabulary context; transcript stays PHI-tokenized. When `pre_visit_summary_id` is omitted, the prompt stays transcript-only (no merge framing).
 
 ### Persistence
 

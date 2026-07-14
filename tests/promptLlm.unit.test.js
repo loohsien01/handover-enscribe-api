@@ -105,7 +105,7 @@ test('processor-shaped context: transcript precedes pre-visit block in user mess
   );
   const content = String(body.messages[0].content);
   const transcriptIdx = content.indexOf(maskedTranscript);
-  const prepIdx = content.indexOf('Pre-visit summary (reference only');
+  const prepIdx = content.indexOf('Pre-visit summary (historical context');
   assert.ok(transcriptIdx >= 0, 'transcript missing from user message');
   assert.ok(prepIdx >= 0, 'pre-visit block missing from user message');
   assert.ok(transcriptIdx < prepIdx, 'transcript must appear before pre-visit summary');
@@ -121,15 +121,30 @@ test('processor-shaped context: title and body both appear in Claude user payloa
   assert.ok(content.includes('Title (prefer spellings'));
   assert.ok(content.includes('Robert Chen NP 7/6/26'));
   assert.ok(content.includes('Allergies: penicillin'));
-  assert.ok(content.includes('sole authority for what was discussed today'));
+  assert.ok(content.includes('merging this pre-visit summary with today\'s visit transcript'));
+  assert.ok(content.includes('relevant historical context'));
+  assert.ok(content.includes('prefer the transcript as the up-to-date source'));
   assert.ok(content.includes('different patient or visit than the transcript'));
+  assert.ok(content.includes('vocabulary section'));
   assert.ok(content.includes('same patient and topic as the transcript'));
   assert.ok(content.includes('forty vs fourteen'));
+  assert.ok(
+    String(body.system[0].text).includes('merging that historical context'),
+    'system preamble should switch to merge framing when PVS present'
+  );
 });
 
 test('processor-shaped context: null summary omits pre-visit block', () => {
   const body = getSoapNoteRequestBody('Transcript only.', null, buildPreVisitContextFromSummary(null));
-  assert.ok(!String(body.messages[0].content).includes('Pre-visit summary (reference only'));
+  const content = String(body.messages[0].content);
+  assert.ok(!content.includes('Pre-visit summary (historical context'));
+  assert.ok(content.includes('Here is a patient encounter transcript:'));
+  assert.ok(content.includes('Generate SOAP note'));
+  assert.ok(
+    String(body.system[0].text).includes('base the note solely on the encounter transcript'),
+    'system preamble should stay transcript-only when PVS absent'
+  );
+  assert.ok(!String(body.system[0].text).includes('merging that historical context'));
 });
 
 test('patient encounter name is prepended as Title in transcript block (primary source)', () => {
@@ -141,11 +156,11 @@ test('patient encounter name is prepended as Title in transcript block (primary 
   assert.ok(titleIdx >= 0, 'encounter title missing from user message');
   assert.ok(transcriptIdx >= 0, 'transcript missing from user message');
   assert.ok(titleIdx < transcriptIdx, 'title must appear at the start of the transcript block');
-  // Title is a primary source, not the reference-only pre-visit block
-  assert.ok(!content.includes('Pre-visit summary (reference only'));
+  // Title is a primary source, not the historical-context pre-visit block
+  assert.ok(!content.includes('Pre-visit summary (historical context'));
 });
 
-test('encounter title and pre-visit summary coexist (primary title, secondary summary)', () => {
+test('encounter title and pre-visit summary coexist (primary title, historical summary)', () => {
   const body = getSoapNoteRequestBody(
     'Doctor discussed follow-up.',
     null,
@@ -154,10 +169,10 @@ test('encounter title and pre-visit summary coexist (primary title, secondary su
   );
   const content = String(body.messages[0].content);
   const titleIdx = content.indexOf('Title: Robert Chen NP');
-  const preVisitIdx = content.indexOf('Pre-visit summary (reference only');
+  const preVisitIdx = content.indexOf('Pre-visit summary (historical context');
   assert.ok(titleIdx >= 0, 'primary encounter title missing');
   assert.ok(preVisitIdx >= 0, 'pre-visit summary block missing');
-  assert.ok(titleIdx < preVisitIdx, 'primary title must precede reference-only pre-visit block');
+  assert.ok(titleIdx < preVisitIdx, 'primary title must precede historical-context pre-visit block');
 });
 
 test('null encounter name omits Title line', () => {

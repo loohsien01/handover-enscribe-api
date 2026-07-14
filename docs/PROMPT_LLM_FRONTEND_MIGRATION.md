@@ -62,7 +62,7 @@ When `note_id` is present, **`GET /api/jobs/prompt-llm/:jobId/encounter-bundle`*
 |-------|------|----------|-------------|
 | `recording_file_path` | `string` | Yes | Storage path to the audio recording (same as before). |
 | `noteTemplate_id` | `number` / `bigint` / string coerced to `bigint` | No | Optional template for structured SOAP output. |
-| `pre_visit_summary_id` | `uuid` | No | Optional pre-visit summary for vocabulary/spelling context in the Claude prompt. |
+| `pre_visit_summary_id` | `uuid` | No | Optional pre-visit summary merged as historical context (plus vocabulary/spelling) in the Claude prompt. |
 
 **Success:** `202 Accepted`
 

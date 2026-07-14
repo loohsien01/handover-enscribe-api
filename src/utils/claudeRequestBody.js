@@ -19,6 +19,13 @@ const SOAP_NOTE_SYSTEM_PREAMBLE =
     'Default: base the note solely on the encounter transcript — summarize clinician speech; do not add clinical content that was not discussed. ' +
     'Leave fields blank when not discussed. Never use \'•\' symbol - use \'-\' for bullet points instead.';
 
+const SOAP_NOTE_SYSTEM_PREAMBLE_WITH_PRE_VISIT =
+    'You are a clinical documentation assistant trained to generate SOAP notes from detailed patient encounters. ' +
+    'When a pre-visit summary is provided, you are merging that historical context with today\'s visit transcript into a single, comprehensive clinical note. ' +
+    'The note must reflect today\'s visit (transcript) while incorporating all relevant historical context from the pre-visit summary. ' +
+    'Do not invent visit events, findings, assessments, or plan decisions that were not discussed today. ' +
+    'Leave fields blank when neither source supports them. Never use \'•\' symbol - use \'-\' for bullet points instead.';
+
 const SOAP_NOTE_MEDICATION_NAME_EXCEPTION =
     'Exception (medication names only): Speech-to-text often mistranscribes drug names. This is the only case where you may depart from verbatim transcript wording. ' +
     'For Medications and medication references in Plan: treat <dotphrase source="doctor">…</dotphrase> text as authoritative; ' +
@@ -38,8 +45,8 @@ function buildSoapNoteUserMessage(transcript, preVisitContext, patientEncounterT
         patientEncounterTitle != null ? String(patientEncounterTitle).trim() : '';
 
     // The encounter title is a PRIMARY source: prepend it inside the transcript block itself so
-    // the model treats it as part of today's visit (unlike the pre-visit summary, which is
-    // reference-only). Useful for anchoring names/spellings (e.g. patient name).
+    // the model treats it as part of today's visit. The pre-visit summary is historical context
+    // for the same patient (merged in), not a substitute for today's discussion.
     const transcriptBlock = encounterTitle
         ? `Title: ${encounterTitle}
 ${transcript}`
@@ -55,7 +62,7 @@ ${transcriptBlock}
 
     if (title || summaryText) {
         content += `
-Pre-visit summary (reference only — prepared before this visit and may be outdated):
+Pre-visit summary (historical context for the same patient — prepared before this visit):
 `;
         if (title) {
             content += `Title (prefer spellings from this line when transcript ASR is ambiguous): ${title}
@@ -67,9 +74,11 @@ ${summaryText}
 `;
         }
         content += `
-Use the transcript as the sole authority for what was discussed today — do not add clinical content from the pre-visit summary unless it also appears in the transcript.
+You are merging this pre-visit summary with today's visit transcript into a single, comprehensive clinical note. Produce a note that reflects today's visit (the transcript) while incorporating all relevant historical context from the pre-visit summary (e.g. past history, chronic problems, home medications, allergies, and other background that remains clinically relevant even if not restated today).
+Today's discussion, exam findings, assessment, and plan must come from the transcript — do not invent new visit events or decisions that were not discussed.
+If the transcript and pre-visit summary conflict on current clinical facts (symptoms, meds, doses, status, plan), prefer the transcript as the up-to-date source; keep non-contradicted historical context from the pre-visit summary.
 If the pre-visit summary appears to describe a different patient or visit than the transcript, ignore it entirely — do not use it for clinical content or spelling.
-For spelling and vocabulary only: when speech-to-text may have garbled names, medications, ages (e.g. forty vs fourteen), or other terms, prefer spellings from the pre-visit summary title and body over verbatim transcript wording — but only when they clearly refer to the same patient and topic as the transcript. This does not permit importing problems, medications, or plan items not discussed in the visit.
+For spelling and proper nouns: when speech-to-text may have garbled proper nouns such as names, medications, ages (e.g. forty vs fourteen), or other terms, prefer spellings from the pre-visit summary (especially any vocabulary section, plus title and body) over verbatim transcript wording — but only when they clearly refer to the same patient and topic as the transcript.
 `;
     }
 
@@ -107,11 +116,19 @@ function escapeJsonString(str) {
  *
  * @param {string} transcript - The masked medical transcript
  * @param {Array} noteTemplateSections - Optional note template sections with { name, layout, details }
- * @param {{ title?: string, text?: string } | null} [preVisitContext] - Optional pre-visit summary for vocabulary/spelling anchor
+ * @param {{ title?: string, text?: string } | null} [preVisitContext] - Optional pre-visit summary as historical context to merge with today's transcript
  * @param {string | null} [patientEncounterTitle] - From API `patient_encounter_name`; prepended as `Title:` in transcript (primary source)
  * @returns {object} Claude Bedrock request body for SOAP note generation
  */
 export function getSoapNoteRequestBody(transcript, noteTemplateSections = null, preVisitContext = null, patientEncounterTitle = null) {
+    const hasPreVisitContext = Boolean(
+        (preVisitContext?.title != null && String(preVisitContext.title).trim()) ||
+        (preVisitContext?.text != null && String(preVisitContext.text).trim())
+    );
+    const systemPreamble = hasPreVisitContext
+        ? SOAP_NOTE_SYSTEM_PREAMBLE_WITH_PRE_VISIT
+        : SOAP_NOTE_SYSTEM_PREAMBLE;
+
     // Build JSON schema based on whether we have a note template
     let jsonSchemaDescription;
     
@@ -154,7 +171,7 @@ You MUST return a valid JSON object with this exact structure:
         system: [
             {
                 type: "text",
-                text: `${SOAP_NOTE_SYSTEM_PREAMBLE}\n\n${SOAP_NOTE_MEDICATION_NAME_EXCEPTION}`,
+                text: `${systemPreamble}\n\n${SOAP_NOTE_MEDICATION_NAME_EXCEPTION}`,
                 cache_control: { type: "ephemeral" }
             },
             {
