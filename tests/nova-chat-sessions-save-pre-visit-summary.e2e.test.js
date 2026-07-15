@@ -186,6 +186,7 @@ test('1: completions-and-save-pre-visit-summary → complete + pre_visit_summary
       action: 'sign-in',
       email: account.email,
       password: account.password,
+      turnstileToken: process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN,
     }),
   });
   assert.equal(signIn.ok, true);

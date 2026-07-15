@@ -91,6 +91,27 @@ export function hasBillingUsageLimitTestAccount() {
 }
 
 /**
+ * Cloudflare Turnstile is required server-side on sign-in / sign-up /
+ * forgot-password (docs/AUTH_BOT_PROTECTION.md). Integration tests hit a live
+ * server, so they cannot solve a real challenge — instead the server honors a
+ * non-production bypass token (`CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN`, disabled when
+ * NODE_ENV === 'production'). Both the server and the tests load the same
+ * `.env.local`, so setting that one var enables the whole suite.
+ *
+ * @returns {string} the bypass token, or '' when not configured.
+ */
+export function getTurnstileTestToken() {
+  return (process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN || '').trim();
+}
+
+/**
+ * @returns {boolean} true when the non-prod Turnstile bypass token is configured.
+ */
+export function hasTurnstileTestToken() {
+  return getTurnstileTestToken().length > 0;
+}
+
+/**
  * Get API base URL for tests
  * Can be overridden with API_BASE_URL environment variable
  * Default: http://localhost:3001 (local testing)

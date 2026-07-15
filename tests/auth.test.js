@@ -10,6 +10,14 @@
  * Test 9 requires `TEST_ACCOUNT_EMAIL` (duplicate email → 409).
  * Test 10 requires `TEST_ACCOUNT_EMAIL` and `TEST_ACCOUNT_PASSWORD` (sign-in smoke).
  * Tests 23–26 cover confirm-sign-up validation (Zod + Cognito reject of bad code).
+ * Tests 35–39 cover Turnstile enforcement (docs/AUTH_BOT_PROTECTION.md): sign-in,
+ * sign-up and forgot-password require a `turnstileToken`, verified server-side.
+ *
+ * Turnstile note: the server requires a valid Turnstile token on sign-in /
+ * sign-up / forgot-password. Live tests cannot solve a real challenge, so set
+ * `CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN` (any non-empty value) in `.env.local` — the same
+ * value is read by the server (non-prod only) and by these tests. Without it, the
+ * happy/business-path tests are skipped; the "token required" negatives still run.
  */
 import dotenv from 'dotenv';
 import path from 'path';
@@ -21,9 +29,42 @@ const envPath = path.resolve(__dirname, '../.env.local');
 dotenv.config({ path: envPath });
 
 import { TestRunner } from './testUtils.js';
-import { getTestAccount, hasTestAccounts } from './testConfig.js';
+import {
+  getTestAccount,
+  hasTestAccounts,
+  getTurnstileTestToken,
+  hasTurnstileTestToken,
+} from './testConfig.js';
 
 const runner = new TestRunner('Authentication API Tests');
+
+/**
+ * Turnstile is required server-side on sign-in / sign-up / forgot-password
+ * (docs/AUTH_BOT_PROTECTION.md). Tests hit a live server and cannot solve a real
+ * challenge, so they rely on the non-prod bypass token. When it is not configured,
+ * the turnstile-gated happy/business paths are skipped (a missing/invalid token
+ * would 400 before the controller runs); the "token is required" negative tests
+ * still run since they assert that 400.
+ */
+const TURNSTILE_TOKEN = getTurnstileTestToken();
+const turnstileReady = hasTurnstileTestToken();
+
+/** Push a uniform skipped result so suite numbering stays stable. */
+function pushSkipped(name, testNumber, expectedStatus, customMessage) {
+  runner.results.push({
+    name,
+    passed: true,
+    skipped: true,
+    endpoint: '/api/auth',
+    method: 'POST',
+    status: null,
+    expectedStatus,
+    body: {},
+    customMessage,
+    testNumber,
+    timestamp: new Date().toISOString(),
+  });
+}
 
 /** Skips test 8 by default. Set `false` to enable. */
 const skipTest8 = false;
@@ -79,6 +120,14 @@ function extractTidFromWrapperJwt(wrapperJwt) {
 async function runAuthTests() {
   console.log('Starting Authentication API tests...');
   console.log(`Server: ${runner.baseUrl}\n`);
+
+  if (!turnstileReady) {
+    console.warn(
+      '⚠️  CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN not set in .env.local — sign-in / sign-up / ' +
+      'forgot-password happy-path tests will be skipped. Set it (any non-empty ' +
+      'value, matched by the server) to run them.\n'
+    );
+  }
 
   // 1
   await runner.test('Sign-up without password', {
@@ -264,8 +313,8 @@ async function runAuthTests() {
     },
   });
 
-  // 8: requires DB seed `userProfiles.username === "info"`
-  if (!skipTest8) {
+  // 8: requires DB seed `userProfiles.username === "info"` + turnstile bypass
+  if (!skipTest8 && turnstileReady) {
     await runner.test(
       'Sign-up with userProfile username "info" (409 USERNAME_TAKEN, no auth user)',
       {
@@ -278,6 +327,7 @@ async function runAuthTests() {
           email: `info@sjpedgi.doctor`,
           password: '@2Sengaring',
           userProfile: { username: 'info', specialty: 'Internal Medicine' },
+          turnstileToken: TURNSTILE_TOKEN,
         },
         expectedStatus: 409,
         customValidator: (body) => {
@@ -296,27 +346,19 @@ async function runAuthTests() {
       }
     );
   } else {
-    console.log(
-      '\n⏭️  Test 8: SKIPPED BY DEFAULT (set skipTest8 = false to enable).\n'
+    const reason = skipTest8 ? 'SKIPPED (skipTest8)' : 'SKIPPED (no CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN)';
+    console.log(`\n⏭️  Test 8: ${reason}.\n`);
+    pushSkipped(
+      'Sign-up with userProfile username "info" (409 USERNAME_TAKEN, no auth user)',
+      8,
+      409,
+      reason
     );
-    runner.results.push({
-      name: 'Sign-up with userProfile username "info" (409 USERNAME_TAKEN, no auth user)',
-      passed: true,
-      skipped: true,
-      endpoint: '/api/auth',
-      method: 'POST',
-      status: null,
-      expectedStatus: 409,
-      body: {},
-      customMessage: 'SKIPPED (skipTest8)',
-      testNumber: 8,
-      timestamp: new Date().toISOString(),
-    });
   }
 
-  // 9 — duplicate email (requires TEST_ACCOUNT_EMAIL in .env.local)
+  // 9 — duplicate email (requires TEST_ACCOUNT_EMAIL in .env.local + turnstile bypass)
   const dupEmailAccount = getTestAccount('primary');
-  if (dupEmailAccount?.email) {
+  if (dupEmailAccount?.email && turnstileReady) {
     await runner.test('Sign-up with existing email (409 EMAIL_ALREADY_REGISTERED)', {
       testNumber: 9,
       method: 'POST',
@@ -327,6 +369,7 @@ async function runAuthTests() {
         email: dupEmailAccount.email,
         password: 'AnotherPassword123!',
         userProfile: { username: 'dup_email_probe_user', specialty: 'Cardiology' },
+        turnstileToken: TURNSTILE_TOKEN,
       },
       expectedStatus: 409,
       customValidator: (body) => {
@@ -344,27 +387,16 @@ async function runAuthTests() {
       },
     });
   } else {
-    console.warn(
-      '⚠️  Skipping test 9: set TEST_ACCOUNT_EMAIL in .env.local for duplicate-email sign-up test.'
-    );
-    runner.results.push({
-      name: 'Sign-up with existing email (409 EMAIL_ALREADY_REGISTERED)',
-      passed: true,
-      skipped: true,
-      endpoint: '/api/auth',
-      method: 'POST',
-      status: null,
-      expectedStatus: 409,
-      body: {},
-      customMessage: 'SKIPPED: no primary test email',
-      testNumber: 9,
-      timestamp: new Date().toISOString(),
-    });
+    const reason = !dupEmailAccount?.email
+      ? 'SKIPPED: no primary test email'
+      : 'SKIPPED: no CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN';
+    console.warn(`⚠️  Skipping test 9: ${reason}.`);
+    pushSkipped('Sign-up with existing email (409 EMAIL_ALREADY_REGISTERED)', 9, 409, reason);
   }
 
-  // 10 — requires TEST_ACCOUNT_* in .env.local (no dummy sign-in fallback)
+  // 10 — requires TEST_ACCOUNT_* in .env.local (no dummy sign-in fallback) + turnstile bypass
   const testAccount = getTestAccount('primary');
-  if (testAccount?.email && testAccount?.password) {
+  if (testAccount?.email && testAccount?.password && turnstileReady) {
     await runner.test('Sign-in with email and password (real credentials)', {
       testNumber: 10,
       method: 'POST',
@@ -373,6 +405,7 @@ async function runAuthTests() {
         action: 'sign-in',
         email: testAccount.email,
         password: testAccount.password,
+        turnstileToken: TURNSTILE_TOKEN,
       },
       expectedStatus: 200,
       expectedFields: ['user', 'token', 'token.access_token', 'tid'],
@@ -386,43 +419,37 @@ async function runAuthTests() {
       },
     });
   } else {
-    console.warn(
-      '⚠️  Skipping test 10: set TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD in .env.local for sign-in smoke test.'
-    );
-    runner.results.push({
-      name: 'Sign-in with email and password (real credentials)',
-      passed: true,
-      skipped: true,
-      endpoint: '/api/auth',
-      method: 'POST',
-      status: null,
-      expectedStatus: 200,
-      body: {},
-      customMessage: 'SKIPPED: no primary test credentials',
-      testNumber: 10,
-      timestamp: new Date().toISOString(),
-    });
+    const reason = !(testAccount?.email && testAccount?.password)
+      ? 'SKIPPED: no primary test credentials'
+      : 'SKIPPED: no CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN';
+    console.warn(`⚠️  Skipping test 10: ${reason}.`);
+    pushSkipped('Sign-in with email and password (real credentials)', 10, 200, reason);
   }
 
-  // 11
-  await runner.test('Sign-in with wrong password', {
-    testNumber: 11,
-    method: 'POST',
-    endpoint: '/api/auth',
-    body: {
-      action: 'sign-in',
-      email: 'existinguser@example.com',
-      password: 'WrongPassword123!',
-    },
-    expectedStatus: 401,
-    customValidator: (body) => {
-      // Business error (not Zod) - should be plain error string from Supabase
-      return {
-        passed: body?.error && typeof body.error === 'string',
-        message: body?.error || 'Should return error message for wrong password'
-      };
-    },
-  });
+  // 11 — business error (401) only reachable once turnstile passes
+  if (turnstileReady) {
+    await runner.test('Sign-in with wrong password', {
+      testNumber: 11,
+      method: 'POST',
+      endpoint: '/api/auth',
+      body: {
+        action: 'sign-in',
+        email: 'existinguser@example.com',
+        password: 'WrongPassword123!',
+        turnstileToken: TURNSTILE_TOKEN,
+      },
+      expectedStatus: 401,
+      customValidator: (body) => {
+        // Business error (not Zod) - should be plain error string from Supabase
+        return {
+          passed: body?.error && typeof body.error === 'string',
+          message: body?.error || 'Should return error message for wrong password'
+        };
+      },
+    });
+  } else {
+    pushSkipped('Sign-in with wrong password', 11, 401, 'SKIPPED: no CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN');
+  }
 
   // 11
   await runner.test('Sign-in with empty password', {
@@ -449,18 +476,23 @@ async function runAuthTests() {
     },
   });
 
-  // 13
-  await runner.test('Sign-in with non-existent user', {
-    testNumber: 13,
-    method: 'POST',
-    endpoint: '/api/auth',
-    body: {
-      action: 'sign-in',
-      email: 'nonexistent@example.com',
-      password: 'Password123!',
-    },
-    expectedStatus: 401,
-  });
+  // 13 — business error (401) only reachable once turnstile passes
+  if (turnstileReady) {
+    await runner.test('Sign-in with non-existent user', {
+      testNumber: 13,
+      method: 'POST',
+      endpoint: '/api/auth',
+      body: {
+        action: 'sign-in',
+        email: 'nonexistent@example.com',
+        password: 'Password123!',
+        turnstileToken: TURNSTILE_TOKEN,
+      },
+      expectedStatus: 401,
+    });
+  } else {
+    pushSkipped('Sign-in with non-existent user', 13, 401, 'SKIPPED: no CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN');
+  }
 
   // 14
   await runner.test('Check validity without auth header', {
@@ -703,10 +735,143 @@ async function runAuthTests() {
   });
 
   // ===========================================
+  // TURNSTILE ENFORCEMENT (docs/AUTH_BOT_PROTECTION.md)
+  // Token is REQUIRED server-side; these run regardless of bypass config since
+  // they assert the request is rejected when the token is absent.
+  // ===========================================
+
+  // 35 — sign-in requires turnstileToken
+  await runner.test('Sign-in without turnstileToken (400 Zod required)', {
+    testNumber: 35,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'sign-in',
+      email: 'existinguser@example.com',
+      password: 'Password123!',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const isZodError = body?.error?.name === 'ZodError' && body?.error?.message;
+      const issues = parseZodIssues(body);
+      const hit = issues.some((i) => Array.isArray(i.path) && i.path.includes('turnstileToken'));
+      return {
+        passed: isZodError && hit,
+        message: isZodError && hit
+          ? 'Sign-in rejected without turnstileToken'
+          : `Expected ZodError on turnstileToken. Got: ${JSON.stringify(body?.error)}`,
+      };
+    },
+  });
+
+  // 36 — sign-up requires turnstileToken
+  await runner.test('Sign-up without turnstileToken (400 Zod required)', {
+    testNumber: 36,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'sign-up',
+      email: 'turnstile_signup@example.com',
+      password: 'TestPassword123!',
+      userProfile: { username: 'turnstile_probe', specialty: 'Cardiology' },
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const isZodError = body?.error?.name === 'ZodError' && body?.error?.message;
+      const issues = parseZodIssues(body);
+      const hit = issues.some((i) => Array.isArray(i.path) && i.path.includes('turnstileToken'));
+      return {
+        passed: isZodError && hit,
+        message: isZodError && hit
+          ? 'Sign-up rejected without turnstileToken'
+          : `Expected ZodError on turnstileToken. Got: ${JSON.stringify(body?.error)}`,
+      };
+    },
+  });
+
+  // 37 — forgot-password requires turnstileToken
+  await runner.test('Forgot-password without turnstileToken (400 Zod required)', {
+    testNumber: 37,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'forgot-password',
+      email: 'existinguser@example.com',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const isZodError = body?.error?.name === 'ZodError' && body?.error?.message;
+      const issues = parseZodIssues(body);
+      const hit = issues.some((i) => Array.isArray(i.path) && i.path.includes('turnstileToken'));
+      return {
+        passed: isZodError && hit,
+        message: isZodError && hit
+          ? 'Forgot-password rejected without turnstileToken'
+          : `Expected ZodError on turnstileToken. Got: ${JSON.stringify(body?.error)}`,
+      };
+    },
+  });
+
+  // 38 — forgot-password requires a valid email (Zod)
+  await runner.test('Forgot-password with invalid email (400 Zod)', {
+    testNumber: 38,
+    method: 'POST',
+    endpoint: '/api/auth',
+    body: {
+      action: 'forgot-password',
+      email: 'not-an-email',
+      turnstileToken: TURNSTILE_TOKEN || 'placeholder-token',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const isZodError = body?.error?.name === 'ZodError' && body?.error?.message;
+      const hasEmailIssue = /invalid_format.*email|Invalid email/.test(JSON.stringify(body?.error));
+      return {
+        passed: isZodError && hasEmailIssue,
+        message: isZodError && hasEmailIssue
+          ? 'Forgot-password rejected for invalid email'
+          : `Expected ZodError on email. Got: ${JSON.stringify(body?.error)}`,
+      };
+    },
+  });
+
+  // 39 — forgot-password happy path: always 200 (enumeration-safe) once turnstile passes
+  if (turnstileReady) {
+    await runner.test('Forgot-password with valid token (200 generic message)', {
+      testNumber: 39,
+      method: 'POST',
+      endpoint: '/api/auth',
+      body: {
+        action: 'forgot-password',
+        email: 'nobody-forgot-password@example.com',
+        turnstileToken: TURNSTILE_TOKEN,
+      },
+      expectedStatus: 200,
+      expectedFields: ['message'],
+      customValidator: (body) => {
+        const passed = typeof body?.message === 'string' && body.message.length > 0;
+        return {
+          passed,
+          message: passed
+            ? 'Forgot-password returns generic 200 (no account enumeration)'
+            : `Expected generic 200 message. Got: ${JSON.stringify(body)}`,
+        };
+      },
+    });
+  } else {
+    pushSkipped(
+      'Forgot-password with valid token (200 generic message)',
+      39,
+      200,
+      'SKIPPED: no CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN'
+    );
+  }
+
+  // ===========================================
   // REAL ACCOUNT TESTS (if configured)
   // ===========================================
   
-  if (hasTestAccounts()) {
+  if (hasTestAccounts() && turnstileReady) {
     const testAccount = getTestAccount('primary');
     
     if (testAccount && testAccount.email && testAccount.password) {
@@ -721,6 +886,7 @@ async function runAuthTests() {
           action: 'sign-in',
           email: testAccount.email,
           password: testAccount.password,
+          turnstileToken: TURNSTILE_TOKEN,
         },
         expectedStatus: 200,
         expectedFields: ['token.access_token', 'user.id', 'user.email', 'tid'],
@@ -758,15 +924,15 @@ async function runAuthTests() {
       }
     }
   } else {
-    console.log('\n⚠️  Test accounts not configured. Skipping real credential tests.');
-    console.log('To enable: Add TEST_ACCOUNT_EMAIL and TEST_ACCOUNT_PASSWORD to .env.local\n');
+    console.log('\n⚠️  Test accounts not configured or no CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN. Skipping real credential tests.');
+    console.log('To enable: Add TEST_ACCOUNT_EMAIL, TEST_ACCOUNT_PASSWORD and CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN to .env.local\n');
   }
 
   // ===========================================
   // NEW: Token Refresh and Cookie Status Tests
   // ===========================================
 
-  if (hasTestAccounts()) {
+  if (hasTestAccounts() && turnstileReady) {
     const testAccount = getTestAccount('primary');
     
     if (testAccount && testAccount.email && testAccount.password) {
@@ -784,6 +950,7 @@ async function runAuthTests() {
             action: 'sign-in',
             email: testAccount.email,
             password: testAccount.password,
+            turnstileToken: TURNSTILE_TOKEN,
           }),
         });
 

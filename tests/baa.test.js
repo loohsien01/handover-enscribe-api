@@ -96,6 +96,7 @@ export async function runBaaTests() {
       action: 'sign-in',
       email: billingAccount.email,
       password: billingAccount.password,
+      turnstileToken: process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN,
     }),
   });
 

@@ -145,6 +145,7 @@ test(
         action: 'sign-in',
         email: account.email,
         password: account.password,
+        turnstileToken: process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN,
       }),
     });
     assert.equal(signIn.ok, true, `sign-in failed ${signIn.status}`);

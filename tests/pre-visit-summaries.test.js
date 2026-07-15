@@ -54,6 +54,7 @@ export async function runPreVisitSummariesTests() {
           action: 'sign-in',
           email: testAccount.email,
           password: testAccount.password,
+          turnstileToken: process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN,
         }),
       });
       if (signInResponse.ok) {

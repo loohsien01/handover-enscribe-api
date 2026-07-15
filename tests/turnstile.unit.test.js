@@ -122,6 +122,58 @@ test('valid token verified by siteverify returns success', async () => {
   }
 });
 
+test('valid token returns the siteverify action', async () => {
+  const prev = snapshotSecrets();
+  process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY = 'sk_test';
+  try {
+    await withMockedFetch(
+      async () => jsonResponse({ success: true, action: 'sign-in' }),
+      async () => {
+        const r = await verifyTurnstile('good-token');
+        assert.equal(r.success, true);
+        assert.equal(r.action, 'sign-in');
+      },
+    );
+  } finally {
+    restoreSecrets(prev);
+  }
+});
+
+test('expectedAction match passes', async () => {
+  const prev = snapshotSecrets();
+  process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY = 'sk_test';
+  try {
+    await withMockedFetch(
+      async () => jsonResponse({ success: true, action: 'sign-up' }),
+      async () => {
+        const r = await verifyTurnstile('good-token', { expectedAction: 'sign-up' });
+        assert.equal(r.success, true);
+        assert.equal(r.action, 'sign-up');
+      },
+    );
+  } finally {
+    restoreSecrets(prev);
+  }
+});
+
+test('expectedAction mismatch fails closed', async () => {
+  const prev = snapshotSecrets();
+  process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY = 'sk_test';
+  try {
+    await withMockedFetch(
+      async () => jsonResponse({ success: true, action: 'sign-in' }),
+      async () => {
+        const r = await verifyTurnstile('good-token', { expectedAction: 'sign-up' });
+        assert.equal(r.success, false);
+        assert.equal(r.reason, 'action_mismatch');
+        assert.equal(r.action, 'sign-in');
+      },
+    );
+  } finally {
+    restoreSecrets(prev);
+  }
+});
+
 test('siteverify success:false surfaces error codes and fails', async () => {
   const prev = snapshotSecrets();
   process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY = 'sk_test';
@@ -174,5 +226,66 @@ test('network error fails closed', async () => {
     );
   } finally {
     restoreSecrets(prev);
+  }
+});
+
+test('non-prod bypass token succeeds without calling siteverify', async () => {
+  const prevSecrets = snapshotSecrets();
+  const prevEnv = process.env.NODE_ENV;
+  const prevBypass = process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN;
+  process.env.NODE_ENV = 'development';
+  process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN = 'bypass-123';
+  // No secret configured: bypass must short-circuit before the secret check.
+  delete process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY;
+  delete process.env.TURNSTILE_SECRET_KEY;
+  let called = false;
+  try {
+    await withMockedFetch(
+      async () => {
+        called = true;
+        return jsonResponse({ success: true });
+      },
+      async () => {
+        const r = await verifyTurnstile('bypass-123', { expectedAction: 'sign-in' });
+        assert.equal(r.success, true);
+        assert.equal(r.bypass, true);
+        // expectedAction is satisfied by the bypass.
+        assert.equal(r.action, 'sign-in');
+      },
+    );
+    assert.equal(called, false, 'siteverify should not be called for the bypass token');
+  } finally {
+    restoreSecrets(prevSecrets);
+    if (prevEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevEnv;
+    if (prevBypass === undefined) delete process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN;
+    else process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN = prevBypass;
+  }
+});
+
+test('bypass token is ignored in production (fails closed)', async () => {
+  const prevSecrets = snapshotSecrets();
+  const prevEnv = process.env.NODE_ENV;
+  const prevBypass = process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN;
+  process.env.NODE_ENV = 'production';
+  process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN = 'bypass-123';
+  process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY = 'sk_test';
+  try {
+    await withMockedFetch(
+      // In production the bypass is inert; the token is sent to siteverify, which
+      // (mocked) rejects it — proving no bypass path exists in prod.
+      async () => jsonResponse({ success: false, 'error-codes': ['invalid-input-response'] }),
+      async () => {
+        const r = await verifyTurnstile('bypass-123', { expectedAction: 'sign-in' });
+        assert.equal(r.success, false);
+        assert.notEqual(r.bypass, true);
+      },
+    );
+  } finally {
+    restoreSecrets(prevSecrets);
+    if (prevEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevEnv;
+    if (prevBypass === undefined) delete process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN;
+    else process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN = prevBypass;
   }
 });

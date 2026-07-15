@@ -137,6 +137,7 @@ async function runRecordingsTests() {
           action: 'sign-in',
           email: testAccount.email,
           password: testAccount.password,
+          turnstileToken: process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN,
         }),
       });
 
@@ -529,6 +530,7 @@ async function runRecordingsCrudTests() {
           action: 'sign-in',
           email: testAccount.email,
           password: testAccount.password,
+          turnstileToken: process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN,
         }),
       });
 
@@ -673,6 +675,7 @@ async function runRecordingsUploadTests() {
           action: 'sign-in',
           email: testAccount.email,
           password: testAccount.password,
+          turnstileToken: process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN,
         }),
       });
 
@@ -1253,6 +1256,7 @@ async function runRecordingsDeleteStorageTests() {
           action: 'sign-in',
           email: testAccount.email,
           password: testAccount.password,
+          turnstileToken: process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN,
         }),
       });
 

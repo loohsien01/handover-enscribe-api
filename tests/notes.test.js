@@ -250,6 +250,7 @@ async function runNotesTests() {
             action: 'sign-in',
             email: testAccount.email,
             password: testAccount.password,
+            turnstileToken: process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN,
           }),
         });
         const signInResponse = await response.json();

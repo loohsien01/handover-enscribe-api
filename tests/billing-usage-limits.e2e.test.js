@@ -195,7 +195,7 @@ async function signIn(email, password) {
   const res = await fetch(`${base}/api/auth`, {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ action: 'sign-in', email, password }),
+    body: JSON.stringify({ action: 'sign-in', email, password, turnstileToken: process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN }),
   });
   const body = await res.json().catch(() => ({}));
   assert.equal(res.status, 200, `sign-in failed: ${res.status} ${JSON.stringify(body)}`);

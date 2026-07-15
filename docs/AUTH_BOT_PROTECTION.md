@@ -61,11 +61,14 @@ is therefore driven by the **FE route**, not by server-side cohort lookup:
 
 - [x] Env var name chosen: **`CLOUDFLARE_TURNSTILE_SECRET_KEY`** (falls back to
   `TURNSTILE_SECRET_KEY`). In `.env.local` + `deploy.yml` (needs matching GitHub secret).
-- [x] `src/utils/turnstile.js` — `verifyTurnstile()` (siteverify, timeout, fail closed).
-- [x] `authSignInRequestSchema` — optional `turnstileToken`, optional `channel`.
-- [x] `src/fastify/routes/auth.js` `sign-in` — verify-if-present before `authController.signIn`.
+- [x] `src/utils/turnstile.js` — `verifyTurnstile()` (siteverify, timeout, fail closed,
+  optional `expectedAction` binding).
+- [x] `authSignInRequestSchema` / `authSignUpRequestSchema` /
+  `authForgotPasswordRequestSchema` — **required** `turnstileToken`, optional `channel`.
+- [x] `src/fastify/routes/auth.js` `sign-in`, `sign-up`, `forgot-password` — require a
+  valid token and validate the Turnstile `action` matches the flow before invoking the
+  controller (**enforcement, Phase 1b**, no longer verify-if-present).
 - [x] `tests/turnstile.unit.test.js` (in `npm run test:unit`).
-- [ ] `sign-up` / `forgot-password` guards — deferred (sign-in first).
 - [ ] Add `CLOUDFLARE_TURNSTILE_SECRET_KEY` to GitHub Actions secrets.
 
 **FE follow-up (other repo, to convey):** temporary beta login route that renders the
@@ -205,9 +208,16 @@ flowchart TB
 | Variable | Where | Phase |
 |----------|--------|-------|
 | `VITE_TURNSTILE_SITE_KEY` | FE build | 1 |
-| `TURNSTILE_SECRET_KEY` | BE secrets | 1 |
+| `CLOUDFLARE_TURNSTILE_SECRET_KEY` (fallback `TURNSTILE_SECRET_KEY`) | BE secrets | 1 |
+| `CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN` | BE **non-prod only** (`.env.local`) | 1 |
 | Rate-limit config (thresholds, Redis if used) | BE | 2 |
 | WAF / Cloudflare zone IDs | Infra | 3 |
+
+> **`CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN`** lets integration tests (which hit a live server
+> and cannot solve a real challenge) pass a fixed token that `verifyTurnstile`
+> accepts. It is honored **only when `NODE_ENV !== 'production'`** and must never be
+> set in production (it is intentionally absent from `deploy.yml`). Both the server
+> and the test suite read this same variable from `.env.local`.
 
 ---
 

@@ -176,6 +176,7 @@ test('1: session + 2× completions + AI title + GET', async (t) => {
       action: 'sign-in',
       email: account.email,
       password: account.password,
+      turnstileToken: process.env.CLOUDFLARE_TURNSTILE_TEST_BYPASS_TOKEN,
     }),
   });
   assert.equal(signIn.ok, true);

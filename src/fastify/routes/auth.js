@@ -47,6 +47,38 @@ async function authRoutes(fastify, opts) {
     user && typeof user === 'object' ? { id: user.id, email: user.email } : user;
 
   /**
+   * Enforce Cloudflare Turnstile server-side (docs/AUTH_BOT_PROTECTION.md).
+   *
+   * A required, verified token — an "optional/verify-if-present" check can be
+   * bypassed by calling the API directly. The token is bound to `expectedAction`
+   * so a token issued for one flow (e.g. sign-in) cannot be replayed against
+   * another (e.g. sign-up). Fails closed on missing secret / network errors.
+   *
+   * @returns {Promise<boolean>} true if verified; when false, an error reply has
+   *   already been sent and the caller must return immediately.
+   */
+  const enforceTurnstile = async (request, reply, { token, action, channel }) => {
+    const turnstile = await verifyTurnstile(token, {
+      remoteip: request.ip,
+      expectedAction: action,
+    });
+    console.log(`[${action}] Turnstile check`, {
+      channel: channel || 'unspecified',
+      success: turnstile.success,
+      reason: turnstile.reason,
+      action: turnstile.action,
+    });
+    if (!turnstile.success) {
+      // Generic message; do not leak Cloudflare error codes to clients.
+      reply.status(400).send({
+        error: 'Verification failed. Please retry the challenge.',
+      });
+      return false;
+    }
+    return true;
+  };
+
+  /**
    * POST /auth
    * Handles: sign-up, sign-in, sign-out, check-validity, resend, forgot-password
    * 
@@ -91,7 +123,15 @@ async function authRoutes(fastify, opts) {
             console.log('[sign-up] Response to FE', { status: 400, body: errBody });
             return reply.status(400).send(errBody);
           }
-          const { userProfile: signUpUserProfile } = validation.data;
+          const { userProfile: signUpUserProfile, turnstileToken: signUpTurnstileToken, channel: signUpChannel } = validation.data;
+
+          const signUpVerified = await enforceTurnstile(request, reply, {
+            token: signUpTurnstileToken,
+            action: 'sign-up',
+            channel: signUpChannel,
+          });
+          if (!signUpVerified) return reply;
+
           const result = await authController.signUp(email, password, {
             userProfile: signUpUserProfile,
           });
@@ -200,27 +240,16 @@ async function authRoutes(fastify, opts) {
             return reply.status(400).send({ error: serializeZodError(validation.error) });
           }
 
-          // Bot-protection soft rollout (docs/AUTH_BOT_PROTECTION.md).
-          // Verify-if-present: the beta login page sends a Turnstile token; the
-          // stable page omits it. When present we verify server-side and reject
-          // on failure. Absent token = stable path, proceeds unverified for now.
+          // Bot protection (docs/AUTH_BOT_PROTECTION.md): required, verified token.
+          // The schema requires turnstileToken, and it is verified server-side
+          // (bound to the 'sign-in' action) before the controller runs.
           const { turnstileToken, channel } = validation.data;
-          if (turnstileToken) {
-            const turnstile = await verifyTurnstile(turnstileToken, {
-              remoteip: request.ip,
-            });
-            console.log('[sign-in] Turnstile check', {
-              channel: channel || 'unspecified',
-              success: turnstile.success,
-              reason: turnstile.reason,
-            });
-            if (!turnstile.success) {
-              // Generic message; do not leak Cloudflare error codes to clients.
-              return reply.status(400).send({
-                error: 'Verification failed. Please retry the challenge.',
-              });
-            }
-          }
+          const signInVerified = await enforceTurnstile(request, reply, {
+            token: turnstileToken,
+            action: 'sign-in',
+            channel,
+          });
+          if (!signInVerified) return reply;
 
           const result = await authController.signIn(email, password);
           
@@ -345,6 +374,13 @@ async function authRoutes(fastify, opts) {
           if (!validation.success) {
             return reply.status(400).send({ error: serializeZodError(validation.error) });
           }
+
+          const forgotVerified = await enforceTurnstile(request, reply, {
+            token: validation.data.turnstileToken,
+            action: 'forgot-password',
+            channel: validation.data.channel,
+          });
+          if (!forgotVerified) return reply;
 
           const result = await authController.forgotPassword(validation.data.email, {
             redirectTo: validation.data.redirectTo,

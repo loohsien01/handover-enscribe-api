@@ -584,6 +584,10 @@ const userProfileCreateBodySchema = z.object({
  * POST request for auth sign-up action
  * Endpoint: POST /api/auth
  * Action: sign-up
+ *
+ * Bot protection (docs/AUTH_BOT_PROTECTION.md): `turnstileToken` is REQUIRED and
+ * verified server-side before the sign-up controller runs. The token must have
+ * been issued for the `sign-up` Turnstile action.
  */
 export const authSignUpRequestSchema = z.object({
   action: z.literal('sign-up'),
@@ -593,6 +597,8 @@ export const authSignUpRequestSchema = z.object({
   password: z.string()
     .min(8, 'Password must be at least 8 characters'),
   userProfile: userProfileCreateBodySchema,
+  turnstileToken: z.string().min(1, 'Verification is required').max(2048),
+  channel: z.enum(['beta', 'stable']).optional(),
 });
 
 /**
@@ -600,13 +606,14 @@ export const authSignUpRequestSchema = z.object({
  * Endpoint: POST /api/auth
  * Action: sign-in
  *
- * Bot-protection soft rollout (docs/AUTH_BOT_PROTECTION.md):
- *  - `turnstileToken` — optional Cloudflare Turnstile token. The beta login page
- *    sends it; the stable login page omits it. When present, the BE verifies it
- *    server-side (verify-if-present) and rejects on failure. Not yet required.
+ * Bot protection (docs/AUTH_BOT_PROTECTION.md):
+ *  - `turnstileToken` — REQUIRED Cloudflare Turnstile token, verified server-side
+ *    before the sign-in controller runs. An optional/verify-if-present token can
+ *    be bypassed by calling the API directly, so it is enforced here. The token
+ *    must have been issued for the `sign-in` Turnstile action.
  *  - `channel` — optional cohort hint ('beta' | 'stable') for logging/metrics
  *    ONLY. It must never drive whether verification runs (a client could forge
- *    it); token presence is the actual signal.
+ *    it); the token is always verified.
  */
 export const authSignInRequestSchema = z.object({
   action: z.literal('sign-in'),
@@ -615,7 +622,7 @@ export const authSignInRequestSchema = z.object({
     .min(1, 'Email is required'),
   password: z.string()
     .min(1, 'Password is required'),
-  turnstileToken: z.string().min(1).max(2048).optional(),
+  turnstileToken: z.string().min(1, 'Verification is required').max(2048),
   channel: z.enum(['beta', 'stable']).optional(),
 });
 
@@ -656,11 +663,17 @@ export const authResendRequestSchema = z.object({
  * POST request for auth forgot-password action
  * Endpoint: POST /api/auth
  * Action: forgot-password
+ *
+ * Bot protection (docs/AUTH_BOT_PROTECTION.md): `turnstileToken` is REQUIRED and
+ * verified server-side before the forgot-password controller runs. The token must
+ * have been issued for the `forgot-password` Turnstile action.
  */
 export const authForgotPasswordRequestSchema = z.object({
   action: z.literal('forgot-password'),
   email: z.string().email('Invalid email format').min(1, 'Email is required'),
   redirectTo: z.string().url('redirectTo must be a valid URL').optional(),
+  turnstileToken: z.string().min(1, 'Verification is required').max(2048),
+  channel: z.enum(['beta', 'stable']).optional(),
 });
 
 /**
