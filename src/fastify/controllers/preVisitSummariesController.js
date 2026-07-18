@@ -10,7 +10,10 @@ import {
   pgCoerceBigIntFields,
 } from '../../utils/pgQueryHelpers.js';
 import * as encryptionUtils from '../../utils/encryptionUtils.js';
-import { chatSessionsTable } from '../../utils/novaChatPersistence.js';
+import {
+  chatSessionsTable,
+  deleteOwnedNovaChatSession,
+} from '../../utils/novaChatPersistence.js';
 import {
   PRE_VISIT_SUMMARY_DEFAULT_TITLE,
   normalizeNovaChatTitle,
@@ -462,6 +465,7 @@ export async function updatePreVisitSummary(request, reply) {
 
 /**
  * DELETE /api/pre-visit-summaries/:id
+ * Also hard-deletes the linked Nova chat session (messages / jobs cascade; Redis cache cleared).
  */
 export async function deletePreVisitSummary(request, reply) {
   const user = request.user;
@@ -478,12 +482,22 @@ export async function deletePreVisitSummary(request, reply) {
     const data = await pgQueryOne(
       `DELETE FROM ${preVisitSummariesTable}
         WHERE id = $1 AND user_id = $2
-        RETURNING id`,
+        RETURNING id, chat_id`,
       [id, user.id]
     );
 
     if (!data) {
       return reply.status(404).send({ error: 'Pre-Visit Summary not found' });
+    }
+
+    const chatId = typeof data.chat_id === 'string' ? data.chat_id : null;
+    if (chatId) {
+      try {
+        await deleteOwnedNovaChatSession(user.id, chatId);
+      } catch (chatErr) {
+        console.error('[deletePreVisitSummary] linked chat delete failed:', chatErr);
+        return reply.status(500).send({ error: pgErrorMessage(chatErr) });
+      }
     }
 
     return reply.status(200).send({ success: true, id: data.id });

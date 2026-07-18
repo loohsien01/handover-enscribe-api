@@ -214,7 +214,7 @@ export async function runNovaChatSessionsTests() {
   });
 
   if (!cachedChatId) {
-    console.warn('\n⚠️  Skipping Tests 4–12: session creation (Test 2) did not return chatId');
+    console.warn('\n⚠️  Skipping Tests 4–21: session creation (Test 2) did not return chatId');
     runner.printResults();
     const resultsFile = runner.saveResults('nova-chat-sessions-tests.json');
     console.log(`✅ Test results saved to: ${resultsFile}\n`);
@@ -431,6 +431,51 @@ export async function runNovaChatSessionsTests() {
     headers: authHeaders,
     expectedStatus: 400,
     expectedFields: ['error'],
+  });
+
+  await runner.test('Test 17: DELETE /api/nova/chat-sessions/:chatId without authentication', {
+    method: 'DELETE',
+    endpoint: `/api/nova/chat-sessions/${cachedChatId}`,
+    expectedStatus: 401,
+    expectedFields: ['error'],
+  });
+
+  await runner.test('Test 18: DELETE /api/nova/chat-sessions/:chatId invalid id (400)', {
+    method: 'DELETE',
+    endpoint: '/api/nova/chat-sessions/not-a-uuid',
+    headers: authHeaders,
+    expectedStatus: 400,
+    expectedFields: ['error'],
+  });
+
+  await runner.test('Test 19: DELETE /api/nova/chat-sessions/:chatId unknown valid UUID (404)', {
+    method: 'DELETE',
+    endpoint: '/api/nova/chat-sessions/f47ac10b-58cc-4372-a567-0e02b2c3d479',
+    headers: authHeaders,
+    expectedStatus: 404,
+    expectedFields: ['error', 'code'],
+  });
+
+  await runner.test('Test 20: DELETE /api/nova/chat-sessions/:chatId hard-deletes session', {
+    method: 'DELETE',
+    endpoint: `/api/nova/chat-sessions/${cachedChatId}`,
+    headers: authHeaders,
+    expectedStatus: 200,
+    expectedFields: ['success', 'chatId'],
+    customValidator: (data) => {
+      if (data?.success !== true || data?.chatId !== cachedChatId) {
+        return { passed: false, message: 'expected success true and matching chatId' };
+      }
+      return { passed: true, message: '' };
+    },
+  });
+
+  await runner.test('Test 21: GET after DELETE returns 404', {
+    method: 'GET',
+    endpoint: `/api/nova/chat-sessions/${cachedChatId}`,
+    headers: authHeaders,
+    expectedStatus: 404,
+    expectedFields: ['error', 'code'],
   });
 
   runner.printResults();

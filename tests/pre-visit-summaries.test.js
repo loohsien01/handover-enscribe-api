@@ -66,7 +66,7 @@ export async function runPreVisitSummariesTests() {
   }
 
   if (!accessToken) {
-    console.warn('\n⚠️  Skipping 3–14: no access token\n');
+    console.warn('\n⚠️  Skipping 3–15: no access token\n');
     runner.printResults();
     runner.saveResults('pre-visit-summaries-tests.json');
     return runner.getSummary();
@@ -139,7 +139,7 @@ export async function runPreVisitSummariesTests() {
   } else {
     const errBody = await createChatRes.json().catch(() => ({}));
     console.warn(
-      `\n⚠️  Skipping 7–14: POST /nova/chat-sessions returned ${createChatRes.status}: ${JSON.stringify(errBody)}\n`
+      `\n⚠️  Skipping 7–15: POST /nova/chat-sessions returned ${createChatRes.status}: ${JSON.stringify(errBody)}\n`
     );
     runner.printResults();
     runner.saveResults('pre-visit-summaries-tests.json');
@@ -307,6 +307,15 @@ export async function runPreVisitSummariesTests() {
     testNumber: 14,
     method: 'GET',
     endpoint: `/api/pre-visit-summaries/${createdId}`,
+    headers: authHeaders,
+    expectedStatus: 404,
+    expectedFields: ['error'],
+  });
+
+  await runner.test('15 — linked Nova chat is deleted with pre-visit summary', {
+    testNumber: 15,
+    method: 'GET',
+    endpoint: `/api/nova/chat-sessions/${chatId}`,
     headers: authHeaders,
     expectedStatus: 404,
     expectedFields: ['error'],

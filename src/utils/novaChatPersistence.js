@@ -3,7 +3,7 @@
  * wrapped master key (same AES pattern as notes).
  */
 import * as encryptionUtils from './encryptionUtils.js';
-import { createEmptyNovaSession, normalizeNovaSessionShape } from './novaRedisSession.js';
+import { createEmptyNovaSession, normalizeNovaSessionShape, novaSessionDelete } from './novaRedisSession.js';
 import { NOVA_CHAT_DEFAULT_TITLE } from './novaChatTitle.js';
 import { querySupabasePostgres } from './supabasePostgresPool.js';
 import {
@@ -13,6 +13,8 @@ import {
   isPgUniqueViolation,
   toPgJsonbParam,
 } from './pgQueryHelpers.js';
+import { getRedisClient } from './redisClient.js';
+import { clearNovaSummarizeDue } from './novaSummarizeQueue.js';
 
 export const chatSessionsTable = 'chat_sessions';
 export const chatMessagesTable = 'chat_messages';
@@ -472,6 +474,48 @@ export async function chatSessionExistsForUser(userId, chatId) {
     [chatId, userId]
   );
   return Boolean(row);
+}
+
+/**
+ * Hard-delete an owned chat session. Cascades to messages, token usage, and completion jobs.
+ *
+ * @param {string} userId
+ * @param {string} chatId
+ * @returns {Promise<boolean>} true when a row was deleted
+ */
+export async function deleteChatSessionForUser(userId, chatId) {
+  const row = await pgQueryOne(
+    `DELETE FROM ${chatSessionsTable}
+      WHERE id = $1 AND user_id = $2
+      RETURNING id`,
+    [chatId, userId]
+  );
+  return Boolean(row);
+}
+
+/**
+ * Standalone Nova chat delete: Postgres hard-delete + best-effort Redis hot session / summarize-due cleanup.
+ * Used by `DELETE /api/nova/chat-sessions/:chatId` and by pre-visit summary delete for the linked chat.
+ *
+ * @param {string} userId
+ * @param {string} chatId
+ * @returns {Promise<boolean>} true when a `chat_sessions` row was deleted
+ */
+export async function deleteOwnedNovaChatSession(userId, chatId) {
+  const deleted = await deleteChatSessionForUser(userId, chatId);
+  if (!deleted) return false;
+
+  try {
+    const redis = await getRedisClient();
+    if (redis) {
+      await novaSessionDelete(redis, userId, chatId);
+      await clearNovaSummarizeDue(redis, userId, chatId);
+    }
+  } catch (redisErr) {
+    console.warn('[deleteOwnedNovaChatSession] redis cleanup failed:', redisErr);
+  }
+
+  return true;
 }
 
 /**

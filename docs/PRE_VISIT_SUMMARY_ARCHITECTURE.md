@@ -84,7 +84,7 @@ CRUD **404** responses for unknown `:id` use `{ "error": "Pre-Visit Summary not 
 2. Persist each generated summary as an encrypted **`text`** string (same opaque-string model as [`notes.text`](./NOTES_API.md)), retained **indefinitely**.
 3. Reuse Nova chat for **follow-up** refinement in the same session after turn 1 — no separate chat product or extra API phase.
 4. Keep **`createPreVisitSummary`** as the single write path for new rows; the Nova processor calls it when the save route was used; the public **`POST /api/pre-visit-summaries`** handler calls the same function (manual recovery / rare direct create — still requires an existing Nova chat).
-5. Every pre-visit summary row is created from a Nova chat session via **`pre_visit_summaries.chat_id`** — generation and recovery require an existing **`chat_sessions`** thread; the Pre-Visit Summary page lists **`pre_visit_summaries`**, not all Nova chats. If the chat is later deleted, **`chat_id`** becomes **`null`** (summary text retained).
+5. Every pre-visit summary row is created from a Nova chat session via **`pre_visit_summaries.chat_id`** — generation and recovery require an existing **`chat_sessions`** thread; the Pre-Visit Summary page lists **`pre_visit_summaries`**, not all Nova chats. **`DELETE /api/pre-visit-summaries/:id`** also hard-deletes the linked Nova chat (DB + Redis). If the chat is deleted first by other means, **`chat_id`** becomes **`null`** (summary text retained).
 
 **Non-goals (v1):**
 
@@ -184,7 +184,8 @@ To keep the two UIs separate without a schema migration, the Nova list applies a
 
 - **Save failed** (`PRE_VISIT_SUMMARY_PERSIST_FAILED`) — no summary row → chat may still appear in the default Nova list.
 - **Abandoned flow** — chat created, turn 1 not saved → no summary row → appears in Nova list.
-- **Chat deleted** — `chat_id` SET NULL on summaries; chat drops from both lists; summary text remains on the Pre-Visit Summary page.
+- **Summary deleted** — linked Nova chat is hard-deleted (messages/jobs cascade; Redis session + summarize-due cleared); drops from both lists.
+- **Chat deleted first** — `chat_id` SET NULL on summaries; chat drops from both lists; summary text remains on the Pre-Visit Summary page.
 
 **Tests:** `tests/novaChatSessionsList.unit.test.js` (schema + SQL helpers); filter integration in `tests/nova-chat-sessions.test.js` (Tests 13–16).
 
@@ -300,6 +301,7 @@ The model returns **free-form text** per those instructions. That string is stor
 **`chat_id` rules:**
 
 - **At create:** every API-created pre-visit summary must reference an existing owned Nova chat (`chat_id` required).
+- **After summary delete:** `DELETE /api/pre-visit-summaries/:id` also hard-deletes the linked chat (when `chat_id` is set).
 - **After chat delete:** FK **`ON DELETE SET NULL`** — summary row and encrypted **`text`** remain; **`chat_id`** is **`null`**; FE hides “open transcript” or shows unavailable state.
 - **API (`POST /api/pre-visit-summaries` and Nova save processor):** **`chat_id` is required** — Zod rejects missing/invalid UUID; handler verifies the session exists and is owned by the caller before insert.
 - **Postgres:** column **nullable** — no `NOT NULL` constraint so service-role scripts and chat deletion are not blocked; all authenticated API create paths still mandate **`chat_id`**.
@@ -470,7 +472,7 @@ User manual edit (FE pre-visit summary editor) or title rename after Haiku extra
 
 ### `DELETE /api/pre-visit-summaries/:id`
 
-Hard delete own row. **200** with `{ "success": true, "id": "<uuid>" }`.
+Hard delete own row. When **`chat_id`** is set, also hard-deletes that owned Nova chat via the shared **`deleteOwnedNovaChatSession`** helper (same path as **`DELETE /api/nova/chat-sessions/:chatId`**: messages / jobs cascade; Redis hot session + summarize-due cleared best-effort). **200** with `{ "success": true, "id": "<uuid>" }`.
 
 **Errors (CRUD):** **401**, **404**, **400**, **500**.
 
@@ -818,7 +820,8 @@ Mirror `noteTemplates`: SELECT own + system; INSERT/UPDATE/DELETE own only; serv
 3. **Plain-text input only:** Prior charts are pasted into the Nova user `message`; summary **`text`** is the durable artifact.
 4. **Logical `pre_visit_summary_id` on job:** No FK to `pre_visit_summaries`; summary row may be deleted while job row retains id (ops should treat as dangling ref).
 5. **`chat_id` FK on summary:** `REFERENCES chat_sessions(id) ON DELETE SET NULL` — verify ownership on create; deleting a chat clears **`chat_id`** but keeps the summary row (FE should not offer transcript when **`chat_id`** is **`null`**).
-6. **HTTPS + Bearer JWT:** Same as all `/api` routes.
+6. **Summary delete cascades to chat:** `DELETE /api/pre-visit-summaries/:id` calls **`deleteOwnedNovaChatSession`** (same helper as `DELETE /api/nova/chat-sessions/:chatId`) so orphaned pre-visit threads do not linger in Nova.
+7. **HTTPS + Bearer JWT:** Same as all `/api` routes.
 
 ---
 
@@ -839,6 +842,7 @@ For backend tracking; FE can ignore this section.
 ### Controller & processor
 
 - [x] **`createPreVisitSummary`** + CRUD handlers
+- [x] `DELETE` cascades to linked Nova chat via shared `deleteOwnedNovaChatSession`
 - [x] `savePreVisitSummary` processor path + `pre_visit_summary_id` on job
 - [x] `PRE_VISIT_SUMMARY_PERSIST_FAILED` poll enrichment
 - [x] **`maybeRunPreVisitSummaryTitleDetailsExtraction`** + Redis poll cache
@@ -851,7 +855,8 @@ For backend tracking; FE can ignore this section.
 - [x] `POST …/completions-and-save-pre-visit-summary`
 - [x] Poll payload + `GET …/pre-visit-summary`
 - [x] Unit tests: `novaPreVisitSummaryTitleDetails`, `novaBedrockChat`, `novaPreVisitSummaryLimits`
-- [x] Integration: `tests/pre-visit-summaries.test.js`, save-route validation in `nova-chat-sessions-completions.test.js`
+- [x] Integration: `tests/pre-visit-summaries.test.js` (incl. DELETE cascades to linked Nova chat), save-route validation in `nova-chat-sessions-completions.test.js`
+- [x] Unit: `tests/novaRedisSession.unit.test.js` (`novaSessionDelete`)
 - [x] Nova list filter: `tests/novaChatSessionsList.unit.test.js`, `tests/nova-chat-sessions.test.js` (Tests 13–16)
 - [x] E2E (opt-in): `tests/nova-chat-sessions-save-pre-visit-summary.e2e.test.js`
 - [x] Templates CRUD: `tests/pre-visit-summary-templates.test.js`

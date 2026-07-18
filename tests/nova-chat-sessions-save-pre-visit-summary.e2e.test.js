@@ -312,6 +312,13 @@ test('1: completions-and-save-pre-visit-summary → complete + pre_visit_summary
   });
   assert.equal(del.passed, true);
 
+  logStep('cleanup: linked Nova chat should be gone…');
+  const chatGone = await makeRequest('GET', `${base}/api/nova/chat-sessions/${chatId}`, {
+    headers: authHeaders,
+    expectedStatus: 404,
+  });
+  assert.equal(chatGone.passed, true);
+
   logStep(
     `OK — pre_visit_summary_id=${preVisitSummaryId}, title_details=${titleDetails.patient_display_name}, ${titleDetails.visit_kind}, assistant chars=${assistantText.length}`
   );

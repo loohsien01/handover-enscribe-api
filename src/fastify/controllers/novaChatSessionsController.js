@@ -22,8 +22,9 @@ import {
   deleteNovaCompletionJob,
   isPgUniqueViolation,
   chatHasPreVisitSummaryRow,
+  deleteOwnedNovaChatSession,
 } from '../../utils/novaChatPersistence.js';
-import { pgQueryOne } from '../../utils/pgQueryHelpers.js';
+import { pgQueryOne, pgErrorMessage } from '../../utils/pgQueryHelpers.js';
 import { ensurePersonalOrganization } from '../../services/personalOrganization.js';
 import * as userSecurityConfigController from './userSecurityConfigController.js';
 import { resolveNovaBedrockModelId } from '../../utils/bedrockClaudeModels.js';
@@ -203,6 +204,30 @@ export async function getNovaChatSession(request, reply) {
   await novaSessionSave(redis, userId, loaded.session, ttl);
 
   return reply.send({ session: loaded.session });
+}
+
+/**
+ * DELETE /api/nova/chat-sessions/:chatId
+ * Hard-deletes the owned session (messages / jobs cascade). Linked pre-visit summaries keep their
+ * row with `chat_id` SET NULL. Redis hot session + summarize-due are cleared best-effort.
+ */
+export async function deleteNovaChatSession(request, reply) {
+  const userId = request.user.id;
+  const { chatId } = request.params;
+
+  try {
+    const deleted = await deleteOwnedNovaChatSession(userId, chatId);
+    if (!deleted) {
+      return reply.status(404).send({
+        error: 'Chat session not found or expired',
+        code: 'NOVA_SESSION_NOT_FOUND',
+      });
+    }
+    return reply.status(200).send({ success: true, chatId });
+  } catch (error) {
+    console.error('[deleteNovaChatSession] delete failed:', error);
+    return reply.status(500).send({ error: pgErrorMessage(error) });
+  }
 }
 
 /**

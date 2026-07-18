@@ -16,6 +16,7 @@ Base path: `/api/nova/…` on the Fastify API host (e.g. local `http://localhost
 | `POST` | `/api/nova/chat-sessions` | Create a new chat; returns `chatId` + initial `session`. |
 | `GET` | `/api/nova/chat-sessions/:chatId` | Load session (Redis first, else hydrate from Supabase). |
 | `PATCH` | `/api/nova/chat-sessions/:chatId` | Update `summary`, `token_estimate`, `messages`, `appendMessages`, or **`title`**. |
+| `DELETE` | `/api/nova/chat-sessions/:chatId` | Hard-delete owned session (messages/jobs cascade; Redis cache cleared). Linked pre-visit summaries keep their row with `chat_id` SET NULL. |
 | `POST` | `/api/nova/chat-sessions/:chatId/completions` | Enqueue one user turn: persists **user** message immediately; returns **202** + job id (or **200** idempotent replay if that `client_message_id` already completed). Bedrock runs asynchronously in-process (`setImmediate`, same pattern as `POST /api/jobs/prompt-llm/generate-note`). |
 | `GET` | `/api/nova/chat-sessions/:chatId/completion-jobs/:jobId` | Poll completion job until `complete` or `failed`. While `running`, may include growing `assistant_partial` (see [Frontend: partial completions](#frontend-partial-completions-poll-pseudo-stream)). Terminal `complete` includes `assistant`, `usage`, `session`. |
 | `POST` | `/api/nova/chat-sessions/:chatId/token-usage` | Record token usage (optional path if the client meters separately). |
@@ -48,7 +49,7 @@ Server-side env knobs (context limits, summarize thresholds, queue timing) **do 
 | `includePreVisitSummary=true` | `false` | Return **all** owned chats (no pre-visit filter) |
 | `onlyPreVisitSummary=true` | `false` | Return **only** chats with a linked pre-visit summary |
 
-`includePreVisitSummary` and `onlyPreVisitSummary` cannot both be `true` (**400**). Pagination `total` reflects the active filter.
+`includePreVisitSummary` and `onlyPreVisitSummary` cannot both be `true` (**400**). Pagination `total` reflects the active filter. Deleting a pre-visit summary (`DELETE /api/pre-visit-summaries/:id`) calls the same owned-chat delete helper as `DELETE /api/nova/chat-sessions/:chatId` (Postgres + Redis); see [`PRE_VISIT_SUMMARY_ARCHITECTURE.md`](./PRE_VISIT_SUMMARY_ARCHITECTURE.md).
 
 **Success (200):** paginated rows from `chat_sessions` for the JWT user. Does **not** load Redis or decrypt messages; use `GET …/:chatId` for the full `<Session>`.
 
@@ -225,7 +226,7 @@ PATCH /api/nova/chat-sessions/:chatId
 | 404 | `NOVA_SESSION_NOT_FOUND` | Unknown chat or no access. |
 | 404 | `NOVA_COMPLETION_JOB_NOT_FOUND` | Unknown job id, or job does not belong to this `:chatId`. |
 | 409 | `NOVA_COMPLETION_IN_FLIGHT` | Second `POST …/completions` for the same chat while another job is `pending`/`running` (different `client_message_id`); poll the active job or wait. |
-| 503 | `REDIS_UNAVAILABLE` | Create, load, patch, or completions path requires Redis (`REDIS_URL`); **not** returned for `GET /api/nova/chat-sessions` (list is Supabase-only). |
+| 503 | `REDIS_UNAVAILABLE` | Create, load, patch, or completions path requires Redis (`REDIS_URL`); **not** returned for `GET /api/nova/chat-sessions` (list) or `DELETE /api/nova/chat-sessions/:chatId` (Postgres delete + best-effort Redis cleanup). |
 | 500 | `NOVA_SESSION_PERSIST_FAILED`, `NOVA_TOKEN_USAGE_FAILED`, `NOVA_SESSION_LIST_FAILED`, etc. | Persistence or internal errors. |
 | 401 | — | Missing or invalid Bearer JWT: `{ "error": "<message>" }` (e.g. token required, invalid/expired). Same auth as the rest of the API; refresh tokens like other authenticated routes. |
 
@@ -241,6 +242,7 @@ All successful bodies are JSON. `<Session>` means the [session object](#session-
 | `POST /api/nova/chat-sessions` | **201** | `{ "chatId": "<uuid>", "session": <Session> }` — optional body `{ "title": "…" }` (trimmed, max **40** chars); default **`"New Chat"`**. |
 | `GET /api/nova/chat-sessions/:chatId` | **200** | `{ "session": <Session> }` |
 | `PATCH /api/nova/chat-sessions/:chatId` | **200** | `{ "session": <Session> }` |
+| `DELETE /api/nova/chat-sessions/:chatId` | **200** | `{ "success": true, "chatId": "<uuid>" }` — Redis optional (best-effort cache clear); linked PVS rows retain text with `chat_id` null. |
 | `POST /api/nova/chat-sessions/:chatId/completions` | **202** | `{ "id": "<job-uuid>", "status": "pending" \| "running", "chat_id": "<chatId>" }` — also **200** when replaying a finished turn with the same `client_message_id` (see POST section). |
 | `GET /api/nova/chat-sessions/:chatId/completion-jobs/:jobId` | **200** | `{ "id", "status", "chat_id" }` — when `status` is `complete`, includes `assistant`, `usage` (\| null), `session`; when `failed`, includes `code`, `error`; while `running`, optional `assistant_partial`, `partial_revision`; on `failed`, optional last `assistant_partial` (see [Completion partial streaming](#completion-partial-streaming)). |
 | `POST /api/nova/chat-sessions/:chatId/token-usage` | **201** | `{ "ok": true, "total_tokens": <number> }` |

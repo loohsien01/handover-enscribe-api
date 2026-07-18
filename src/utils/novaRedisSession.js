@@ -118,6 +118,15 @@ export async function novaSessionSave(redis, userId, session, ttlSec) {
 }
 
 /**
+ * @param {import('redis').RedisClientType} redis
+ * @param {string} userId
+ * @param {string} chatId
+ */
+export async function novaSessionDelete(redis, userId, chatId) {
+  await redis.del(novaSessionRedisKey(userId, chatId));
+}
+
+/**
  * @returns {number}
  */
 export function novaSessionTtlSeconds() {

@@ -14,6 +14,7 @@ import {
   createNovaChatSession,
   listNovaChatSessions,
   getNovaChatSession,
+  deleteNovaChatSession,
   patchNovaChatSession,
   postNovaChatTokenUsage,
   postNovaChatCompletion,
@@ -29,6 +30,7 @@ import {
  * - POST   /api/nova/chat-sessions
  * - GET    /api/nova/chat-sessions/:chatId
  * - PATCH  /api/nova/chat-sessions/:chatId
+ * - DELETE /api/nova/chat-sessions/:chatId (hard-delete; Redis cache cleared; linked PVS chat_id SET NULL)
  * - POST   /api/nova/chat-sessions/:chatId/token-usage
  * - POST   /api/nova/chat-sessions/:chatId/completions (202 + job id; user message persisted; poll GET …/completion-jobs/:jobId)
  * - POST   /api/nova/chat-sessions/:chatId/completions-and-save-pre-visit-summary (same + persist pre-visit summary before complete)
@@ -97,6 +99,20 @@ export default fp(async function novaChatSessionsRoutes(fastify) {
       return patchNovaChatSession(request, reply);
     } catch (err) {
       fastify.log.error('PATCH /nova/chat-sessions/:chatId:', err);
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  fastify.delete('/nova/chat-sessions/:chatId', preAuth, async (request, reply) => {
+    try {
+      const paramsResult = novaChatSessionIdParamsSchema.safeParse(request.params);
+      if (!paramsResult.success) {
+        return reply.status(400).send({ error: serializeZodError(paramsResult.error) });
+      }
+      request.params = paramsResult.data;
+      return deleteNovaChatSession(request, reply);
+    } catch (err) {
+      fastify.log.error('DELETE /nova/chat-sessions/:chatId:', err);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });
