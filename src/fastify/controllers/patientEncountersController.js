@@ -24,6 +24,11 @@ import {
   recordUsageSuccess,
   resolveBillingContext,
 } from '../../utils/billingUsage.js';
+import {
+  purgeEncounterLiveSubtree,
+  EncounterDeleteInFlightError,
+  EncounterNotFoundError,
+} from '../../utils/encounterLivePurge.js';
 
 
 /**
@@ -289,7 +294,10 @@ export async function updatePatientEncounter(request, reply) {
 }
 
 /**
- * Delete a patient encounter
+ * Delete a patient encounter and its live subtree (notes, recordings, transcripts, jobs,
+ * pre-visit summaries, linked Nova chats). Redis and Storage audio are cleared asynchronously
+ * after the response (best-effort; Postgres is source of truth). Legacy soapNotes are out of
+ * scope. Blocks with 409 when prompt-llm / Nova jobs are in flight.
  * DELETE /api/patient-encounters/:id
  */
 export async function deletePatientEncounter(request, reply) {
@@ -302,36 +310,42 @@ export async function deletePatientEncounter(request, reply) {
 
     const { id } = request.params;
 
-    // Validate bigint ID format
     if (!isValidBigInt(id)) {
       return reply.status(400).send({ error: 'Invalid ID format - must be a numeric ID' });
     }
 
-    // The pre_visit_summaries → patientEncounters FK is ON DELETE SET NULL, so deleting the
-    // encounter alone would orphan the linked summary. Remove it first (scoped by user_id, so a
-    // non-owned/nonexistent encounter id is a harmless no-op).
-    await pgQueryOne(
-      `DELETE FROM pre_visit_summaries
-        WHERE "patientEncounter_id" = $1 AND user_id = $2
-        RETURNING id`,
-      [id, user.id]
-    );
+    const supabase = getSupabaseClient(request.headers.authorization);
+    const result = await purgeEncounterLiveSubtree(id, user.id, { supabase });
 
-    const data = await pgQueryOne(
-      `DELETE FROM "patientEncounters"
-        WHERE id = $1 AND user_id = $2
-        RETURNING *`,
-      [id, user.id]
-    );
-
-    if (!data) {
+    return reply.status(200).send({
+      success: true,
+      data: result.data,
+      deleted: result.deleted,
+      warnings: result.warnings,
+    });
+  } catch (error) {
+    if (error instanceof EncounterNotFoundError) {
       return reply.status(404).send({ error: 'Encounter not found' });
     }
-
-    return reply.status(200).send({ success: true, data });
-  } catch (error) {
+    if (error instanceof EncounterDeleteInFlightError) {
+      return reply.status(409).send({
+        error: error.message,
+        code: error.code,
+        in_flight: {
+          prompt_llm_jobs: error.promptLlmJobs.map((j) => ({
+            id: j.id,
+            status: j.status,
+          })),
+          nova_chat_completion_jobs: error.novaJobs.map((j) => ({
+            id: j.id,
+            status: j.status,
+            chat_id: j.chat_id,
+          })),
+        },
+      });
+    }
     console.error('Error deleting patient encounter:', error);
-    return reply.status(500).send({ error: error.message });
+    return reply.status(500).send({ error: pgErrorMessage(error) });
   }
 }
 

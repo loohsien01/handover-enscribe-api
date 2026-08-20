@@ -47,52 +47,64 @@ function loadTestData() {
 }
 
 /**
- * Helper: Fetch real recording files from Supabase storage
- * Returns the first available recording file path for use in tests
+ * Helper: Resolve a real recording file path for complete-bundle tests.
+ * Prefers testData.json (from npm run test:setup), then GET /api/recordings,
+ * then active storage backend list (S3 / Supabase / dual-read).
  */
 async function getFirstRealRecordingFile(accessToken) {
+  testData = testData || loadTestData();
+  if (testData?.recordings?.length) {
+    const fromSetup = testData.recordings.find((r) => typeof r.path === 'string' && r.path.length > 0);
+    if (fromSetup) {
+      console.log(`  ✓ Using recording path from testData.json: ${fromSetup.path}`);
+      return fromSetup.path;
+    }
+  }
+
   try {
-    // Create authenticated Supabase client with the user's token
-    const supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY,
-      {
-        auth: { persistSession: false },
-        global: {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        },
+    const listRes = await fetch(`${runner.baseUrl}/api/recordings?limit=20&offset=0`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (listRes.ok) {
+      const rows = await listRes.json();
+      const list = Array.isArray(rows) ? rows : rows?.data;
+      const hit = (list || []).find(
+        (r) => typeof r.recording_file_path === 'string' && r.recording_file_path.length > 0
+      );
+      if (hit) {
+        console.log(`  ✓ Using recording path from GET /api/recordings: ${hit.recording_file_path}`);
+        return hit.recording_file_path;
       }
-    );
+    }
+  } catch (error) {
+    console.warn(`  ⚠️  Error listing recordings via API: ${error.message}`);
+  }
 
-    // Get the current user from Supabase auth
-    const { data: { user } } = await supabase.auth.getUser();
+  try {
+    const { listUserRecordingObjects } = await import('../src/utils/recordingsStorage.js');
+    const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, {
+      auth: { persistSession: false },
+      global: { headers: { Authorization: `Bearer ${accessToken}` } },
+    });
 
-    if (!user || !user.id) {
-      console.warn('  ⚠️  Could not get user from token');
+    let userId = testData?.testAccount?.userId || null;
+    if (!userId) {
+      const { data: { user } } = await supabase.auth.getUser();
+      userId = user?.id || null;
+    }
+    if (!userId) {
+      console.warn('  ⚠️  Could not resolve user id for storage listing');
       return null;
     }
 
-    // List files in the user's directory in the audio-files bucket
-    const { data, error } = await supabase.storage
-      .from('audio-files')
-      .list(`${user.id}`, { limit: 100 });
-
-    if (error) {
-      console.warn(`  ⚠️  Error listing storage files: ${error.message}`);
+    const files = await listUserRecordingObjects(supabase, userId);
+    if (!files || files.length === 0) {
+      console.warn('  ⚠️  No recording files found in active storage backend');
       return null;
     }
 
-    // Get the first audio file
-    if (!data || data.length === 0) {
-      console.warn('  ⚠️  No recording files found in Supabase storage');
-      return null;
-    }
-
-    const firstFile = data[0];
-    const recordingPath = `${user.id}/${firstFile.name}`;
-    console.log(`  ✓ Using real recording file: ${recordingPath}`);
+    const recordingPath = `${userId}/${files[0].name}`;
+    console.log(`  ✓ Using real recording file from storage: ${recordingPath}`);
     return recordingPath;
   } catch (error) {
     console.warn(`  ⚠️  Error fetching real recording file: ${error.message}`);
@@ -457,7 +469,7 @@ async function runPatientEncounterTests() {
 
         // ===== TEST 15: DELETE encounter (depends on test 14) =====
         if (createdEncounterId && test14PatchPassed) {
-          await runner.test('Test 15: DELETE encounter (depends on test 14)', {
+          await runner.test('Test 15: DELETE encounter cascade (depends on test 14)', {
             testNumber: 15,
             method: 'DELETE',
             endpoint: `/api/patient-encounters/${createdEncounterId}`,
@@ -465,6 +477,19 @@ async function runPatientEncounterTests() {
               Authorization: `Bearer ${realAccessToken}`,
             },
             expectedStatus: 200,
+            validator: (data) => {
+              if (!data.success) return { valid: false, reason: 'Missing success:true' };
+              if (!data.data || data.data.id == null) {
+                return { valid: false, reason: 'Missing deleted encounter data' };
+              }
+              if (!data.deleted || data.deleted.patientEncounter_id == null) {
+                return { valid: false, reason: 'Missing deleted inventory' };
+              }
+              if (!Array.isArray(data.warnings)) {
+                return { valid: false, reason: 'Missing warnings array' };
+              }
+              return { valid: true };
+            },
           });
         } else {
           console.log('⊘ Test 15: SKIPPED (test 14 dependency failed)\n');
@@ -525,7 +550,7 @@ async function runPatientEncounterTests() {
         };
 
         if (!realRecordingPath) {
-          console.log('⊘ Test 18: SKIPPED (No real recording files found in Supabase storage)\n');
+          console.log('⊘ Tests 18–20: SKIPPED (no real recording file — run npm run test:setup or ensure storage has files)\n');
         } else {
           // Update completeBundle with the real recording file for test 18
           completeBundle = {
@@ -718,7 +743,7 @@ async function runPatientEncounterTests() {
 
           // ===== TEST 20: DELETE complete encounter (depends on test 19) =====
           if (completeBundleEncounterId) {
-            await runner.test('Test 20: DELETE complete encounter (depends on test 19)', {
+            await runner.test('Test 20: DELETE complete encounter cascade (depends on test 19)', {
               testNumber: 20,
               method: 'DELETE',
               endpoint: `/api/patient-encounters/${completeBundleEncounterId}`,
@@ -726,12 +751,30 @@ async function runPatientEncounterTests() {
                 Authorization: `Bearer ${realAccessToken}`,
               },
               expectedStatus: 200,
+              validator: (data) => {
+                if (!data.success) return { valid: false, reason: 'Missing success:true' };
+                if (!data.deleted) return { valid: false, reason: 'Missing deleted inventory' };
+                if (!Array.isArray(data.deleted.note_ids) || data.deleted.note_ids.length < 1) {
+                  return { valid: false, reason: 'Expected at least one deleted note_id' };
+                }
+                if (!Array.isArray(data.deleted.recording_ids) || data.deleted.recording_ids.length < 1) {
+                  return { valid: false, reason: 'Expected at least one deleted recording_id' };
+                }
+                if (!Array.isArray(data.deleted.transcript_ids) || data.deleted.transcript_ids.length < 1) {
+                  return { valid: false, reason: 'Expected at least one deleted transcript_id' };
+                }
+                if (!Array.isArray(data.warnings)) {
+                  return { valid: false, reason: 'Missing warnings array' };
+                }
+                return { valid: true };
+              },
             });
           } else {
             console.log('⊘ Test 20: SKIPPED (test 19 dependency failed - no complete bundle encounter created)\n');
           }
+        }
 
-          // ===== TEST 21: Missing required field validation =====
+          // ===== TEST 21: Missing required field validation (no storage file required) =====
           // Attempts to create bundle without patient name (required field)
           await runner.test('Test 21: Create complete encounter with missing patientEncounter.name (should fail)', {
             testNumber: 21,
@@ -839,7 +882,6 @@ async function runPatientEncounterTests() {
             endpoint: '/api/patient-encounters/complete/test-id',
             expectedStatus: 401,
           });
-        }
       }
     }
   }
@@ -894,8 +936,8 @@ async function runPatientEncounterTests() {
     console.log('  ℹ️  No test encounters to clean up\n');
   }
 
-  // Print results
-  runner.printResults();
+  // Print results (26 = planned suite size so skipped testNumbers show as Skipped)
+  runner.printResults(26);
 
   // Save results to file
   const resultsFile = runner.saveResults('patient-encounters-tests.json');

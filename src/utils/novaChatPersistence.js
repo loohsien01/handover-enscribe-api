@@ -494,6 +494,26 @@ export async function deleteChatSessionForUser(userId, chatId) {
 }
 
 /**
+ * Best-effort Redis cleanup for a Nova chat (hot session + summarize-due).
+ * Safe when Redis is unset/unreachable. Used after Postgres chat delete (standalone or encounter purge).
+ *
+ * @param {string} userId
+ * @param {string} chatId
+ * @returns {Promise<void>}
+ */
+export async function clearOwnedNovaChatRedis(userId, chatId) {
+  try {
+    const redis = await getRedisClient();
+    if (redis) {
+      await novaSessionDelete(redis, userId, chatId);
+      await clearNovaSummarizeDue(redis, userId, chatId);
+    }
+  } catch (redisErr) {
+    console.warn('[clearOwnedNovaChatRedis] redis cleanup failed:', redisErr);
+  }
+}
+
+/**
  * Standalone Nova chat delete: Postgres hard-delete + best-effort Redis hot session / summarize-due cleanup.
  * Used by `DELETE /api/nova/chat-sessions/:chatId` and by pre-visit summary delete for the linked chat.
  *
@@ -504,17 +524,7 @@ export async function deleteChatSessionForUser(userId, chatId) {
 export async function deleteOwnedNovaChatSession(userId, chatId) {
   const deleted = await deleteChatSessionForUser(userId, chatId);
   if (!deleted) return false;
-
-  try {
-    const redis = await getRedisClient();
-    if (redis) {
-      await novaSessionDelete(redis, userId, chatId);
-      await clearNovaSummarizeDue(redis, userId, chatId);
-    }
-  } catch (redisErr) {
-    console.warn('[deleteOwnedNovaChatSession] redis cleanup failed:', redisErr);
-  }
-
+  await clearOwnedNovaChatRedis(userId, chatId);
   return true;
 }
 
