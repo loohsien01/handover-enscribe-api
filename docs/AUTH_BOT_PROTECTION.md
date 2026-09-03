@@ -68,6 +68,8 @@ is therefore driven by the **FE route**, not by server-side cohort lookup:
 - [x] `src/fastify/routes/auth.js` `sign-in`, `sign-up`, `forgot-password` — require a
   valid token and validate the Turnstile `action` matches the flow before invoking the
   controller (**enforcement, Phase 1b**, no longer verify-if-present).
+  Authenticated actions (`sign-out`, `check-validity`) and
+  `POST /auth/change-password` do **not** use Turnstile.
 - [x] `tests/turnstile.unit.test.js` (in `npm run test:unit`).
 - [ ] Add `CLOUDFLARE_TURNSTILE_SECRET_KEY` to GitHub Actions secrets.
 

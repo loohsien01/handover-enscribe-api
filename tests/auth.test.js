@@ -12,6 +12,8 @@
  * Tests 23–26 cover confirm-sign-up validation (Zod + Cognito reject of bad code).
  * Tests 35–39 cover Turnstile enforcement (docs/AUTH_BOT_PROTECTION.md): sign-in,
  * sign-up and forgot-password require a `turnstileToken`, verified server-side.
+ * Tests 40–45 cover POST /api/auth/change-password (signed-in; no Turnstile). Test 46 (wrong
+ * current password against a real account) runs with TEST_ACCOUNT_* credentials.
  *
  * Turnstile note: the server requires a valid Turnstile token on sign-in /
  * sign-up / forgot-password. Live tests cannot solve a real challenge, so set
@@ -868,6 +870,136 @@ async function runAuthTests() {
   }
 
   // ===========================================
+  // CHANGE-PASSWORD (signed-in; no Turnstile)
+  // Forgot-password remains the recovery path for users who cannot sign in.
+  // ===========================================
+
+  // 40
+  await runner.test('Change-password without currentPassword (400 Zod required)', {
+    testNumber: 40,
+    method: 'POST',
+    endpoint: '/api/auth/change-password',
+    body: {
+      newPassword: 'NewPassword123!',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const isZodError = body?.error?.name === 'ZodError' && body?.error?.message;
+      const issues = parseZodIssues(body);
+      const hit = issues.some((i) => Array.isArray(i.path) && i.path.includes('currentPassword'));
+      return {
+        passed: isZodError && hit,
+        message: isZodError && hit
+          ? 'Change-password rejected without currentPassword'
+          : `Expected ZodError on currentPassword. Got: ${JSON.stringify(body?.error)}`,
+      };
+    },
+  });
+
+  // 41
+  await runner.test('Change-password without newPassword (400 Zod required)', {
+    testNumber: 41,
+    method: 'POST',
+    endpoint: '/api/auth/change-password',
+    body: {
+      currentPassword: 'OldPassword123!',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const isZodError = body?.error?.name === 'ZodError' && body?.error?.message;
+      const issues = parseZodIssues(body);
+      const hit = issues.some((i) => Array.isArray(i.path) && i.path.includes('newPassword'));
+      return {
+        passed: isZodError && hit,
+        message: isZodError && hit
+          ? 'Change-password rejected without newPassword'
+          : `Expected ZodError on newPassword. Got: ${JSON.stringify(body?.error)}`,
+      };
+    },
+  });
+
+  // 42
+  await runner.test('Change-password with newPassword too short (400 Zod)', {
+    testNumber: 42,
+    method: 'POST',
+    endpoint: '/api/auth/change-password',
+    body: {
+      currentPassword: 'OldPassword123!',
+      newPassword: 'short',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const isZodError = body?.error?.name === 'ZodError' && body?.error?.message;
+      const hasPasswordIssue = /too_small.*newPassword/.test(JSON.stringify(body?.error));
+      return {
+        passed: isZodError && hasPasswordIssue,
+        message: isZodError && hasPasswordIssue
+          ? 'Change-password rejected for short newPassword'
+          : `Expected ZodError on newPassword length. Got: ${JSON.stringify(body?.error)}`,
+      };
+    },
+  });
+
+  // 43
+  await runner.test('Change-password with newPassword same as current (400 Zod)', {
+    testNumber: 43,
+    method: 'POST',
+    endpoint: '/api/auth/change-password',
+    body: {
+      currentPassword: 'SamePass123!',
+      newPassword: 'SamePass123!',
+    },
+    expectedStatus: 400,
+    customValidator: (body) => {
+      const isZodError = body?.error?.name === 'ZodError' && body?.error?.message;
+      const msg = JSON.stringify(body?.error);
+      const hit = /must be different from the current password/i.test(msg);
+      return {
+        passed: isZodError && hit,
+        message: isZodError && hit
+          ? 'Change-password rejected when passwords match'
+          : `Expected refine error for identical passwords. Got: ${JSON.stringify(body?.error)}`,
+      };
+    },
+  });
+
+  // 44 — no Turnstile on this action; missing Bearer is 401, not 400
+  await runner.test('Change-password without auth header (401; no Turnstile)', {
+    testNumber: 44,
+    method: 'POST',
+    endpoint: '/api/auth/change-password',
+    body: {
+      currentPassword: 'OldPassword123!',
+      newPassword: 'NewPassword123!',
+    },
+    expectedStatus: 401,
+    customValidator: (body) => {
+      const passed = typeof body?.error === 'string' && /not authenticated/i.test(body.error);
+      return {
+        passed,
+        message: passed
+          ? 'Unauthenticated change-password returns 401 (Turnstile not required)'
+          : `Expected 401 Not authenticated. Got: ${JSON.stringify(body)}`,
+      };
+    },
+  });
+
+  // 45
+  await runner.test('Change-password with invalid token (401)', {
+    testNumber: 45,
+    method: 'POST',
+    endpoint: '/api/auth/change-password',
+    body: {
+      currentPassword: 'OldPassword123!',
+      newPassword: 'NewPassword123!',
+    },
+    headers: {
+      Authorization: 'Bearer invalid.token.here',
+    },
+    expectedStatus: 401,
+  });
+
+  // ===========================================
   // REAL ACCOUNT TESTS (if configured)
   // ===========================================
   
@@ -921,6 +1053,33 @@ async function runAuthTests() {
         });
       } else {
         console.warn('⚠️  Could not extract token from sign-in test, skipping check-validity test');
+      }
+
+      // 46 — wrong current password; does not mutate the test account
+      if (accessToken) {
+        await runner.test('Change-password with wrong current password (401)', {
+          testNumber: 46,
+          method: 'POST',
+          endpoint: '/api/auth/change-password',
+          body: {
+            currentPassword: 'DefinitelyNotTheCurrentPassword123!',
+            newPassword: 'NewPassword123!',
+          },
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+          expectedStatus: 401,
+          customValidator: (body) => {
+            const passed =
+              typeof body?.error === 'string' && /current password is incorrect/i.test(body.error);
+            return {
+              passed,
+              message: passed
+                ? 'Wrong current password returns 401 without signing the user out'
+                : `Expected current-password error. Got: ${JSON.stringify(body)}`,
+            };
+          },
+        });
       }
     }
   } else {

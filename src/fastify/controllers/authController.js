@@ -9,6 +9,7 @@ import { ensurePersonalOrganization } from '../../services/personalOrganization.
 import { isCognitoAuth } from '../../utils/authProvider.js';
 import { authenticateAccessToken } from '../../utils/authenticateAccessToken.js';
 import {
+  cognitoChangePassword,
   cognitoConfirmForgotPassword,
   cognitoConfirmSignUp,
   cognitoForgotPassword,
@@ -628,6 +629,65 @@ export async function forgotPassword(email, opts = {}) {
   } catch (err) {
     console.error('[forgotPassword] Error:', err);
     return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Change password while signed in. Requires the current password.
+ * Does not sign the user out, rotate tokens, or clear the refresh cookie.
+ *
+ * @param {string} accessToken - Raw Cognito/Supabase access token (no Bearer prefix)
+ * @param {string} currentPassword
+ * @param {string} newPassword
+ * @param {{ id?: string, email?: string } | null} [user]
+ */
+export async function changePassword(accessToken, currentPassword, newPassword, user = null) {
+  try {
+    if (!accessToken) {
+      return { success: false, status: 401, error: 'Not authenticated' };
+    }
+    if (!currentPassword || !newPassword) {
+      return { success: false, status: 400, error: 'Current password and new password are required' };
+    }
+    if (currentPassword === newPassword) {
+      return { success: false, status: 400, error: 'New password must be different from the current password' };
+    }
+
+    if (isCognitoAuth()) {
+      const result = await cognitoChangePassword(accessToken, currentPassword, newPassword);
+      if (!result.success) {
+        return {
+          success: false,
+          status: result.status || 400,
+          error: result.error,
+        };
+      }
+      return { success: true, error: null };
+    }
+
+    const email = user?.email;
+    if (!email) {
+      return { success: false, status: 401, error: 'Not authenticated' };
+    }
+
+    const supabase = getSupabaseClient();
+    const { error: verifyError } = await supabase.auth.signInWithPassword({
+      email,
+      password: currentPassword,
+    });
+    if (verifyError) {
+      return { success: false, status: 401, error: 'Current password is incorrect' };
+    }
+
+    const authed = getSupabaseClient(`Bearer ${accessToken}`);
+    const { error } = await authed.auth.updateUser({ password: newPassword });
+    if (error) {
+      return { success: false, status: 400, error: error.message };
+    }
+    return { success: true, error: null };
+  } catch (err) {
+    console.error('[changePassword] Error:', err);
+    return { success: false, status: 500, error: 'Unable to change password' };
   }
 }
 

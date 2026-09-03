@@ -677,6 +677,24 @@ export const authForgotPasswordRequestSchema = z.object({
 });
 
 /**
+ * POST request for signed-in password change
+ * Endpoint: POST /api/auth/change-password
+ *
+ * Authenticated: Authorization Bearer access token required (enforced in the route).
+ * No Turnstile — this is not a public/anonymous form. Forgot-password remains the
+ * recovery path for users who cannot sign in.
+ */
+export const authChangePasswordRequestSchema = z
+  .object({
+    currentPassword: z.string().min(1, 'Current password is required'),
+    newPassword: z.string().min(8, 'Password must be at least 8 characters'),
+  })
+  .refine((data) => data.newPassword !== data.currentPassword, {
+    message: 'New password must be different from the current password',
+    path: ['newPassword'],
+  });
+
+/**
  * POST request for auth confirm-forgot-password action (Cognito code flow)
  * Endpoint: POST /api/auth
  * Action: confirm-forgot-password

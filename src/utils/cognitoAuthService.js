@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import {
   AdminDeleteUserCommand,
   AdminInitiateAuthCommand,
+  ChangePasswordCommand,
   ConfirmForgotPasswordCommand,
   ConfirmSignUpCommand,
   ForgotPasswordCommand,
@@ -240,6 +241,74 @@ export async function cognitoForgotPassword(email) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[cognitoForgotPassword] Error:', message);
     return { success: false, error: message };
+  }
+}
+
+/**
+ * Map Cognito ChangePassword errors to a client-safe status + message.
+ * Does not force sign-out; callers must leave the current session intact.
+ *
+ * @param {unknown} err
+ * @returns {{ status: number, error: string }}
+ */
+export function mapCognitoChangePasswordError(err) {
+  const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : '';
+  const message = err instanceof Error ? err.message : String(err ?? '');
+
+  switch (name) {
+    case 'NotAuthorizedException':
+      if (/access token/i.test(message)) {
+        return { status: 401, error: 'Not authenticated' };
+      }
+      return { status: 401, error: 'Current password is incorrect' };
+    case 'InvalidPasswordException':
+      return { status: 400, error: 'New password does not meet password requirements' };
+    case 'InvalidParameterException':
+      return { status: 400, error: 'New password must be different from the current password' };
+    case 'LimitExceededException':
+    case 'TooManyRequestsException':
+      return { status: 429, error: 'Too many attempts. Please try again later.' };
+    case 'PasswordHistoryPolicyViolationException':
+      return { status: 400, error: 'New password was used recently. Choose a different password.' };
+    case 'PasswordResetRequiredException':
+      return { status: 400, error: 'Password reset is required. Use forgot-password instead.' };
+    case 'UserNotFoundException':
+    case 'UserNotConfirmedException':
+      return { status: 401, error: 'Not authenticated' };
+    default:
+      return { status: 500, error: 'Unable to change password' };
+  }
+}
+
+/**
+ * Change password for a signed-in user. Cognito does not invalidate the current
+ * access or refresh tokens on success — do not GlobalSignOut or revoke vault rows.
+ *
+ * @param {string} accessToken
+ * @param {string} previousPassword
+ * @param {string} proposedPassword
+ */
+export async function cognitoChangePassword(accessToken, previousPassword, proposedPassword) {
+  const client = getCognitoIdpClient();
+  try {
+    await client.send(
+      new ChangePasswordCommand({
+        AccessToken: accessToken,
+        PreviousPassword: previousPassword,
+        ProposedPassword: proposedPassword,
+      })
+    );
+    return { success: true };
+  } catch (err) {
+    const mapped = mapCognitoChangePasswordError(err);
+    const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : 'Error';
+    if (mapped.status >= 500) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[cognitoChangePassword] Error:', name, message);
+    } else {
+      console.error('[cognitoChangePassword] Rejected:', name);
+    }
+    return { success: false, ...mapped };
   }
 }
 

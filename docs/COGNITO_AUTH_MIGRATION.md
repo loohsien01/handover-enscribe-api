@@ -411,6 +411,12 @@ Attach to **IAM user** (local dev) and **EC2 instance role** (prod):
         "cognito-idp:ListUsers"
       ],
       "Resource": "arn:aws:cognito-idp:us-east-1:ACCOUNT_ID:userpool/PROD_POOL_ID"
+    },
+    {
+      "Sid": "CognitoChangePassword",
+      "Effect": "Allow",
+      "Action": "cognito-idp:ChangePassword",
+      "Resource": "*"
     }
   ]
 }
@@ -420,6 +426,8 @@ Attach to **IAM user** (local dev) and **EC2 instance role** (prod):
 |-----------|--------|-------|
 | IAM **user** `enscribe-api-prod-ec2-role` (keys in `.env.local`) | Managed or inline | Dev + prod |
 | EC2 **role** `enscribe-api-ec2-instance-role` | Inline `EnscribeCognitoAuthProd` | Prod only |
+
+`cognito-idp:ChangePassword` does not support resource-level IAM. Attach the `CognitoChangePassword` statement (`Resource: "*"`) to the laptop IAM user and the EC2 instance role before Settings password change ships. The API does not `GlobalSignOut` after a successful change.
 
 ### 3.2 Smoke test (local)
 

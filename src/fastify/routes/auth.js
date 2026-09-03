@@ -9,6 +9,7 @@ import {
   authCheckValidityRequestSchema,
   authResendRequestSchema,
   authForgotPasswordRequestSchema,
+  authChangePasswordRequestSchema,
   authConfirmForgotPasswordRequestSchema,
   authConfirmSignUpRequestSchema,
 } from '../schemas/requests.js';
@@ -16,7 +17,8 @@ import {
 /**
  * Fastify plugin for authentication routes
  * Handles: sign-up, sign-in, sign-out, check-validity, resend, forgot-password,
- * confirm-forgot-password, confirm-sign-up
+ * confirm-forgot-password, confirm-sign-up; plus POST /auth/change-password and
+ * POST /auth/refresh
  */
 async function authRoutes(fastify, opts) {
   // Extract auth header from request
@@ -80,7 +82,8 @@ async function authRoutes(fastify, opts) {
 
   /**
    * POST /auth
-   * Handles: sign-up, sign-in, sign-out, check-validity, resend, forgot-password
+   * Handles: sign-up, sign-in, sign-out, check-validity, resend, forgot-password,
+   * confirm-forgot-password, confirm-sign-up
    * 
    * Body:
    * {
@@ -441,6 +444,49 @@ async function authRoutes(fastify, opts) {
       }
     } catch (err) {
       console.error('[POST /auth] Error:', err);
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  /**
+   * POST /auth/change-password
+   * Signed-in password change: currentPassword + newPassword + Bearer access token.
+   * Does not sign the user out. Forgot-password remains the recovery path.
+   */
+  fastify.post('/auth/change-password', async (request, reply) => {
+    try {
+      const validation = authChangePasswordRequestSchema.safeParse(request.body);
+      if (!validation.success) {
+        return reply.status(400).send({ error: serializeZodError(validation.error) });
+      }
+
+      const authHeader = getAuthHeader(request);
+      const tokenCheck = await authController.checkTokenValidity(authHeader);
+
+      if (!tokenCheck.success) {
+        return reply.status(401).send({ error: 'Not authenticated' });
+      }
+
+      const accessToken = String(authHeader).replace(/^Bearer\s+/i, '').trim();
+      const { currentPassword, newPassword } = validation.data;
+      const result = await authController.changePassword(
+        accessToken,
+        currentPassword,
+        newPassword,
+        tokenCheck.user
+      );
+
+      if (!result.success) {
+        return reply.status(result.status || 400).send({ error: result.error });
+      }
+
+      // Cognito keeps the current access/refresh tokens valid. Do not
+      // GlobalSignOut, revoke refresh rows, or clear the refresh cookie.
+      return reply.status(200).send({
+        message: 'Password changed successfully',
+      });
+    } catch (err) {
+      console.error('[POST /auth/change-password] Error:', err);
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });

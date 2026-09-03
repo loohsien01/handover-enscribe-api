@@ -201,5 +201,6 @@ A verification email may still be sent if the IdP created the user before a late
 
 ## Related documentation
 
+- **[AUTH_CHANGE_PASSWORD_API.md](./AUTH_CHANGE_PASSWORD_API.md)** — authenticated in-session password change (`POST /api/auth/change-password`); no forced sign-out.
 - **[USER_PROFILE_API.md](./USER_PROFILE_API.md)** — authenticated **`GET` / `POST` / `PATCH`** for `/api/user-profile`.
 - Tests: **`tests/auth.test.js`** (`npm run test:auth`). Sign-up Zod cases are tests **1–7** (`testNumber`). **Test 8** (reserved username **`info`** → **`409 USERNAME_TAKEN`**, no auth user) requires a DB seed and is skippable via **`skipTest8`**. **Test 9** (duplicate email → **`409 EMAIL_ALREADY_REGISTERED`**) requires **`TEST_ACCOUNT_EMAIL`** in **`.env.local`**. **Test 10** is the sign-in smoke test and requires **`TEST_ACCOUNT_EMAIL`** / **`TEST_ACCOUNT_PASSWORD`**. **Tests 23–26** cover **`confirm-sign-up`** validation. Full responses are written to **`test-results/auth-tests.json`**.
