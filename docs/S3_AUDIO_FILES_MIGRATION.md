@@ -2,7 +2,7 @@
 
 Walkthrough for moving **live** recording blobs off Supabase Storage bucket `audio-files` onto S3. Auth stays on Supabase during this step; only the blob layer changes.
 
-**Status (2026-06):** Parts **1–3, 6, 6.6, 7, 8, 9** complete. Prod `RECORDINGS_STORAGE_BACKEND=s3` (via [deploy.yml](../.github/workflows/deploy.yml)). **Next:** Part **11** after confidence window; optional Parts **4** and **10**.
+**Status:** Parts **1–3, 6, 6.6, 7, 8, 9** complete. Prod `RECORDINGS_STORAGE_BACKEND=s3` (via [deploy.yml](../.github/workflows/deploy.yml)). **Next:** Part **11** after confidence window; optional Parts **4** and **10**.
 
 **Related:** [SUPABASE_TO_AWS_MIGRATION.md](./SUPABASE_TO_AWS_MIGRATION.md) (Step 1 — done; **Step 2 RDS** next), [RDS_POSTGRES_MIGRATION.md](./RDS_POSTGRES_MIGRATION.md), [retention_archival (Supabase_to_S3).md](./retention_archival%20(Supabase_to_S3).md) (cold archive track).
 
@@ -307,7 +307,7 @@ s3://enscribe-recordings-prod/{userId}/{filename}
 Examples:
 
 ```text
-a1b2c3d4-….-….mp3   →   key = a1b2c3d4-…/visit-2026-06-30.mp3
+a1b2c3d4-….-….mp3   →   key = a1b2c3d4-…/visit-YYYY-MM-DD.mp3
 ```
 
 `recordings.recording_file_path` stays `userId/filename`. Code already strips optional `audio-files/` prefix in several places.

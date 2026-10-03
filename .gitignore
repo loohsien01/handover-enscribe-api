@@ -40,6 +40,7 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 .env.local
+.env.github
 
 # vercel
 .vercel
@@ -50,6 +51,7 @@ next-env.d.ts
 # local commit message draft (not for version control)
 API_COMMIT_MSG.txt
 
+/sql
 /sql/migrations
 
 # Supabase audio-files inventory outputs (large / path metadata); keep sql/scripts/reports/audio-files-inventory/.gitkeep

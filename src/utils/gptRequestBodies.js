@@ -65,7 +65,7 @@ export function getSoapNoteAndBillingRequestBody(transcript) {
             },
             {
                 role: "user",
-                content: `Here is a patient encounter transcript:\n\n${transcript}\n\nGenerate SOAP note and billing suggestions. PHI information has been masked for privacy. Example (for reference only): Evan is 105 years old --> {{NAME_1}} is {{AGE_2}} years old.
+                content: `Here is a patient encounter transcript:\n\n${transcript}\n\nGenerate SOAP note and billing suggestions. PHI information has been masked for privacy. Example (for reference only): Jane is 105 years old --> {{NAME_1}} is {{AGE_2}} years old.
                 Use bullet points (marked by '-' symbols, '•' is invalid symbol) and markdown formatting and "\\n"for clarity.`
             }
         ],

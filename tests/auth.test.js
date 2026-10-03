@@ -326,8 +326,8 @@ async function runAuthTests() {
         headers: JSON_ACCEPT_HEADERS,
         body: {
           action: 'sign-up',
-          email: `info@sjpedgi.doctor`,
-          password: '@2Sengaring',
+          email: 'info@example.com',
+          password: 'TestPassword123!',
           userProfile: { username: 'info', specialty: 'Internal Medicine' },
           turnstileToken: TURNSTILE_TOKEN,
         },

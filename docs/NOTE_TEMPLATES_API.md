@@ -1063,7 +1063,7 @@ All errors follow this format:
 
 ---
 
-## Recent Changes (March 24, 2026)
+## Recent Changes
 
 ### Schema Changes
 - **Removed `noteTemplates_id` from notes schema**: Notes are no longer directly linked to templates. Templates are used contextually through jobs/prompt-llm processing.

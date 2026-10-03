@@ -34,7 +34,7 @@ dotenv.config({ path: envPath });
 // Edit these for your export
 // ---------------------------------------------------------------------------
 
-const USER_EMAIL = 'natfabi456@gmail.com';
+const USER_EMAIL = 'change-me@example.com';
 
 /**
  * Raw SQL (SELECT only). If it contains `{{USER_ID}}`, it is replaced with the UUID

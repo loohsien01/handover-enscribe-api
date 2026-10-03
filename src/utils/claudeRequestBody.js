@@ -83,7 +83,7 @@ For spelling and proper nouns: when speech-to-text may have garbled proper nouns
     }
 
     content += `
-Generate SOAP note. PHI information has been masked for privacy. Example (for reference only): Evan is 105 years old --> {{NAME_1}} is {{AGE_2}} years old.
+Generate SOAP note. PHI information has been masked for privacy. Example (for reference only): Jane is 105 years old --> {{NAME_1}} is {{AGE_2}} years old.
 Use bullet points (marked by '-' symbols, '•' is invalid symbol) and markdown formatting and "\\n" for clarity.
 For medication names only: apply the system exception for speech-to-text errors — do not copy garbled drug spellings verbatim.
 
