@@ -166,7 +166,7 @@ jobs:
 
       - name: Deploy via Systems Manager
         env:
-          INSTANCE_ID: i-086b6a2ef671e8c63
+          INSTANCE_ID: i-003aaa891dde5157a
         run: |
           # Create deployment script with all secrets
           cat > /tmp/deploy.sh << 'DEPLOYEOF'
