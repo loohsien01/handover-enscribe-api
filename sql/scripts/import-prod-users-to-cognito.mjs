@@ -52,9 +52,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
 /** @type {readonly string[]} */
-const KNOWN_DEV_POOL_IDS = ['us-east-1_8zgtpuUJg'];
+const KNOWN_DEV_POOL_IDS = [
+  'us-east-1_8zgtpuUJg', // source account
+  'us-east-1_oyTwIkORs', // handover / target account
+];
 /** @type {readonly string[]} */
-const KNOWN_PROD_POOL_IDS = ['us-east-1_UxICChcfK'];
+const KNOWN_PROD_POOL_IDS = [
+  'us-east-1_UxICChcfK', // source account
+  'us-east-1_tUgu3Wiat', // handover / target account
+];
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

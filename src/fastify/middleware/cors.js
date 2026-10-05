@@ -14,6 +14,9 @@ const ALLOWED_ORIGINS = [
   'https://enscribe.online',
   'https://app.enscribe.online',
   'https://www.app.enscribe.online',
+  // Handover parallel FE (target CloudFront)
+  'https://handover.app.enscribe.online',
+  'https://d3n3mppxqfvayc.cloudfront.net',
 
   // Development origins
   'http://localhost:3000',
