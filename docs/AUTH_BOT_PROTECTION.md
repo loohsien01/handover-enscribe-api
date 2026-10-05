@@ -8,7 +8,6 @@ Companion to [`AUTH_SIGN_UP_API.md`](./AUTH_SIGN_UP_API.md).
 S3** ([`DEPLOYMENT.md`](../DEPLOYMENT.md)).
 
 ---
-
 ## Scope clarification
 
 | Product | Phase 1? | Notes |
